@@ -1,0 +1,58 @@
+{
+  "name": "server",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "nodemon -L src/index.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@turf/turf": "^7.3.3",
+    "@types/axios": "^0.9.36",
+    "axios": "^0.27.2",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
+    "express": "^5.2.1",
+    "iconv-lite": "^0.7.2",
+    "jschardet": "^3.1.4",
+    "mongoose": "^9.1.4",
+    "multer": "^2.0.2",
+    "openai": "^6.25.0",
+    "papaparse": "^5.5.3",
+    "shapefile": "^0.6.6",
+    "shpjs": "^6.2.0",
+    "stream-chain": "^3.4.0",
+    "stream-json": "^1.9.1",
+    "wellknown": "^0.5.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/multer": "^2.0.0",
+    "@types/node": "^25.0.8",
+    "@types/papaparse": "^5.5.2",
+    "@types/shapefile": "^0.6.4",
+    "@types/shpjs": "^3.4.7",
+    "@types/wellknown": "^0.5.8",
+    "nodemon": "^3.1.11",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  },
+  "nodemonConfig": {
+    "ignore": [
+      "uploads/*",
+      "**/*.json",
+      "**/*.csv",
+      "**/*.shp",
+      "**/*.dbf",
+      "**/*.shx",
+      "**/*.prj",
+      "**/*.cpg"
+    ]
+  }
+}

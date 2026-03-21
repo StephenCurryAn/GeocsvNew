@@ -1,0 +1,96 @@
+# 依赖目录
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# 构建输出
+/dist
+/dist-ssr
+/build
+/public/dist
+
+# 临时文件
+.tmp
+.vite
+.vercel
+
+# 环境变量
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env.*
+
+# 编辑器文件
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.idea
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# 操作系统文件
+.DS_Store
+Thumbs.db
+
+# 日志文件
+logs
+*.log
+
+# 测试相关
+coverage
+.nyc_output
+
+# 上传文件目录
+/server/uploads/*
+
+# 数据库文件
+*.db
+*.sqlite
+
+# 编译缓存
+node_modules/.cache
+
+# TypeScript
+*.tsbuildinfo
+node_modules/.tsbuildinfo
+
+# 临时构建文件
+.svelte-kit
+.c8
+.nyc_output
+coverage/
+
+# 服务器编译输出
+/server/dist
+/server/node_modules
+
+# 客户端编译输出
+/client/dist
+/client/node_modules
+
+# 临时文件
+*.tmp
+*.temp
+
+# ==========================
+# 针对我的论文项目的补充
+# ==========================
+# 1. 忽略基础的环境变量文件
+.env
+
+# 2. 忽略大数据文件 (防止 Git 卡死)
+*.csv
+*.xlsx
+/data/
+/datasets/
+
+# 3. 如果用了 Python
+__pycache__/

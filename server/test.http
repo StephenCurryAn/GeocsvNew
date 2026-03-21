@@ -1,0 +1,9 @@
+### 测试大模型生成代码接口
+POST http://localhost:3000/api/analysis/agent/generate-model
+Content-Type: application/json
+
+{
+    "modelName": "EQUAL_WEIGHT",
+    "displayName": "等权重求和模型",
+    "userDescription": "帮我把传入的所有列的数据加起来，最后算一个平均值返回。"
+}

@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    /* 1. 基础编译设置 */
+    "target": "es2016",                                  /* 编译成兼容性较好的 JS 版本 */
+    "module": "commonjs",                                /* Node.js 默认使用 CommonJS 规范 (require/module.exports) */
+    "moduleResolution": "node",                          /* 按照 Node 的方式查找文件 */
+    "baseUrl": "./",                                     /* 基础路径 */
+
+    /* 2. 目录管理 (非常重要！) */
+    "rootDir": "./src",                                  /* 告诉 TS：我的源代码都在 src 文件夹里 */
+    "outDir": "./dist",                                  /* 告诉 TS：编译好的 JS 文件请放到 dist 文件夹里 (避免 JS 和 TS 混在一起) */
+
+    /* 3. 严格模式 & 代码质量 */
+    "strict": true,                                      /* 开启所有严格类型检查 (推荐) */
+    "esModuleInterop": true,                             /* 允许你用 import express from 'express' 而不是 import * as express */
+    "skipLibCheck": true,                                /* 跳过依赖包的类型检查 (能节省编译时间，减少报错) */
+    "forceConsistentCasingInFileNames": true,            /* 强制文件名大小写一致 (Windows不敏感，Linux敏感，开启这个能防坑) */
+
+    /* 4. 其他实用配置 */
+    "resolveJsonModule": true,                           /* 允许你在代码里 import json 文件 */
+    "removeComments": true                               /* 编译出来的 JS 文件里去掉注释 (减小体积) */
+  },
+  "include": ["src/**/*"],                               /* 只编译 src 目录下的文件 */
+  "exclude": ["node_modules", "**/*.test.ts"]            /* 排除 node_modules 和测试文件 */
+}
