@@ -90,7 +90,7 @@ const GeoAIAgent: React.FC = () => {
     return (
         <div className="fixed bottom-6 left-6 z-9999 flex flex-col items-start font-sans pointer-events-none">
             {/* ========================================== */}
-            {/* 🌟 弹出式左右分栏 UI (Split-Pane Dialog) */}
+            {/*   弹出式左右分栏 UI (Split-Pane Dialog) */}
             {/* ========================================== */}
             <div 
                 className={`mb-4 overflow-hidden transition-all duration-500 origin-bottom-left ${
@@ -224,7 +224,7 @@ const GeoAIAgent: React.FC = () => {
             </div>
 
             {/* ========================================== */}
-            {/* 🌟 左下角悬浮发光触发器 (FAB) */}
+            {/*   左下角悬浮发光触发器 (FAB) */}
             {/* ========================================== */}
             <div className="relative group pointer-events-auto">
                 <div className="absolute -inset-1.5 bg-linear-to-r from-blue-600 to-cyan-400 rounded-full blur opacity-40 group-hover:opacity-80 transition duration-500 animate-pulse"></div>

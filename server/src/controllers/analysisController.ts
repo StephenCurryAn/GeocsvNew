@@ -50,7 +50,7 @@ class SimpleGridIndex {
         return this.queryByBbox(bbox);
     }
 
-    // ✅ [新增] 支持直接通过 bbox 查询，方便做邻域搜索
+    //   [新增] 支持直接通过 bbox 查询，方便做邻域搜索
     queryByBbox(bbox: number[]): any[] {
         const candidates = new Set<any>();
         const minX = Math.floor(bbox[0] / this.cellSize);
@@ -99,16 +99,16 @@ export const pivotAnalysis = async (req: Request, res: Response) => {
         } = req.body;
 
         if (!fileId || !groupByRow) {
-            return res.status(400).json({ message: 'Missing required parameters' });
+            return res.status(400).json({ message:'缺少参数' });
         }
 
-        // 1. 构建聚合累加器
+        // 构建MongoDB聚合累加器
         let accumulator: any = {};
         if (method === 'count') {
             accumulator = { $sum: 1 };
         } else {
-            // 注意：前端传来的只是字段名 "Rainfall"，Mongo需要 "$properties.Rainfall"
-            // 为了稳健，我们这里做一个简单的处理，如果前端没传 properties. 前缀，我们帮它加上
+            // 前端传来的只是字段名 "Rainfall"，Mongo需要 "$properties.Rainfall"
+            // 如果前端没传 properties. 前缀，加上
             const vField = valueField.startsWith('properties.') ? valueField : `properties.${valueField}`;
             const fieldPath = `$${vField}`;
             
@@ -117,9 +117,8 @@ export const pivotAnalysis = async (req: Request, res: Response) => {
                 case 'avg': accumulator = { $avg: fieldPath }; break;
                 case 'max': accumulator = { $max: fieldPath }; break;
                 case 'min': accumulator = { $min: fieldPath }; break;
-                // ✅ [新增] 核心逻辑：使用 $push 收集所有原始值
+                // 使用$push把同一分组下的所有原始数据塞进一个数组里返回
                 case 'boxplot': accumulator = { $push: fieldPath }; break;
-                // ✅ [新增] 分段/山脊图模式：同样收集原始数组
                 case 'ridgeline': accumulator = { $push: fieldPath }; break;
                 default: accumulator = { $sum: fieldPath };
             }
@@ -128,13 +127,14 @@ export const pivotAnalysis = async (req: Request, res: Response) => {
         const rField = groupByRow.startsWith('properties.') ? groupByRow : `properties.${groupByRow}`;
         const cField = groupByCol && !groupByCol.startsWith('properties.') ? `properties.${groupByCol}` : groupByCol;
 
+        // 文件ID过滤条件
         const pipeline: any[] = [
             { $match: { fileId: new mongoose.Types.ObjectId(fileId) } }
         ];
 
-        // 2. 区分 1D 还是 2D 分析
+        // 区分一维还是二维分析
         if (!cField) {
-            // --- 模式 A: 简单一维分组 ---
+            // 一维分组
             pipeline.push({
                 $group: {
                     _id: `$${rField}`,
@@ -143,12 +143,13 @@ export const pivotAnalysis = async (req: Request, res: Response) => {
             });
             pipeline.push({ $sort: { value: -1 } }); // 默认降序
         } else {
-            // --- 模式 B: 二维透视 (行转列) ---
-            // 第一步：联合分组 (Row + Col)
-            // ✅ [新增] 二维模式不支持 raw array 聚合
+            // 二维透视
+
             if (method === 'boxplot' || method === 'ridgeline') {
-                return res.status(400).json({ message: 'Raw collection methods do not support 2D pivoting.' });
+                return res.status(400).json({ message: '二维模式不支持 raw array 聚合' });
             }
+            
+            // 按行列分组计算统计值
             pipeline.push({
                 $group: {
                     _id: {
@@ -157,21 +158,36 @@ export const pivotAnalysis = async (req: Request, res: Response) => {
                     },
                     val: accumulator
                 }
+
             });
         }
-
+        // 示例的格式：
+        //         [
+        //   { 
+        //     "_id": { "row": "南京", "col": "2020" }, 
+        //     "val": 30   // (10 + 20)
+        //   },
+        //   { 
+        //     "_id": { "row": "南京", "col": "2021" }, 
+        //     "val": 50 
+        //   },
+        //   { 
+        //     "_id": { "row": "苏州", "col": "2020" }, 
+        //     "val": 30 
+        //   }
+        // ]
         const rawResults = await Feature.aggregate(pipeline);
 
-        // 3. 数据后处理 (格式化)
+        // 数据格式化（转成echarts格式）
         let finalData: any[] = [];
         let dynamicColumns: string[] = [];
 
         if (!cField) {
-            // 1D 格式化
+            // 一维格式化
             finalData = rawResults.map((item, idx) => ({
                 key: idx,
                 rowKey: (item._id === null || item._id === undefined || item._id === '') ? '未分类' : item._id,
-                // ✅ [修改] 允许 ridgeline 返回数组
+                // 要是是boxplot和ridgeline，则返回数组
                 value: (method === 'boxplot' || method === 'ridgeline')
                     ? item.value 
                     : (typeof item.value === 'number' ? parseFloat(item.value.toFixed(2)) : item.value)
@@ -181,7 +197,7 @@ export const pivotAnalysis = async (req: Request, res: Response) => {
             else if (method === 'ridgeline') dynamicColumns = ['ridgeline_raw'];
             else dynamicColumns = ['value'];
         } else {
-            // 2D 格式化 (Matrix 转置)
+            // 二维格式化(Matrix转置)
             const map = new Map<string, any>();
             const colSet = new Set<string>();
 
@@ -190,8 +206,10 @@ export const pivotAnalysis = async (req: Request, res: Response) => {
                 const cKey = String(item._id.col || '未分类'); // 列名必须是字符串
                 const val = typeof item.val === 'number' ? parseFloat(item.val.toFixed(2)) : item.val;
 
+                // 把所有列名自动去重，做表头
                 colSet.add(cKey);
 
+                // 行列交叉值的存储
                 if (!map.has(rKey)) {
                     map.set(rKey, { key: rKey, rowKey: rKey });
                 }
@@ -200,6 +218,8 @@ export const pivotAnalysis = async (req: Request, res: Response) => {
             });
 
             dynamicColumns = Array.from(colSet).sort(); // 列排序
+
+            // 最终数据格式 [ { rowKey: '南京', '2020': 100, '2021': 200 }, { rowKey: '苏州', '2020': 150, '2021': 120 } ]
             finalData = Array.from(map.values());
         }
 
@@ -225,7 +245,7 @@ export const generateGrid = async (req: Request, res: Response): Promise<void> =
             return;
         }
         
-        // ✅ [配置] 定义缓冲区圈数 n (可在此处修改，或从前端传入)
+        //   [配置] 定义缓冲区圈数 n (可在此处修改，或从前端传入)
         const BUFFER_RINGS = 2; // 显示周围 2 圈网格
 
         console.log(`[Grid] Generating ${shape} grid (${size}km) for file ${fileId}`);
@@ -238,7 +258,7 @@ export const generateGrid = async (req: Request, res: Response): Promise<void> =
 
         const features = rawFeatures.map((f: any) => turf.feature(f.geometry, f.properties));
         
-        // ✅ [新增] 预判数据类型，用于覆盖率计算
+        //   [新增] 预判数据类型，用于覆盖率计算
         const firstGeom = features[0]?.geometry.type;
         const isPolygonLayer = firstGeom?.includes('Polygon');
         const isLineLayer = firstGeom?.includes('Line');
@@ -284,7 +304,7 @@ export const generateGrid = async (req: Request, res: Response): Promise<void> =
             const geometryType = feature.geometry.type;
             let rawValue = 1;
             
-            // ✅ [修改] 确定 rawValue (根据模式)
+            //   [修改] 确定 rawValue (根据模式)
             if (method === 'coverage') {
                 // 覆盖率模式：计算几何体自身的绝对量（面积或长度）
                 if (isPolygonLayer) {
@@ -365,7 +385,7 @@ export const generateGrid = async (req: Request, res: Response): Promise<void> =
                         cell.properties.value += rawValue * ratio;
                         cell.properties.count += 1;
                         intersectCount++;
-                        // ✅ [标记] 该网格是活跃的
+                        //   [标记] 该网格是活跃的
                         activeCellIds.add(cell.properties._id);
                     }
                 } catch (err) {}
@@ -375,7 +395,7 @@ export const generateGrid = async (req: Request, res: Response): Promise<void> =
 
         console.log(`[Grid] Processed ${processedCount} features. Active cells: ${activeCellIds.size}`);
 
-        // ✅ [新增] 覆盖率模式的后处理：除以网格面积
+        //   [新增] 覆盖率模式的后处理：除以网格面积
         if (method === 'coverage') {
             grid.features.forEach((cell: any) => {
                 if (activeCellIds.has(cell.properties._id)) {
@@ -406,7 +426,7 @@ export const generateGrid = async (req: Request, res: Response): Promise<void> =
             cell.properties.value = Number(cell.properties.value.toFixed(decimals));
         });
 
-        // ✅ [新增] 缓冲区过滤逻辑
+        //   [新增] 缓冲区过滤逻辑
         // 无论点、线、面，都执行这个通用的视觉优化
         if (activeCellIds.size > 0) {
             const cellsToKeep = new Set<number>(activeCellIds);
@@ -504,10 +524,10 @@ export const exportGrid = async (req: Request, res: Response): Promise<void> => 
                 return;
         }
 
-        // ✅ [Fix: 移动定义到这里] 统一在最前面将原始数据转为 Turf Feature，供后续所有步骤使用
+        //   [Fix: 移动定义到这里] 统一在最前面将原始数据转为 Turf Feature，供后续所有步骤使用
         const features = rawFeatures.map((f: any) => turf.feature(f.geometry, f.properties));
         
-        // ✅ [新增] 预判数据类型 (用于覆盖率计算)
+        //   [新增] 预判数据类型 (用于覆盖率计算)
         const firstGeom = features[0]?.geometry.type;
         const isPolygonLayer = firstGeom?.includes('Polygon');
         const isLineLayer = firstGeom?.includes('Line');
@@ -564,7 +584,7 @@ export const exportGrid = async (req: Request, res: Response): Promise<void> => 
         grid.features.forEach((cell: any) => {
             const props: any = { 
                 count: 0, 
-                value: 0, // ✅ [新增] 显式初始化 value 字段
+                value: 0, //   [新增] 显式初始化 value 字段
                 _weight: 0 
             };
             
@@ -591,7 +611,7 @@ export const exportGrid = async (req: Request, res: Response): Promise<void> => 
             const geometryType = feature.geometry.type;
             const candidateCells = gridIndex.query(feature);
 
-            // ✅ [新增] 计算 rawValue (核心指标)
+            //   [新增] 计算 rawValue (核心指标)
             let rawValue = 1; // 默认为计数 (count)
             if (method === 'coverage') {
                 if (isPolygonLayer) {
@@ -638,7 +658,7 @@ export const exportGrid = async (req: Request, res: Response): Promise<void> => 
                         cell.properties.count += 1;
                         cell.properties._weight += ratio;
                         
-                        // ✅ [新增] 累加核心 Value
+                        //   [新增] 累加核心 Value
                         // Count模式: 1 * ratio
                         // Coverage模式: Area * ratio (即网格内的实际面积)
                         cell.properties.value += rawValue * ratio;
@@ -669,7 +689,7 @@ export const exportGrid = async (req: Request, res: Response): Promise<void> => 
         const resultFeatures = grid.features.filter((f: any) => f.properties.count > 0);
         
         resultFeatures.forEach((cell: any) => {
-            // ✅ [新增] 覆盖率模式归一化处理
+            //   [新增] 覆盖率模式归一化处理
             if (method === 'coverage') {
                 const cellAreaSqM = turf.area(cell);
                 
@@ -804,7 +824,7 @@ export const executeTableFormula = async (req: Request, res: Response) => {
         modelDef = { parameters: [] } as any; 
     }
 
-    // 🌟 核心突破：动态参数分类与路由 (保持原有优秀逻辑)
+    //   核心突破：动态参数分类与路由 (保持原有优秀逻辑)
     if (rawArgs && Array.isArray(rawArgs)) {
         reqColumns = [];
         reqParams = {};
@@ -819,7 +839,7 @@ export const executeTableFormula = async (req: Request, res: Response) => {
                 reqParams[paramName] = arg.slice(1, -1);
             } else {
                 reqColumns.push(arg);
-                reqParams[paramName] = arg;       // 🌟 2. 【新增这一行】：绑定参数键值对！
+                reqParams[paramName] = arg;       //   2. 【新增这一行】：绑定参数键值对！
             }
         });
     }
@@ -827,10 +847,10 @@ export const executeTableFormula = async (req: Request, res: Response) => {
     console.log(`[BFF调度层] 向底层空间引擎下发计算指令... 文件: ${fileId}, 模型: ${modelName}`);
 
     // ==========================================
-    // 🌟 终极瘦身：彻底斩断 Node.js 的数据搬运！
+    //   终极瘦身：彻底斩断 Node.js 的数据搬运！
     // ==========================================
 
-    // 🌟 新增：合并前端传来的列（reqColumns）与模型注册时 AI 提取的必填列（requiredColumns）
+    //   新增：合并前端传来的列（reqColumns）与模型注册时 AI 提取的必填列（requiredColumns）
     // 用 Set 去重，防止同一个列名传两遍
     const finalColumns = Array.from(new Set([
         ...reqColumns, 
@@ -841,12 +861,12 @@ export const executeTableFormula = async (req: Request, res: Response) => {
     const response = await axios.post<PythonApiResponse>(`${PYTHON_API_URL}/models/execute`, {
       model_name: modelName,
       file_id: fileId,         
-      columns: finalColumns,   // 🌟 将合并后的终极列名数组发给 Python 引擎
+      columns: finalColumns,   //   将合并后的终极列名数组发给 Python 引擎
       parameters: reqParams    
     });
 
     // ==========================================
-    // 🌟 接收轻量级结果与协同渲染
+    //   接收轻量级结果与协同渲染
     // ==========================================
     // 此时 Python 已经在底层完成了“拉取 -> 计算 -> MongoDB 回写”的闭环！
     // Node.js 只需要拿到轻量级的绘图数据返回给前端即可。
@@ -868,7 +888,7 @@ export const executeTableFormula = async (req: Request, res: Response) => {
 };
 
 // ==========================================
-// 🌟 核心突破：Agentic Workflow 模型智能生成与元数据提取
+//   核心突破：Agentic Workflow 模型智能生成与元数据提取
 // ==========================================
 export const createModelViaNaturalLanguage = async (req: Request, res: Response) => {
     try {
@@ -884,7 +904,7 @@ export const createModelViaNaturalLanguage = async (req: Request, res: Response)
         // 1. 唤醒大模型，返回结构化的 JSON 数据（包含名字、描述、参数、代码）
         const aiResult = await generateModelCodeFromAI(userDescription);
         
-        // 🌟 关键修改：在这里解构出 parameters
+        //   关键修改：在这里解构出 parameters
         const { modelName, displayName, description, parameters, requiredColumns, pythonCode } = aiResult;
 
         console.log(`[GeoAI Agent] 思考完成！模型名: ${modelName}，提取到 ${parameters?.length || 0} 个参数。准备注入系统。`);
@@ -906,8 +926,8 @@ export const createModelViaNaturalLanguage = async (req: Request, res: Response)
                 modelName: modelName.toUpperCase(), 
                 displayName: displayName, 
                 description: description, 
-                parameters: parameters || [], // 🌟 核心：把大模型解析出的参数定义直接存入数据库！
-                requiredColumns: requiredColumns || [], // 🌟 新增：存入必须的列名
+                parameters: parameters || [], //   核心：把大模型解析出的参数定义直接存入数据库！
+                requiredColumns: requiredColumns || [], //   新增：存入必须的列名
                 status: 'active' 
             },
             { upsert: true, new: true }

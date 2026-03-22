@@ -279,14 +279,14 @@ function parseCsvToGeoJSON(csvString: string) {
             try {
                 if (typeof rawGeom === 'string') {
 
-                    // ✅ 新增：WKT 格式检测与解析 (针对 GBMI 数据)
+                    //   新增：WKT 格式检测与解析 (针对 GBMI 数据)
                     // 如果是以 P (Point/Polygon), L (LineString), M (Multi...) 开头，通常是 WKT
                     if (/^[A-Z]/.test(rawGeom.trim())) {
                         try {
                             const geoJson = parse(rawGeom.trim()); // 这里假设您已经改用 import { parse } from 'wellknown'
                             
                             if (geoJson) {
-                                // ✅强制转换为 any，绕过 TypeScript 对 GeometryCollection 的检查
+                                //  强制转换为 any，绕过 TypeScript 对 GeometryCollection 的检查
                                 const geometry = geoJson as any;
 
                                 // 只有当 coordinates 存在时才赋值
@@ -304,7 +304,7 @@ function parseCsvToGeoJSON(csvString: string) {
                     if (rawGeom.trim().startsWith('[') || rawGeom.trim().startsWith('{')) {
                         // 它把死板的文本字符串，变成活生生的 JavaScript 对象或数组。
                         // coordinates = JSON.parse(rawGeom);
-                        // ✅智能识别坐标数组或完整 GeoJSON 对象
+                        //  智能识别坐标数组或完整 GeoJSON 对象
                         const parsed = JSON.parse(rawGeom);
                         if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && parsed.type && parsed.coordinates) {
                              // 如果是完整对象 {"type":"Polygon", "coordinates":...}
@@ -346,7 +346,7 @@ function parseCsvToGeoJSON(csvString: string) {
                 if (geoType.toLowerCase().includes('polygon')) geoType = 'Polygon';
                 if (geoType.toLowerCase().includes('line')) geoType = 'LineString';
                 if (geoType.toLowerCase().includes('point')) geoType = 'Point';
-            } else if(geoType === 'Unknown'){// ✅只有当类型未知时才进行推断 (防止覆盖上面解析出的正确类型)
+            } else if(geoType === 'Unknown'){//  只有当类型未知时才进行推断 (防止覆盖上面解析出的正确类型)
                 if (Array.isArray(coordinates)) {
                     const depth = getArrayDepth(coordinates);
                     if (depth === 1) geoType = 'Point';
@@ -691,7 +691,7 @@ export const uploadFile = async (req: Request, res: Response) => {
         // 保存到数据库
         const savedFileNode = await fileNode.save();
 
-        // ✅新增重构：将解析出的要素存入 Feature 集合
+        //  新增重构：将解析出的要素存入 Feature 集合
         if (parsedData) {
             // 情况 A: GeoJSON FeatureCollection
             if (parsedData.type === 'FeatureCollection' && Array.isArray(parsedData.features)) {
@@ -700,7 +700,7 @@ export const uploadFile = async (req: Request, res: Response) => {
                 // 构造要插入的文档数组
                 const featuresToInsert = parsedData.features.map((f: any) => {
                     
-                    // ✅在此处计算中心点
+                    //  在此处计算中心点
                     if (f.geometry) {
                         try {
                             // 确保 properties 存在
@@ -1035,7 +1035,7 @@ export const renameNode = async (req: Request, res: Response) => {
 /**
  * 删除节点 控制器
  * DELETE /api/files/:id
- * ✅修改：同步删除Feature表里的成千上万条数据
+ *  修改：同步删除Feature表里的成千上万条数据
  */
 export const deleteNode = async (req: Request, res: Response) => {
     try {
@@ -1052,7 +1052,7 @@ export const deleteNode = async (req: Request, res: Response) => {
                     // 删除物理文件 (保持不变)
                     await deletePhysicalFiles(child.path);
                     
-                    // ✅【新增】删除 MongoDB 中的关联要素数据（features集合中）
+                    //  【新增】删除 MongoDB 中的关联要素数据（features集合中）
                     await Feature.deleteMany({ fileId: child._id });
                 }
                 // 删除节点在数据库的记录（filenodes集合中）
@@ -1082,7 +1082,7 @@ export const deleteNode = async (req: Request, res: Response) => {
             await deleteRecursive(node._id.toString());
         } else {
             await deletePhysicalFiles(node.path);
-            // ✅【新增】如果是文件，删除其对应的 Feature 数据（features集合中）
+            //  【新增】如果是文件，删除其对应的 Feature 数据（features集合中）
             await Feature.deleteMany({ fileId: node._id });
         }
 
@@ -1136,11 +1136,11 @@ export const updateFileData = async (req: Request, res: Response) => {
 
     console.log(`[Update] 收到更新请求 - 文件ID: ${fileId}, 记录ID: ${recordId}`);
 
-    // ✅增加黑名单过滤
+    //  增加黑名单过滤
     // 定义不需要存入数据库的临时字段列表
     const ignoreFields = ['_geometry', '_geom_coords', '_lng', '_lat', '_cp'];
 
-    // ✅更新features集合的值
+    //  更新features集合的值
     const updateFields: Record<string, any> = {};
     Object.keys(data).forEach(key => {
         // 只有当 key 不在黑名单里时，才加入更新列表
@@ -1165,7 +1165,7 @@ export const updateFileData = async (req: Request, res: Response) => {
         return res.status(404).json({ code: 404, message: '未找到指定记录' });
     }
 
-    // ✅异步同步修改硬盘文件（建议在需要保存csv的时候再使用）
+    //  异步同步修改硬盘文件（建议在需要保存csv的时候再使用）
     // // 1. 数据库校验
     // const dbNode = await FileNode.findById(fileId);
     // if (!dbNode || !dbNode.path) return res.status(404).json({ code: 404, message: '文件不存在' });
@@ -1259,7 +1259,7 @@ export const updateFileData = async (req: Request, res: Response) => {
 export const addRow = async (req: Request, res: Response) => {
     try {
         const { id } = req.params;
-        // ✅直接在features集合里加一条新记录
+        //  直接在features集合里加一条新记录
         // 1. 检查文件是否存在
         const fileNode = await FileNode.findById(id);
         if (!fileNode) return res.status(404).json({ code: 404, message: '文件不存在' });
@@ -1267,7 +1267,7 @@ export const addRow = async (req: Request, res: Response) => {
         // 2. 构造新要素
         // 自动生成一个唯一 ID，方便前端 React 渲染 list key
         const newFeatureData = {
-            fileId: id, // ✅ 绑定外键
+            fileId: id, //   绑定外键
             type: 'Feature',
             geometry: null, // 新行默认没有地理坐标
             properties: {
@@ -1289,7 +1289,7 @@ export const addRow = async (req: Request, res: Response) => {
             data: savedFeature // 返回新生成的对象（带 _id）
         });
 
-        // // ✅同步修改硬盘中的文件，等需要保存/下载csv的时候再使用
+        // //  同步修改硬盘中的文件，等需要保存/下载csv的时候再使用
         // // 使用 const 接收 DB 查询结果，确保类型收窄
         // const dbNode = await FileNode.findById(id);
         // if (!dbNode || !dbNode.path) return res.status(404).json({ code: 404, message: '文件不存在' });
@@ -1347,7 +1347,7 @@ export const deleteRow = async (req: Request, res: Response) => {
         const { id } = req.params;
         const { recordId } = req.body;
 
-        // ✅在features集合中修改
+        //  在features集合中修改
         // 1. 校验文件
         const fileNode = await FileNode.findById(id);
         if (!fileNode) return res.status(404).json({ code: 404, message: '文件不存在' });
@@ -1369,7 +1369,7 @@ export const deleteRow = async (req: Request, res: Response) => {
 
         res.status(200).json({ code: 200, message: '删除行成功' });
 
-        // // ✅同步修改硬盘中的文件，等需要保存/下载csv的时候再使用
+        // //  同步修改硬盘中的文件，等需要保存/下载csv的时候再使用
         // // 1. 使用 const 接收 DB 查询结果，确保类型收窄
         // const dbNode = await FileNode.findById(id);
         // if (!dbNode || !dbNode.path) return res.status(404).json({ code: 404, message: '文件不存在' });
@@ -1459,7 +1459,7 @@ export const addColumn = async (req: Request, res: Response) => {
 
         res.status(200).json({ code: 200, message: '新增列成功' });
 
-        // // ✅同步修改硬盘中的文件，等需要保存/下载csv的时候再使用
+        // //  同步修改硬盘中的文件，等需要保存/下载csv的时候再使用
         // // 1. 使用 const 接收 DB 查询结果，确保类型收窄
         // const dbNode = await FileNode.findById(id);
         // if (!dbNode || !dbNode.path) return res.status(404).json({ code: 404, message: '文件不存在' });
@@ -1523,7 +1523,7 @@ export const deleteColumn = async (req: Request, res: Response) => {
 
         res.status(200).json({ code: 200, message: '删除列成功' });
 
-        // // ✅同步修改硬盘中的文件，等需要保存/下载csv的时候再使用
+        // //  同步修改硬盘中的文件，等需要保存/下载csv的时候再使用
         // // 1. 使用 const 接收 DB 查询结果，确保类型收窄
         // const dbNode = await FileNode.findById(id);
         // if (!dbNode || !dbNode.path) return res.status(404).json({ code: 404, message: '文件不存在' });

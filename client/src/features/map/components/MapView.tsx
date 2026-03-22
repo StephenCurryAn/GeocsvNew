@@ -2,14 +2,14 @@ import React, { useEffect, useRef, useState } from 'react';
 import * as maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { bbox } from '@turf/turf';
-// ✅ [修改] 引入所需的 Ant Design 组件
+//   [修改] 引入所需的 Ant Design 组件
 import { 
     Button, Tooltip, App, Checkbox, Spin, Select, ConfigProvider, 
     theme, Popover, Segmented, Slider, Badge 
 } from 'antd';
 import ChartOverlay, { THEME_COLORS, CONTRAST_PALETTES } from './ChartOverlay';
 import { geoService } from '../../../services/geoService';
-// ✅ [修改] 引入图标
+//   [修改] 引入图标
 import { 
     BarChartOutlined, 
     GlobalOutlined,      
@@ -36,7 +36,7 @@ interface MapViewProps {
     onFeatureClick?: (feature: any) => void;
 }
 
-// ✅ [修改] 扩展 GridConfig 接口，增加 coverage
+//   [修改] 扩展 GridConfig 接口，增加 coverage
 interface GridConfig {
     shape: 'hex' | 'square';
     size: number;
@@ -47,7 +47,7 @@ interface GridConfig {
 }
 
 // --- 配置常量 ---
-// ✅ [修改] 1. 升级配色方案库：提供高区分度的色阶 (High Distinction Palettes)
+//   [修改] 1. 升级配色方案库：提供高区分度的色阶 (High Distinction Palettes)
 const COLOR_SCHEMES = {
     // A. 经典红黄蓝 (适合展示差异，对比极强)
     rdylbu: { 
@@ -91,7 +91,7 @@ const COLOR_SCHEMES = {
     }
 };
 
-// ✅ [新增] 颜色插值辅助函数 (Hex -> RGB -> Interpolate -> Hex)
+//   [新增] 颜色插值辅助函数 (Hex -> RGB -> Interpolate -> Hex)
 // 简单的线性插值，用于在JS端计算颜色
 function hexToRgb(hex: string) {
     const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
@@ -175,7 +175,7 @@ const BASEMAPS = [
 ];
 
 const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeature, onFeatureClick }) => {
-    // ✅ 修改 2: 获取上下文感知的 message 实例
+    //   修改 2: 获取上下文感知的 message 实例
     // 注意：MapView 必须被包裹在 <App> 组件中（通常在 main.tsx 或 App.tsx 已经包了）
     const { message } = App.useApp();
     const mapContainer = useRef<HTMLDivElement>(null);
@@ -186,7 +186,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
 
     const [isMapLoaded, setIsMapLoaded] = useState(false);
     const [numericFields, setNumericFields] = useState<string[]>([]); // 可用于映射的数值字段
-    // ✅ [新增] 存储文本型字段，用于分类拆分
+    //   [新增] 存储文本型字段，用于分类拆分
     const [stringFields, setStringFields] = useState<string[]>([]);
 
     const [activeField, setActiveField] = useState<string | null>(null); // 当前选中的映射字段
@@ -196,17 +196,17 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
     const [uniqueFieldValues, setUniqueFieldValues] = useState<(string | number)[]>([]); // 存放当前字段所有的唯一值
     const [activeFilterValues, setActiveFilterValues] = useState<(string | number)[]>([]); // 存放当前勾选的值
 
-    // ✅状态管理 - 全量数据相关
+    //  状态管理 - 全量数据相关
     const [showAll, setShowAll] = useState(false);
     const [allData, setAllData] = useState<any>(null);
     const [loading, setLoading] = useState(false);
 
-    // ✅ [新增] 空间网格相关状态
+    //   [新增] 空间网格相关状态
     const [isGridMode, setIsGridMode] = useState(false);
     const [gridData, setGridData] = useState<any>(null); // 存储后端返回的 GeoJSON
     const [gridLoading, setGridLoading] = useState(false);
 
-    // ✅ [修改] 状态初始化
+    //   [修改] 状态初始化
     const [gridConfig, setGridConfig] = useState<GridConfig>({
         shape: 'hex',
         size: 5,
@@ -215,27 +215,27 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
         categoryFields: [] // 默认为空数组
     });
 
-    // ✅ [修改] 决定当前显示数据的逻辑
+    //   [修改] 决定当前显示数据的逻辑
     // 优先级：网格模式(gridData) > 全量模式(allData) > 分页模式(data)
     const displayData = (isGridMode && gridData) 
         ? gridData 
         : ((showAll && allData) ? allData : data);
 
-    // ✅使用 Ref 来始终追踪最新的 displayData
+    //  使用 Ref 来始终追踪最新的 displayData
     // Ref 可以穿透闭包，确保在事件监听器（如切换底图）中拿到的是这一刻应该显示的数据（全量），而不是旧数据
     const displayDataRef = useRef(displayData);
-    // ✅每次组件渲染时，都更新 ref 的值为最新的 displayData
+    //  每次组件渲染时，都更新 ref 的值为最新的 displayData
     displayDataRef.current = displayData;
 
-    // ✅ [新增] 获取 Store 状态
+    //   [新增] 获取 Store 状态
     const { isChartVisible, setChartVisible, generatedColumns,
         pivotData, pivotConfig, // 数据
         isMapLinkageEnabled, highlightedCategory, mapColorTheme,// 联动状态
-        // ✅ [新增] 获取 activeColumn
+        //   [新增] 获取 activeColumn
         activeColumn 
     } = useAnalysisStore();
 
-    // ✅切换文件时的自动清理逻辑
+    //  切换文件时的自动清理逻辑
     useEffect(() => {
         // 只要 fileId 变了，或者 fileName 变了，说明切文件了
         // 立即重置勾选框，并清空内存中的 allData
@@ -246,7 +246,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
         }
     }, [fileId, fileName]); // 依赖项加上 fileName 双重保险
 
-    // ✅处理复选框点击事件
+    //  处理复选框点击事件
     const handleShowAllChange = async (e: any) => {
         const isChecked = e.target.checked;
         
@@ -305,7 +305,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
             });
 
             mapInstance.current.on('load', () => {
-                console.log('✅ 地图加载完成');
+                console.log('  地图加载完成');
                 setIsMapLoaded(true);
                 // 确保地图撑满屏幕，防止显示bug
                 mapInstance.current?.resize();
@@ -323,7 +323,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
         };
     }, []);
 
-    // ✅ [修改] 字段提取逻辑分离：
+    //   [修改] 字段提取逻辑分离：
     // 1. numericFields (数值): 从 displayData 提取，用于当前地图的颜色渲染（支持网格的 value 字段）
     // 2. stringFields (文本): 始终从 原始数据(data/allData) 提取，用于导出时的分类拆分
     useEffect(() => {
@@ -351,7 +351,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
         if (sourceData && sourceData.features && sourceData.features.length > 0) {
             const rawProps = sourceData.features[0].properties;
             
-            // ✅ [核心修复] 从原始数据中提取分类字段
+            //   [核心修复] 从原始数据中提取分类字段
             const strFields = Object.keys(rawProps).filter(key => {
                 const val = rawProps[key];
                 // 排除系统字段和非字符串字段
@@ -364,7 +364,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
         
     }, [displayData, data, allData, showAll, isGridMode]); // 依赖项加上 data 等
 
-    // ✅ [新增] Effect 3: 提取当前渲染字段的唯一值，作为下拉列表的选项
+    //   [新增] Effect 3: 提取当前渲染字段的唯一值，作为下拉列表的选项
     useEffect(() => {
         // 如果没选字段、或者处于网格模式、或者没数据，清空过滤选项
         if (!activeField || activeField === 'none' || isGridMode || !displayData) {
@@ -392,7 +392,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
         setActiveFilterValues(uniqueVals); // 默认全部勾选
     }, [activeField, displayData, isGridMode]);
 
-    // ✅ [新增] Effect 4: 将用户的过滤选项应用到地图图层 (Filter 属性)
+    //   [新增] Effect 4: 将用户的过滤选项应用到地图图层 (Filter 属性)
     useEffect(() => {
         const map = mapInstance.current;
         if (!map || !isMapLoaded) return;
@@ -439,7 +439,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
     }, [activeFilterValues, activeField, isGridMode, isMapLoaded]);
 
 
-    // ✅ [新增] 全选/清空处理函数
+    //   [新增] 全选/清空处理函数
     const handleSelectAllCategories = () => {
         if (gridConfig.categoryFields.length === stringFields.length) {
             // 如果已全选，则清空
@@ -450,13 +450,13 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
         }
     };
 
-    // ✅ [新增] 生成网格处理函数
+    //   [新增] 生成网格处理函数
     const handleGenerateGrid = async () => {
         if (!fileId) {
             message.error("无法获取文件ID，请先保存文件");
             return;
         }
-        // ✅ 修正逻辑：计数(count) 和 覆盖率(coverage) 都不需要选择数值字段
+        //   修正逻辑：计数(count) 和 覆盖率(coverage) 都不需要选择数值字段
         if (gridConfig.method !== 'count' && gridConfig.method !== 'coverage' && !gridConfig.targetField) {
             message.warning("非计数/覆盖率模式下，请选择一个数值字段");
             return;
@@ -487,7 +487,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
         }
     };
 
-    // ✅ [新增] 重置网格，切回原始数据
+    //   [新增] 重置网格，切回原始数据
     const handleResetGrid = () => {
         setIsGridMode(false);
         setGridData(null);
@@ -496,7 +496,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
     };
 
     /**
-     * ✅ [修改] 核心渲染逻辑：只负责 Geometry 和基础图层架构
+     *   [修改] 核心渲染逻辑：只负责 Geometry 和基础图层架构
      * (移除了底部的 map.on 事件绑定，防止重复)
      */
     const renderGeoJSON = (geoJSON: any) => {
@@ -508,8 +508,8 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
         // 清理旧图层 (注意名字变了)
         const layersToRemove = [
             'geo-fill-layer', 
-            'geo-polygon-border', // ✅ 新图层名
-            'geo-linestring-main', // ✅ 新图层名
+            'geo-polygon-border', //   新图层名
+            'geo-linestring-main', //   新图层名
             'geo-line-layer', // 旧图层名(兼容清理)
             'geo-point-layer', 
             'geo-highlight-fill', 'geo-highlight-line', 'geo-highlight-point'
@@ -528,26 +528,26 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
             paint: { 
                 'fill-color': '#00e5ff', 
                 'fill-opacity': 0.6,
-                // ✅ [修改] 智能边框：网格模式透明，普通模式保留淡淡的轮廓
+                //   [修改] 智能边框：网格模式透明，普通模式保留淡淡的轮廓
                 'fill-outline-color': isGridMode ? 'rgba(0,0,0,0)' : 'rgba(0,0,0,0.1)' 
             },
             filter: ['==', '$type', 'Polygon']
         });
-        // 2. ✅ 面边框图层 (Polygon Border) - 只渲染 Polygon 的轮廓
+        // 2.   面边框图层 (Polygon Border) - 只渲染 Polygon 的轮廓
         // 它的任务是：高亮时变白，不参与颜色映射
         map.addLayer({
             id: 'geo-polygon-border', type: 'line', source: sourceId,
             paint: { 
                 // 使用极低透明度的白色或黑色，取决于你的底图，这里用通用淡白
                 'line-color': 'rgba(255, 255, 255, 0.08)', 
-                // ✅ [修改] 智能线宽：网格模式隐藏(0)，普通模式显示(1)
+                //   [修改] 智能线宽：网格模式隐藏(0)，普通模式显示(1)
                 'line-width': isGridMode ? 0 : 1,
                 'line-opacity': 0.5
             },
             filter: ['==', '$type', 'Polygon']
         });
 
-        // 3. ✅ 线实体图层 (LineString Main) - 只渲染 LineString
+        // 3.   线实体图层 (LineString Main) - 只渲染 LineString
         // 它的任务是：像面一样展示炫酷的渐变色
         map.addLayer({
             id: 'geo-linestring-main', type: 'line', source: sourceId,
@@ -581,7 +581,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
     };
 
 /**
-     * ✅ [新增] 专门的 Effect 处理事件绑定 (只运行一次或当 isMapLoaded 变时)
+     *   [新增] 专门的 Effect 处理事件绑定 (只运行一次或当 isMapLoaded 变时)
      * 解决了重复绑定导致的性能问题
      */
     useEffect(() => {
@@ -592,7 +592,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
         const interactiveLayers = [
             'geo-fill-layer', 
             'geo-polygon-border', 
-            'geo-linestring-main', // ✅
+            'geo-linestring-main', //  
             'geo-point-layer'
         ];
 
@@ -633,7 +633,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
     }, [isMapLoaded]); // 只依赖 isMapLoaded
 
 
-    // ✅ [修改] 核心联动着色逻辑：增强高亮对比度
+    //   [修改] 核心联动着色逻辑：增强高亮对比度
     const updateLinkageColors = () => {
         const map = mapInstance.current;
         // 卫兵：只要没有核心图层就退出
@@ -684,7 +684,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
             const maxVal = Math.max(...targetValues);
             const range = maxVal - minVal;
 
-            // ✅ [核心修改 1] 使用 'to-string' 强制转字符串，规避浮点数分支报错
+            //   [核心修改 1] 使用 'to-string' 强制转字符串，规避浮点数分支报错
             // 原来: ['match', ['get', rowField]]
             // 现在: ['match', ['to-string', ['get', rowField]]]
             const colorMatch: any[] = ['match', ['to-string', ['get', rowField]]];
@@ -718,7 +718,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                     calculatedOpacity = 0.2 + (normalized * 0.7); 
                 }
 
-                // ✅ 修复后：统统转成字符串进行比对，无视 String 和 Number 的类型差异
+                //   修复后：统统转成字符串进行比对，无视 String 和 Number 的类型差异
                 const isSelected = highlightedCategory != null && String(highlightedCategory) === String(item.rowKey);
                 const hasActiveSelection = !!highlightedCategory;
 
@@ -729,10 +729,10 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                 let finalBorderWidth = 1;
                 let finalBorderColor = 'rgba(255,255,255,0.3)';
                 
-                // ✅ Line Main Params
+                //   Line Main Params
                 let finalLineWidth = 3; // 默认线宽
 
-                // ✅ Point Params (默认值)
+                //   Point Params (默认值)
                 let finalPointRadius = 4;
                 let finalPointStrokeWidth = 1;
                 let finalPointStrokeColor = 'rgba(255,255,255,0.2)';
@@ -747,10 +747,10 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                         finalBorderWidth = 4;
                         finalBorderColor = '#ffffff';
 
-                        // ✅ Line: 线条加粗
+                        //   Line: 线条加粗
                         finalLineWidth = 6; 
 
-                        // ✅ Point: 变大，白边框加粗
+                        //   Point: 变大，白边框加粗
                         finalPointRadius = 6;
                         finalPointStrokeWidth = 2;
                         finalPointStrokeColor = '#ffffff';
@@ -763,17 +763,17 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                         finalBorderWidth = 1;
                         finalBorderColor = 'rgba(255,255,255,0.1)';
 
-                        // ✅ Line: 线条变细
+                        //   Line: 线条变细
                         finalLineWidth = 2;
 
-                        // ✅ Point: 变小，边框几乎隐形
+                        //   Point: 变小，边框几乎隐形
                         finalPointRadius = 1; // 稍微变小一点，退居次要位置
                         finalPointStrokeWidth = 1;
                         finalPointStrokeColor = 'rgba(255,255,255,0.1)'; // 关键：把边框也变暗！
                     }
                 }
 
-                // ✅ [核心修改 2] 将匹配值也转为字符串 String(item.rowKey)
+                //   [核心修改 2] 将匹配值也转为字符串 String(item.rowKey)
                 const matchKey = String(item.rowKey);
 
                 colorMatch.push(matchKey, finalColor);
@@ -796,7 +796,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
             
             // 基础颜色和透明度
             colorMatch.push('transparent'); 
-            opacityMatch.push(0.0); // 🌟 永远为0，彻底透明
+            opacityMatch.push(0.0); //   永远为0，彻底透明
             
             // Polygon (面) 边框
             borderStrokeWidthMatch.push(0);
@@ -806,13 +806,13 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
             mainLineWidthMatch.push(0);
             
             // Point (点) 属性
-            pointRadiusMatch.push(0);               // 🌟 半径改为 0，直接消失！
+            pointRadiusMatch.push(0);               //   半径改为 0，直接消失！
             pointStrokeWidthMatch.push(0);          // 无描边
             pointStrokeColorMatch.push('rgba(0,0,0,0)');
             
             // ============ 应用属性 ============
 
-            try { // ✅ [新增] 加上 try-catch 保护
+            try { //   [新增] 加上 try-catch 保护
                 // 1. Polygon Fill (面填充)
                 if (map.getLayer('geo-fill-layer')) {
                     map.setPaintProperty('geo-fill-layer', 'fill-color', colorMatch);
@@ -845,7 +845,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
             }
 
         } else {
-            // ✅ [修复] 回退逻辑 (保持不变)
+            //   [修复] 回退逻辑 (保持不变)
             // 1. 先尝试执行普通分级渲染 (如果用户选了字段)
             updateChoroplethColors();
             
@@ -853,13 +853,13 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
             // 面图层
             if (map.getLayer('geo-fill-layer')) {
                 map.setPaintProperty('geo-fill-layer', 'fill-opacity', 0.6);
-                // ✅ [修改] 恢复时也看模式
+                //   [修改] 恢复时也看模式
                 map.setPaintProperty('geo-fill-layer', 'fill-outline-color', isGridMode ? 'rgba(0,0,0,0)' : 'rgba(0,0,0,0)');
             }
             
             // 面边框 (Polygon Border)
             if (map.getLayer('geo-polygon-border')) {
-                // ✅ [修改] 恢复时也看模式
+                //   [修改] 恢复时也看模式
                 map.setPaintProperty('geo-polygon-border', 'line-width', isGridMode ? 0 : 1);
                 map.setPaintProperty('geo-polygon-border', 'line-color', activeBasemap === 'light' ? '#666' : '#a5f3fc');
             }
@@ -882,7 +882,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
     };
 
     /**
-     * ✅ [修改] 更新颜色映射 (Choropleth) - 采用“分段阶梯”渲染以增强区分度，支持值过滤变暗
+     *   [修改] 更新颜色映射 (Choropleth) - 采用“分段阶梯”渲染以增强区分度，支持值过滤变暗
      */
     const updateChoroplethColors = () => {
         // 卫兵：如果开启了联动模式且符合条件，直接退出
@@ -928,7 +928,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
 
         if (isStringField) {
             // ==========================================
-            // 🌟 文本字段：分类唯一值渲染 (Categorical Match)
+            //   文本字段：分类唯一值渲染 (Categorical Match)
             // ==========================================
             baseColorExpression = ['match', ['get', activeField]];
             
@@ -976,7 +976,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                     }
                 }
         }
-        // 🌟🌟 5. [核心修改] 构建“是否勾选”的判断逻辑 🌟🌟
+        //    5. [核心修改] 构建“是否勾选”的判断逻辑   
         // 如果用户把下拉框清空了，为了防止底层引擎报错，给一个绝对匹配不到的值
         const safeFilterValues = activeFilterValues.length > 0 ? activeFilterValues : ['__NOTHING_SELECTED__'];
         
@@ -1000,8 +1000,8 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
 
         // 点 (Point) 属性
         const finalPointColor = baseColorExpression;                                // 保留原色
-        const finalPointOpacity = ['case', isMatched, 1.0, 0.2];                    // 🌟 给 20% 的透明度，确保能看清原本的颜色，但又很暗淡
-        const finalPointRadius = ['case', isMatched, 6, 2];                         // 🌟 未勾选缩小到 2px
+        const finalPointOpacity = ['case', isMatched, 1.0, 0.2];                    //   给 20% 的透明度，确保能看清原本的颜色，但又很暗淡
+        const finalPointRadius = ['case', isMatched, 6, 2];                         //   未勾选缩小到 2px
         const finalPointStrokeWidth = ['case', isMatched, 1, 0];                    // 未勾选无描边
         const finalPointStrokeColor = ['case', isMatched, 'rgba(255,255,255,0.3)', 'rgba(0,0,0,0)'];
 
@@ -1027,7 +1027,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
         }
     };
 
-// ✅ [修改] Effect 1: 仅处理“数据几何渲染” (Geometry)
+//   [修改] Effect 1: 仅处理“数据几何渲染” (Geometry)
     // 只有当文件数据变化时，重绘
     useEffect(() => {
         if (isMapLoaded && displayData) {
@@ -1037,7 +1037,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
     }, [displayData, isMapLoaded]); 
 
 
-    // ✅ [修改] Effect 2: 仅处理“样式/颜色更新” (Paint)
+    //   [修改] Effect 2: 仅处理“样式/颜色更新” (Paint)
     // 当联动开关、高亮状态、透视数据、或主题色变化时，只更新颜色
     useEffect(() => {
         if (isMapLoaded && displayData) {
@@ -1045,7 +1045,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
         }
     }, [
         isMapLinkageEnabled, pivotData, pivotConfig, 
-        highlightedCategory, mapColorTheme, // ✅ 依赖新状态
+        highlightedCategory, mapColorTheme, //   依赖新状态
         activeField, activeScheme
     ]);
     
@@ -1069,7 +1069,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                 // 立即更新 Ref，防止后续的 styledata 事件重复打印
                 prevBasemapRef.current = activeBasemap;
             }
-            // ✅这里全部改成使用 displayDataRef.current
+            //  这里全部改成使用 displayDataRef.current
             const currentData = displayDataRef.current;
             // 只有当地图样式完全加载，且我们需要的数据存在时才执行
             if (map.getStyle() && currentData) {
@@ -1172,7 +1172,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                 .filter(([key]) => {
                     // 1. 不显示 id (因为标题栏有了)
                     if (key === 'id') return false;
-                    // 2. ✅不显示任何以 _ 开头的临时字段
+                    // 2.  不显示任何以 _ 开头的临时字段
                     if (key.startsWith('_')) return false;
                     // 3. 不显示 cp (中心点坐标)
                     if (key === 'cp') return false;
@@ -1217,7 +1217,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
         }
     }, [selectedFeature, isMapLoaded]);
 
-    // ✅ [新增] 导出处理函数
+    //   [新增] 导出处理函数
     const handleExport = async () => {
         if (!fileId) return;
         message.loading({ content: '正在生成并导出全量数据...', key: 'exporting' });
@@ -1229,9 +1229,9 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
         }
     };
 
-    // ✅ [新增] 网格配置面板的 UI 内容
+    //   [新增] 网格配置面板的 UI 内容
     const gridConfigContent = (
-        // ✅ [修改] 移除 Space 组件，改用 div + flex 布局，彻底解决 direction 警告
+        //   [修改] 移除 Space 组件，改用 div + flex 布局，彻底解决 direction 警告
         <div className="w-64 p-1 flex flex-col gap-2">
             
             {/* 1. 形状选择 */}
@@ -1253,14 +1253,14 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
             <div>
                 <div className="flex justify-between text-xs text-gray-400 mb-1">
                     <span>网格大小 (Radius)</span>
-                    {/* ✅ [修改] 优化显示逻辑，小于1km显示米 */}
+                    {/*   [修改] 优化显示逻辑，小于1km显示米 */}
                     <span className="text-cyan-400 font-mono">
                         {gridConfig.size < 1 
                             ? `${Math.round(gridConfig.size * 1000)} m` 
                             : `${gridConfig.size} km`}
                     </span>
                 </div>
-                {/* ✅ [修改] 调整 Slider 参数：min=0.1 (100m), step=0.1 */}
+                {/*   [修改] 调整 Slider 参数：min=0.1 (100m), step=0.1 */}
                 <Slider
                     min={0.1} 
                     max={50}
@@ -1283,14 +1283,14 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                         onChange={(val) => setGridConfig(prev => ({ ...prev, method: val as any }))}
                         options={[
                             { label: '计数 (Count)', value: 'count' },
-                            // ✅ [新增] 覆盖率选项
+                            //   [新增] 覆盖率选项
                             { label: '覆盖率/密度 (Coverage)', value: 'coverage' }, 
                             { label: '求和 (Sum)', value: 'sum' },
                             { label: '平均 (Avg)', value: 'avg' },
                             { label: '最大 (Max)', value: 'max' },
                             { label: '最小 (Min)', value: 'min' },
                         ]}
-                        // ✅ [修复] 使用 styles.popup.root 替代 dropdownStyle
+                        //   [修复] 使用 styles.popup.root 替代 dropdownStyle
                         styles={{ popup: { root: { border: '1px solid #334155' } } }}
                     />
                 </div>
@@ -1301,7 +1301,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                         size="small"
                         className="w-full"
                         placeholder="选择字段"
-                        // ✅ [修改] 当选择 coverage 时也禁用字段选择
+                        //   [修改] 当选择 coverage 时也禁用字段选择
                         disabled={gridConfig.method === 'count' || gridConfig.method === 'coverage'}
                         value={gridConfig.targetField}
                         onChange={(val) => setGridConfig(prev => ({ ...prev, targetField: val }))}
@@ -1314,7 +1314,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
             <div className="w-full h-px bg-gray-700 my-1"></div>
 
 
-            {/* ✅ [修改] 导出选项：支持多选 + 全选 */}
+            {/*   [修改] 导出选项：支持多选 + 全选 */}
             {isGridMode && (
                 <div className="mb-2 bg-gray-800/50 p-2 rounded border border-gray-700">
                     <div className="flex justify-between items-center mb-1">
@@ -1333,7 +1333,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                     <Select
                         mode="multiple"
                         size="small"
-                        // ✅ [修改] 添加自定义类名
+                        //   [修改] 添加自定义类名
                         className="w-full custom-multi-select" 
                         placeholder="选择分类字段..."
                         allowClear
@@ -1341,7 +1341,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                         value={gridConfig.categoryFields}
                         onChange={(val) => setGridConfig(prev => ({ ...prev, categoryFields: val }))}
                         options={stringFields.map(f => ({ label: f, value: f }))}
-                        // ✅ [修改] 移除报错的 selector 属性
+                        //   [修改] 移除报错的 selector 属性
                         styles={{ 
                             popup: { root: { border: '1px solid #334155' } } 
                         }}
@@ -1351,7 +1351,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
 
             {/* 4. 执行按钮区 */}
             {isGridMode ? (
-                // ✅ [修改] 网格模式下：显示 重置 和 保存 两个按钮
+                //   [修改] 网格模式下：显示 重置 和 保存 两个按钮
                 <div className="flex gap-2">
                     <Button 
                         danger 
@@ -1388,13 +1388,13 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
     return (
         <div className="w-full h-full relative">
             
-            {/* ✅ [新增] 顶部进度条 (全局状态反馈) */}
+            {/*   [新增] 顶部进度条 (全局状态反馈) */}
             {gridLoading && (
                 <div className="absolute top-0 left-0 w-full h-1 bg-gray-800 z-50">
                     <div className="h-full bg-cyan-400 animate-progress-indeterminate shadow-[0_0_10px_#00e5ff]"></div>
                 </div>
             )}
-            {/* ✅加载遮罩层 - 当请求全量数据时显示 */}
+            {/*  加载遮罩层 - 当请求全量数据时显示 */}
             {loading && (
                 <div className="absolute inset-0 bg-black/60 z-50 flex flex-col items-center justify-center backdrop-blur-sm">
                     <Spin size="large" />
@@ -1405,7 +1405,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
             {/* 地图容器 */}
             <div ref={mapContainer} className="w-full h-full" />
 
-            {/* ✅ [修改] 文件名提示 (调整位置和样式，使其与下方工具条对齐) */}
+            {/*   [修改] 文件名提示 (调整位置和样式，使其与下方工具条对齐) */}
             {fileName && (
                 <div className="absolute top-4 left-4 z-10 animate-fade-in-down">
                      <div className="bg-gray-900/80 backdrop-blur-md text-cyan-400 px-4 py-1.5 rounded-full border border-cyan-500/30 text-xs font-mono shadow-[0_0_10px_rgba(0,229,255,0.2)] flex items-center gap-2">
@@ -1415,7 +1415,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                 </div>
             )}
 
-            {/* ✅ [修改] HUD Toolbar: 包含网格聚合模块 */}
+            {/*   [修改] HUD Toolbar: 包含网格聚合模块 */}
             <div className="absolute top-16 left-4 z-10 transition-all duration-300 ease-in-out">
                 <ConfigProvider
                     theme={{
@@ -1464,13 +1464,13 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
 
                         <div className="w-px h-5 bg-gray-600 mx-1" />
 
-                        {/* ✅ [新增] 2. 空间网格聚合模块 */}
+                        {/*   [新增] 2. 空间网格聚合模块 */}
                         <Popover 
                             content={gridConfigContent} 
                             trigger="hover" 
                             placement="bottom"
                             // ❌ [删除] styles={{ body: ... }} 或 overlayInnerStyle
-                            // ✅ [新增] 使用 CSS 类名
+                            //   [新增] 使用 CSS 类名
                             overlayClassName="grid-config-popover"
                             arrow={false}
                         >
@@ -1493,19 +1493,19 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                                 <Select
                                     variant="borderless"
                                     popupMatchSelectWidth={false}
-                                    // ✅ [修改] 提示文案变化
+                                    //   [修改] 提示文案变化
                                     placeholder={isGridMode ? "聚合值" : "普通渲染"}
                                     value={activeField}
                                     onChange={setActiveField}
                                     allowClear={!isGridMode}
-                                    // ✅ [修改] 禁用逻辑
+                                    //   [修改] 禁用逻辑
                                     disabled={isGridMode || (numericFields.length === 0 && stringFields.length === 0)} 
                                     className="min-w-25 max-w-35 text-gray-200"
                                     styles={{ popup: { root: { border: '1px solid #334155', borderRadius: '8px' } } }}
                                 >
                                     <Option value="none">-- 默认纯色 --</Option>
 
-                                    {/* ✅ [修改 2] 分组渲染数值字段 */}
+                                    {/*   [修改 2] 分组渲染数值字段 */}
                                     {numericFields.length > 0 && (
                                         <OptGroup label="数值字段 (渐变映射)">
                                             {numericFields.map(field => (
@@ -1514,7 +1514,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                                         </OptGroup>
                                     )}
                                     
-                                    {/* ✅ [修改 3] 分组渲染文本字段 */}
+                                    {/*   [修改 3] 分组渲染文本字段 */}
                                     {stringFields.length > 0 && (
                                         <OptGroup label="文本字段 (分类映射)">
                                             {stringFields.map(field => (
@@ -1610,10 +1610,10 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                 </ConfigProvider>
             </div>
             
-            {/* ✅ 3. 放置 HUD 图表组件 (绝对定位在地图层之上) */}
+            {/*   3. 放置 HUD 图表组件 (绝对定位在地图层之上) */}
             <ChartOverlay />
 
-            {/* ✅ 4. (可选) 增加一个悬浮按钮，用于在关闭图表后重新打开 */}
+            {/*   4. (可选) 增加一个悬浮按钮，用于在关闭图表后重新打开 */}
             {!isChartVisible && pivotData && pivotData.length > 0 && (
                 <div className="absolute top-4 right-4 z-900">
                     <Tooltip title="显示透视分析图表" placement="left">
@@ -1658,7 +1658,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                     animation: progress-indeterminate 1.5s infinite ease-in-out;
                 }
                 
-                /* ✅ [新增] Popover 样式覆盖 (解决 TS 报错和警告) */
+                /*   [新增] Popover 样式覆盖 (解决 TS 报错和警告) */
                 .grid-config-popover .ant-popover-inner {
                     background-color: rgba(17, 24, 39, 0.95) !important;
                     backdrop-filter: blur(10px) !important;
@@ -1668,7 +1668,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                     box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5) !important;
                 }
 
-                /* ✅ [新增] 强制覆盖多选框的背景色 */
+                /*   [新增] 强制覆盖多选框的背景色 */
                 .custom-multi-select .ant-select-selector {
                     background-color: transparent !important;
                     border-color: rgba(255, 255, 255, 0.2) !important; /* 可选：让边框也淡一点 */

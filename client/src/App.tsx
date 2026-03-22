@@ -14,7 +14,7 @@ function App() {
     // 这样弹出的 message 和 modal 就会跟随全局主题（变黑），且不会报错
     const { message, modal } = AntdApp.useApp();
 
-    // ✅存储已加载的文件数据 (包括分页信息)
+    //  存储已加载的文件数据 (包括分页信息)
     // 结构变为: { "文件名": { features: [...], pagination: {...}, type: 'FeatureCollection' } }
     const [uploadedFilesData, setUploadedFilesData] = React.useState<Record<string, PaginatedGeoResponse>>({});
     
@@ -27,7 +27,7 @@ function App() {
     // 辅助: 获取当前文件的数据对象
     const currentData = uploadedFilesData[activeFileName];
 
-    // ✅计算当前文件的字段列表 (传递给左侧分析面板用)
+    //  计算当前文件的字段列表 (传递给左侧分析面板用)
     // 使用 useMemo 防止频繁重算，或者直接在渲染时计算
     const activeFileFields = React.useMemo(() => {
         if (currentData && currentData.features && currentData.features.length > 0) {
@@ -51,12 +51,12 @@ function App() {
     //     }
     // };
 
-    // ✅加载/刷新数据 (支持分页)
+    //  加载/刷新数据 (支持分页)
     const loadFileData = async (fileId: string, fileName: string, page = 1, pageSize = 20) => {
         try {
             message.loading({ content: '加载数据中...', key: 'loading' });
             
-            // ✅调用新的分页接口
+            //  调用新的分页接口
             // 返回的是：
             //     const result = {
             //     type: 'FeatureCollection',
@@ -138,7 +138,7 @@ function App() {
         }
         
         if (fileId) {
-            // ✅默认加载第一页
+            //  默认加载第一页
             await loadFileData(fileId, fileName, 1, 20);
         }
 
@@ -315,7 +315,7 @@ function App() {
             // 发送请求给后端持久化保存 (稍后在 geoService 中实现)
             await geoService.renameColumn(activeFileId, oldName, newName);
             
-            // 🌟 本地乐观更新 (Optimistic UI update)
+            //   本地乐观更新 (Optimistic UI update)
             // 不需要重新请求整个文件，直接修改前端内存里的数据，让表格瞬间刷新
             if (currentData && currentData.features) {
                 const updatedFeatures = currentData.features.map((feature: any) => {
@@ -358,13 +358,13 @@ function App() {
       {/* 第 2 个子元素：中间 (直接放组件，不需要再包 div 了) */}
       <SplitTablePanel>
         <DataPivot 
-            // ✅ data 这里只传 features 数组给表格显示  
+            //   data 这里只传 features 数组给表格显示  
             data={currentData?.features || []} 
             fileName={activeFileName} 
             fileId={activeFileId}
-            // ✅ 传入分页对象
+            //   传入分页对象
             pagination={currentData?.pagination}
-            // ✅ 传入翻页回调
+            //   传入翻页回调
             onPageChange={handlePageChange}
 
             // 当表格行被点击时，更新 App 的状态
@@ -386,7 +386,7 @@ function App() {
           // data={uploadedFilesData[activeFileName]} 
           data={currentData ? { type: 'FeatureCollection', features: currentData.features } : null} 
           fileName={activeFileName}
-          // ✅必须把当前的 fileId 传给地图组件，否则它不知道去拉哪个文件的全量数据
+          //  必须把当前的 fileId 传给地图组件，否则它不知道去拉哪个文件的全量数据
           fileId={activeFileId}
           // 传入选中的要素，用于高亮和弹窗
           selectedFeature={selectedFeature}

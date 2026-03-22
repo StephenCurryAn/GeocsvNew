@@ -67,7 +67,7 @@ const fileNodeSchema: Schema<IFileNode> = new Schema({
 // 如果没有这个索引，MongoDB 需要扫描全表；有了它，查询瞬间完成。
 fileNodeSchema.index({ parentId: 1 });
 
-// ✅ 关键优化：复合唯一索引 (Compound Unique Index)，逻辑约束
+//   关键优化：复合唯一索引 (Compound Unique Index)，逻辑约束
 // 含义：在同一个 parentId (文件夹) 下，name (文件名) 必须唯一
 // 效果：防止出现两个 "新建文件夹" 或两个 "data.csv" 在同一目录下
 

@@ -1,18 +1,18 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import ReactECharts from 'echarts-for-react';
-import { Button, Segmented, Switch, Select } from 'antd'; // ✅ 引入 Tooltip
+import { Button, Segmented, Switch, Select } from 'antd'; //   引入 Tooltip
 import { 
     CloseOutlined, BarChartOutlined, RadarChartOutlined, 
     DotChartOutlined, EnvironmentOutlined,
     HeatMapOutlined,
     BoxPlotOutlined,
-    DeploymentUnitOutlined // ✅ [新增]
+    DeploymentUnitOutlined //   [新增]
 } from '@ant-design/icons';
-// ✅ 引入类型定义
+//   引入类型定义
 import { useAnalysisStore, type ChartType, type ColorThemeType } from '../../../stores/useAnalysisStore';
 import * as echarts from 'echarts/core';
 
-// ✅ [修改] 升级主题配置接口
+//   [修改] 升级主题配置接口
 // type: 'single' (单色+透明度变化) | 'gradient' (双色/多色插值)
 interface ThemeConfig {
     label: string;
@@ -22,96 +22,98 @@ interface ThemeConfig {
     stops?: [string, string]; // 地图用的插值断点 [LowColor, HighColor]
 }
 
-// ✅ [新增] 定义更丰富的色系
+//   [新增] 定义更丰富的色系
 export const THEME_COLORS: Record<ColorThemeType, ThemeConfig> = {
     // === 原有单色系 (Opacity Mode) ===
-    cyan:   { label: '赛博青', type: 'single', primary: '#22d3ee', gradient: ['#22d3ee', 'rgba(34, 211, 238, 0.1)'] },
-    purple: { label: '迷幻紫', type: 'single', primary: '#e879f9', gradient: ['#e879f9', 'rgba(232, 121, 249, 0.1)'] },
-    blue:   { label: '深海蓝', type: 'single', primary: '#3b82f6', gradient: ['#3b82f6', 'rgba(59, 130, 246, 0.1)'] },
-    green:  { label: '极光绿', type: 'single', primary: '#34d399', gradient: ['#34d399', 'rgba(52, 211, 153, 0.1)'] },
-    yellow: { label: '流光金', type: 'single', primary: '#facc15', gradient: ['#facc15', 'rgba(250, 204, 21, 0.1)'] },
-    red:    { label: '赤焰红', type: 'single', primary: '#f87171', gradient: ['#f87171', 'rgba(248, 113, 113, 0.1)'] },
+    cyan:   { label: '青', type: 'single', primary: '#22d3ee', gradient: ['#22d3ee', 'rgba(34, 211, 238, 0.1)'] },
+    purple: { label: '紫', type: 'single', primary: '#e879f9', gradient: ['#e879f9', 'rgba(232, 121, 249, 0.1)'] },
+    blue:   { label: '蓝', type: 'single', primary: '#3b82f6', gradient: ['#3b82f6', 'rgba(59, 130, 246, 0.1)'] },
+    green:  { label: '绿', type: 'single', primary: '#34d399', gradient: ['#34d399', 'rgba(52, 211, 153, 0.1)'] },
+    yellow: { label: '金', type: 'single', primary: '#facc15', gradient: ['#facc15', 'rgba(250, 204, 21, 0.1)'] },
+    red:    { label: '红', type: 'single', primary: '#f87171', gradient: ['#f87171', 'rgba(248, 113, 113, 0.1)'] },
 
-    // === ✅ [新增] 炫酷渐变色带 (Interpolation Mode) ===
-    // 1. 冰火之歌 (蓝 -> 红) 对比度极高
+    // ===   [新增] 炫酷渐变色带 (Interpolation Mode) ===
+    // 蓝红
     fire_ice: { 
-        label: '冰火 (蓝-红)', 
+        label: '蓝红', 
         type: 'gradient', 
         primary: '#f87171', 
         gradient: ['#f87171', '#3b82f6'], // 柱状图上红下蓝
         stops: ['#3b82f6', '#f87171'] // 地图 Low=蓝, High=红
     },
-    // 2. 岩浆 (黑紫 -> 亮黄) 经典的 Heatmap 配色
+    // 紫黄
     magma: { 
-        label: '岩浆 (紫-黄)', 
+        label: '紫黄', 
         type: 'gradient', 
         primary: '#facc15', 
         gradient: ['#facc15', '#6b21a8'], 
         stops: ['#6b21a8', '#facc15'] 
     },
-    // 3. 翠绿 (深蓝 -> 亮绿) 护眼且清晰
+    // 蓝绿
     viridis: { 
-        label: '森岭 (蓝-绿)', 
+        label: '蓝绿', 
         type: 'gradient', 
         primary: '#34d399', 
         gradient: ['#34d399', '#1e3a8a'], 
         stops: ['#1e3a8a', '#34d399'] 
     },
-    // 4. 深海 (浅蓝 -> 深蓝) 单色相但明度跨度大
+    // 蓝
     ocean: { 
-        label: '深海 (浅-深)', 
+        label: '蓝', 
         type: 'gradient', 
         primary: '#0ea5e9', 
         gradient: ['#0c4a6e', '#bae6fd'], 
         stops: ['#bae6fd', '#0c4a6e'] // Low=浅, High=深
     },
-    // 5. 赛博朋克 (蓝 -> 粉) 霓虹感
+    // 蓝粉
     cyber: { 
-        label: '霓虹 (蓝-粉)', 
+        label: '蓝粉', 
         type: 'gradient', 
         primary: '#e879f9', 
         gradient: ['#e879f9', '#22d3ee'], 
         stops: ['#22d3ee', '#e879f9'] 
     }
 };
-// ✅ [新增] 高对比度对立色盘 (Low -> High)
+//   [新增] 高对比度对立色盘 (Low -> High)
 export const CONTRAST_PALETTES = [
-    ['#3b82f6', '#ef4444'], // 1. 经典冰火: 蓝 -> 红
-    ['#10b981', '#8b5cf6'], // 2. 毒液: 绿 -> 紫
-    ['#06b6d4', '#db2777'], // 3. 赛博: 青 -> 粉
-    ['#f59e0b', '#2563eb'], // 4. 逆光: 橙 -> 深蓝 (对比极强)
-    ['#84cc16', '#f43f5e'], // 5. 玫瑰: 酸橙 -> 玫红
-    ['#6366f1', '#fbbf24'], // 6. 暮光: 靛蓝 -> 琥珀
+    ['#3b82f6', '#ef4444'], // 蓝红
+    ['#10b981', '#8b5cf6'], // 绿紫
+    ['#06b6d4', '#db2777'], // 青粉
+    ['#f59e0b', '#2563eb'], // 橙蓝
+    ['#84cc16', '#f43f5e'], // 橙红
+    ['#6366f1', '#fbbf24'], // 蓝黄
 ];
 // 为了兼容之前的代码，如果有地方用了 NEON_PALETTE，我们可以映射一下或者保留
-// 这里我们为了彻底的效果，把 NEON_PALETTE 指向新的色盘的主色，或者直接导出
+// 这里为了彻底的效果，把 NEON_PALETTE 指向新的色盘的主色，或者直接导出
 export const NEON_PALETTE = CONTRAST_PALETTES;
-// ✅ [新增] 热力图专属炫酷配色方案 (值越高颜色越亮/深)
+//  热力图专配色方案
 const HEATMAP_PALETTES: Record<string, string[]> = {
-    // 经典岩浆: 黑 -> 紫 -> 红 -> 黄 (对比度极高)
+    // 黑黄
     magma: ['#000004', '#3b0f70', '#8c2981', '#de4968', '#fe9f6d', '#fcfdbf'],
-    // 赛博霓虹:以此类推... 深蓝 -> 青 -> 亮绿
+    // 蓝绿
     cyber: ['#0b1121', '#1e3a8a', '#0ea5e9', '#22d3ee', '#34d399', '#a7f3d0'],
-    // 地狱火: 深红 -> 橙 -> 亮白
+    // 红白
     inferno: ['#000004', '#420a68', '#932667', '#dd513a', '#fca50a', '#fcffa4'],
-    // 深海: 深蓝 -> 浅蓝
+    // 蓝
     ocean: ['#081d58', '#253494', '#225ea8', '#1d91c0', '#41b6c4', '#7fcdbb', '#c7e9b4', '#edf8b1'],
-    // 矩阵: 黑 -> 绿
+    // 黑绿
     matrix: ['#000000', '#0a2f0a', '#1a5e1a', '#2ea82e', '#45f045', '#aaffaa']
 };
+
+
 const ChartOverlay: React.FC = () => {
     const { 
         isChartVisible, setChartVisible, 
         pivotData, pivotConfig, generatedColumns, // 透视数据
         rawScatterData, scatterConfig, // 散点数据
         chartType, setChartType, // 全局图表类型
-        // ✅ 引入联动状态
+        //   引入联动状态
         isMapLinkageEnabled, setMapLinkageEnabled,
-        highlightedCategory, // ✅ 必须解构出当前状态
+        highlightedCategory, //   必须解构出当前状态
         setHighlightedCategory,
-        // ✅ 引入新状态
+        //   引入新状态
         mapColorTheme, setMapColorTheme,
-        // ✅ [新增] 引入 activeColumn 相关 action
+        //   [新增] 引入 activeColumn 相关 action
         setActiveColumn
     } = useAnalysisStore();
 
@@ -125,7 +127,7 @@ const ChartOverlay: React.FC = () => {
         }
     }, [chartType, rawScatterData]);
 
-    // 智能计算容器尺寸 (稍微调整以适应热力图)
+    // 计算容器尺寸
     const { containerWidth, containerHeight } = useMemo(() => {
         if (!isChartVisible) return { containerWidth: 0, containerHeight: 0 };
         
@@ -135,7 +137,7 @@ const ChartOverlay: React.FC = () => {
         
         if (chartType === 'Bar') {
             w = Math.min(650, Math.max(450, len * 70 + 100)); // 稍微加宽
-        } else if (chartType === 'Scatter' || chartType === 'Heatmap') { // ✅ 热力图也用方形
+        } else if (chartType === 'Scatter' || chartType === 'Heatmap') { //   热力图也用方形
             w = 550;
             h = 520;
         } else if (chartType === 'Radar') {
@@ -145,36 +147,36 @@ const ChartOverlay: React.FC = () => {
         return { containerWidth: w, containerHeight: h };
     }, [pivotData, chartType, isChartVisible]);
 
-    // ================= 📊 柱状图配置 =================
-const getBarOption = () => {
+    // =================柱状图配置 =================
+    const getBarOption = () => {
         if (!pivotData) return {};
         const is2D = generatedColumns.length > 1 || (generatedColumns[0] !== 'value');
         const xAxisData = pivotData.map(item => item.rowKey);
         const dataLength = pivotData.length;
         const showScroll = dataLength > 8;
         
-        // ✅ [新增] 获取当前主题配置
+        //   [新增] 获取当前主题配置
         const theme = THEME_COLORS[mapColorTheme];
 
         let series: any[] = [];
         if (!is2D) {
-            // ✅ [修改] 一维模式：使用 mapColorTheme
+            //   [修改] 一维模式：使用 mapColorTheme
             series.push({
                 name: pivotConfig.valueField || '统计值',
                 type: 'bar',
                 data: pivotData.map(item => item.value),
                 itemStyle: {
-                    // ✅ [修改] 使用主题色的渐变
+                    //   [修改] 使用主题色的渐变
                     color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
                         { offset: 0, color: theme.gradient[0] }, // 亮色
                         { offset: 1, color: theme.gradient[1] }  // 暗色/透明
                     ]),
                     borderRadius: [4, 4, 0, 0],
-                    // ✅ [新增] 增加一点发光质感
+                    //   [新增] 增加一点发光质感
                     shadowBlur: 5,
                     shadowColor: theme.gradient[1]
                 },
-                // ✅ [新增] 高亮样式：点击或 hover 时变亮
+                //   [新增] 高亮样式：点击或 hover 时变亮
                 emphasis: {
                      itemStyle: {
                         color: theme.primary,
@@ -185,7 +187,7 @@ const getBarOption = () => {
                 barMaxWidth: 50,
             });
         } else {
-            // ✅ [修改] 二维模式：使用 CONTRAST_PALETTES 进行双色渐变渲染
+            //   [修改] 二维模式：使用 CONTRAST_PALETTES 进行双色渐变渲染
             series = generatedColumns.map((colKey, index) => {
                 // 获取对应的对立色对 [Low, High]
                 const palette = CONTRAST_PALETTES[index % CONTRAST_PALETTES.length];
@@ -231,14 +233,14 @@ const getBarOption = () => {
         };
     };
 
-    // ================= 🕸️ 雷达图配置 (无警告版) =================
-const getRadarOption = () => {
+    // =================雷达图配置 =================
+    const getRadarOption = () => {
         if (!pivotData) return {};
         const is2D = generatedColumns.length > 1 || (generatedColumns[0] !== 'value');
         let indicators: { name: string, max?: number }[] = [];
         let seriesData: any[] = [];
         
-        // ✅ [新增] 获取当前主题色
+        //   [新增] 获取当前主题色
         const theme = THEME_COLORS[mapColorTheme];
 
         if (is2D) {
@@ -267,14 +269,14 @@ const getRadarOption = () => {
             tooltip: { trigger: 'item', backgroundColor: 'rgba(0,0,0,0.8)', borderColor: 'rgba(255,255,255,0.2)', textStyle: { color: '#fff' } },
             legend: {
                 show: true, type: 'scroll', bottom: 5, textStyle: { color: '#e5e7eb' },
-                pageIconColor: theme.primary, // ✅ 使用主题色
+                pageIconColor: theme.primary, //   使用主题色
                 pageTextStyle: { color: '#9ca3af' }
             },
             radar: {
                 indicator: indicators,
                 shape: 'polygon',
                 axisName: {
-                    color: is2D ? '#22d3ee' : theme.primary, // ✅ 使用主题色
+                    color: is2D ? '#22d3ee' : theme.primary, //   使用主题色
                     fontSize: 12, fontWeight: 'bold', textShadowColor: 'rgba(0,0,0,0.5)', textShadowBlur: 2
                 },
                 axisLabel: { show: false }, axisTick: { show: false },
@@ -293,7 +295,7 @@ const getRadarOption = () => {
                 name: 'Data Analysis',
                 type: 'radar',
                 data: seriesData.map((item, index) => {
-                    // ✅ [修改] 一维模式使用主题色
+                    //   [修改] 一维模式使用主题色
                     const color = is2D ? NEON_PALETTE[index % NEON_PALETTE.length][0] : theme.primary;
                     return {
                         ...item,
@@ -308,7 +310,7 @@ const getRadarOption = () => {
         };
     };
 
-    // ================= 📉 散点图配置 =================
+    // =================散点图配置=================
     const getScatterOption = () => {
         if (scatterSource === 'Raw') {
             if (!rawScatterData || !scatterConfig.xField || !scatterConfig.yField) return {};
@@ -377,7 +379,7 @@ const getRadarOption = () => {
         }
     };
 
-    // ================= 🔥 热力图配置 (已修正排序逻辑) =================
+    // =================热力图配置=================
     const getHeatmapOption = () => {
         if (!pivotData || generatedColumns.length === 0) return {};
 
@@ -386,7 +388,7 @@ const getRadarOption = () => {
         let yAxisData = pivotData.map(item => item.rowKey); // 行头 (Rows)
 
         // 2. 智能排序逻辑
-        // ✅ [修改] 使用 localeCompare 的 numeric: true 选项
+        //   [修改] 使用 localeCompare 的 numeric: true 选项
         // 这是一种“自然排序”算法，能够正确处理：
         // - 纯数字：["1", "10", "2"] -> ["1", "2", "10"]
         // - 带字符数字：["第1周", "第10周", "第2周"] -> ["第1周", "第2周", "第10周"]
@@ -495,7 +497,7 @@ const getRadarOption = () => {
         };
     };
 
-    // ================= 📦 [修改] 箱线图配置 (横向版 + 炫酷风格) =================
+    // =================箱线图配置=================
     const getBoxplotOption = () => {
         if (!pivotData) return {};
         
@@ -521,7 +523,7 @@ const getRadarOption = () => {
 
         // 3. 生成 Jitter 散点数据 (坐标互换)
         // 旧(垂直): [index + jitter, value]
-        // ✅ [修改] 新(横向): [value, index + jitter] 
+        //   [修改] 新(横向): [value, index + jitter] 
         const scatterSeriesData: number[][] = [];
         validData.forEach((item, index) => {
             item.value.forEach((val: number) => {
@@ -568,7 +570,7 @@ const getRadarOption = () => {
                 bottom: '10%',
                 containLabel: true // 自动防止Y轴文字溢出
             },
-            // ✅ [修改] X 轴变成数值轴
+            //   [修改] X 轴变成数值轴
             xAxis: {
                 type: 'value',
                 name: pivotConfig.valueField || 'Value',
@@ -582,11 +584,11 @@ const getRadarOption = () => {
                 axisLabel: { color: '#9ca3af' },
                 axisLine: { show: true, lineStyle: { color: 'rgba(255,255,255,0.1)' } }
             },
-            // ✅ [修改] Y 轴变成分类轴
+            //   [修改] Y 轴变成分类轴
             yAxis: {
                 type: 'category',
                 data: categoryData,
-                inverse: true, // ✅ [关键] 反转坐标轴，让第一个数据在最上面，符合阅读习惯
+                inverse: true, //   [关键] 反转坐标轴，让第一个数据在最上面，符合阅读习惯
                 axisLine: { show: false }, // 隐藏轴线，更简洁
                 axisTick: { show: false },
                 axisLabel: { 
@@ -602,7 +604,7 @@ const getRadarOption = () => {
                     name: 'Box',
                     type: 'boxplot',
                     data: boxPlotData,
-                    // ✅ [美化] 增加横向渐变和圆角
+                    //   [美化] 增加横向渐变和圆角
                     itemStyle: {
                         color: new echarts.graphic.LinearGradient(1, 0, 0, 0, [ // 从右向左渐变
                             { offset: 0, color: 'rgba(34, 211, 238, 0.4)' },
@@ -626,7 +628,7 @@ const getRadarOption = () => {
                     type: 'scatter',
                     data: scatterSeriesData,
                     symbolSize: 5,
-                    // ✅ [美化] 散点使用互补色 (紫色/粉色) 并带发光
+                    //   [美化] 散点使用互补色 (紫色/粉色) 并带发光
                     itemStyle: {
                         color: 'rgba(232, 121, 249, 0.7)', 
                         borderColor: 'rgba(232, 121, 249, 0.3)',
@@ -640,7 +642,7 @@ const getRadarOption = () => {
         };
     };
 
-    // ================= ⛰️ [修改] 山脊图 (Ridgeline) 配置 =================
+    // =================山脊图配置=================
     const getRidgelineOption = () => {
         if (!pivotData || pivotData.length === 0) return {};
         
@@ -653,7 +655,7 @@ const getRadarOption = () => {
         let xAxisConfig: any = {};
         let yAxisConfig: any = {};
         let tooltipConfig: any = {};
-        // ✅ [修复] 移除 visualMap，避免与 areaStyle 冲突
+        //   [修复] 移除 visualMap，避免与 areaStyle 冲突
         const visualMapConfig = undefined; 
 
         if (!isTrendMode) {
@@ -680,13 +682,13 @@ const getRadarOption = () => {
                         count++;
                     }
                 }
-                // ✅ [优化] 防止除以 0 返回 NaN
+                //   [优化] 防止除以 0 返回 NaN
                 return count ? sum / count : 0;
             };
 
             // 2. 计算全局范围
             let allValues: number[] = [];
-            // ✅ [优化] 过滤掉空数组或非数组，防止报错
+            //   [优化] 过滤掉空数组或非数组，防止报错
             const validRows = pivotData.filter(row => Array.isArray(row.value) && row.value.length > 0);
             validRows.forEach(row => allValues.push(...row.value));
             
@@ -694,7 +696,7 @@ const getRadarOption = () => {
             
             const minVal = Math.min(...allValues);
             const maxVal = Math.max(...allValues);
-            // ✅ [优化] 防止 range 为 0 导致死循环
+            //   [优化] 防止 range 为 0 导致死循环
             const range = Math.max(maxVal - minVal, 0.0001);
             
             const xTicks = Array.from({ length: 100 }, (_, i) => minVal + (i * range) / 99);
@@ -707,7 +709,7 @@ const getRadarOption = () => {
                 
                 // 归一化密度高度
                 const maxDensity = Math.max(...density.map((d: any) => d[1]));
-                // ✅ 这里的 Y 值是 index + 0.xxx
+                //   这里的 Y 值是 index + 0.xxx
                 const scaledDensity = density.map((d: any) => [d[0], d[1] / (maxDensity || 1) * 0.8 + index]);
 
                 return {
@@ -737,7 +739,7 @@ const getRadarOption = () => {
                 splitLine: { show: false }
             };
 
-            // ✅ [修复关键点] Y 轴必须是 value 类型才能支持浮点数堆叠
+            //   [修复关键点] Y 轴必须是 value 类型才能支持浮点数堆叠
             yAxisConfig = {
                 type: 'value', 
                 min: 0,
@@ -748,7 +750,7 @@ const getRadarOption = () => {
                 axisLabel: { 
                     color: '#e5e7eb',
                     margin: 10,
-                    // ✅ [关键] 自定义 Formatter：把数值索引 (0, 1, 2) 变回 分类名
+                    //   [关键] 自定义 Formatter：把数值索引 (0, 1, 2) 变回 分类名
                     formatter: (val: number) => {
                         // 只有当 val 非常接近整数时才显示标签
                         if (Math.abs(val - Math.round(val)) < 0.01) {
@@ -837,7 +839,7 @@ const getRadarOption = () => {
                 axisLabel: { color: '#9ca3af', rotate: 30 }
             };
             
-            // ✅ [统一] 趋势图也用 Value 轴 + Formatter，保持一致性
+            //   [统一] 趋势图也用 Value 轴 + Formatter，保持一致性
             yAxisConfig = {
                 type: 'value',
                 show: true,
@@ -865,7 +867,7 @@ const getRadarOption = () => {
             xAxis: xAxisConfig,
             yAxis: yAxisConfig,
             series: series,
-            // ✅ [修复] 移除 visualMap
+            //   [修复] 移除 visualMap
             visualMap: visualMapConfig 
         };
     };
@@ -873,16 +875,16 @@ const getRadarOption = () => {
     const getOption = useMemo(() => {
         if ((!pivotData && !rawScatterData) || !isChartVisible) return {};
         switch (chartType) {
-            case 'Ridgeline': return getRidgelineOption(); // ✅ [新增]
+            case 'Ridgeline': return getRidgelineOption(); //   [新增]
             case 'Radar': return getRadarOption(); 
             case 'Scatter': return getScatterOption(); 
-            case 'Heatmap': return getHeatmapOption(); // ✅ [新增]
-            case 'BoxPlot': return getBoxplotOption(); // ✅ [新增]
+            case 'Heatmap': return getHeatmapOption(); //   [新增]
+            case 'BoxPlot': return getBoxplotOption(); //   [新增]
             case 'Bar': default: return getBarOption();
         }
     }, [pivotData, rawScatterData, chartType, scatterSource, scatterConfig, generatedColumns, pivotConfig, isChartVisible, mapColorTheme]);
 
-    // ✅ [新增] 点击事件处理
+    //   [新增] 点击事件处理
     const onChartClick = (params: any) => {
         if (!isMapLinkageEnabled) return;
         
@@ -904,29 +906,29 @@ const getRadarOption = () => {
         }
     };
     
-    // ✅ 点击空白处取消高亮 (可选，取决于 zrender 事件，这里先只处理数据点击)
+    //   点击空白处取消高亮 (可选，取决于 zrender 事件，这里先只处理数据点击)
     const onChartEvents = {
         'click': onChartClick
     };
 
     if (!isChartVisible) return null;
-    // ✅ [修改] 判断是否是 2D 分析模式 (有行也有列)
+    //   [修改] 判断是否是 2D 分析模式 (有行也有列)
 
     const is2DAnalysis = pivotData && pivotConfig.groupByRow && pivotConfig.groupByCol;
-    // ✅ [新增] 核心判断：只有“收集”模式且“一维”时，才允许箱线图
+    //   [新增] 核心判断：只有“收集”模式且“一维”时，才允许箱线图
     const isBoxPlotAvailable = pivotConfig.method === 'boxplot' && !pivotConfig.groupByCol;
     
-    // ✅ [新增] 判断山脊图是否可用: 
+    //   [新增] 判断山脊图是否可用: 
     // 1. 选择了 'ridgeline' 聚合 (分布模式)
     // 2. 或者 选择了 'sum/avg' 且是二维 (趋势模式)
     const isRidgelineAvailable = 
         (pivotConfig.method === 'ridgeline') || 
         (is2DAnalysis && pivotConfig.method !== 'boxplot');
 
-    // ✅ [新增] 专门针对 Heatmap 的配色选项
+    //   [新增] 专门针对 Heatmap 的配色选项
     const showHeatmapPalette = chartType === 'Heatmap';
 
-    // ✅ [新增] 判断是否显示色系选择器：开启联动 && 一维透视
+    //   [新增] 判断是否显示色系选择器：开启联动 && 一维透视
     const showThemeSelect = isMapLinkageEnabled && pivotData && !pivotConfig.groupByCol && pivotConfig.groupByRow;
 
     return (
@@ -948,7 +950,7 @@ const getRadarOption = () => {
                             { label: '柱状图', value: 'Bar', icon: <BarChartOutlined /> },
                             { label: '雷达图', value: 'Radar', icon: <RadarChartOutlined /> },
                             { label: '散点图', value: 'Scatter', icon: <DotChartOutlined /> }, 
-                            // ✅ [新增] 热力图选项，仅在 2D 模式下可用
+                            //   [新增] 热力图选项，仅在 2D 模式下可用
                             { 
                                 label: '热力图', 
                                 value: 'Heatmap', 
@@ -956,7 +958,7 @@ const getRadarOption = () => {
                                 disabled: !is2DAnalysis, // 如果没选列，禁用
                                 className: !is2DAnalysis ? 'opacity-50 cursor-not-allowed' : ''
                             },
-                            // ✅ [新增] 箱线图按钮 (带条件限制)
+                            //   [新增] 箱线图按钮 (带条件限制)
                             {
                                 label: '箱线',
                                 value: 'BoxPlot',
@@ -964,7 +966,7 @@ const getRadarOption = () => {
                                 disabled: !isBoxPlotAvailable,
                                 className: !isBoxPlotAvailable ? 'opacity-50 cursor-not-allowed' : ''
                             },
-                            // ✅ [新增] 山脊图按钮
+                            //   [新增] 山脊图按钮
                             {
                                 label: '山脊图', value: 'Ridgeline', icon: <DeploymentUnitOutlined />,
                                 disabled: !isRidgelineAvailable, className: !isRidgelineAvailable ? 'opacity-50 cursor-not-allowed' : ''
@@ -976,7 +978,7 @@ const getRadarOption = () => {
                     />
                     
 
-                    {/* ✅ [新增] 热力图配色选择器 */}
+                    {/*   [新增] 热力图配色选择器 */}
                     {showHeatmapPalette && (
                          <Select
                             size="small"
@@ -995,7 +997,7 @@ const getRadarOption = () => {
                          />
                     )}
 
-                    {/* ✅ 色系选择器 (UI 优化：显示渐变色条) */}
+                    {/*   色系选择器 (UI 优化：显示渐变色条) */}
                     {showThemeSelect && (
                          <Select
                             size="small"
@@ -1023,7 +1025,7 @@ const getRadarOption = () => {
 
                 </div>
 
-                {/* ✅ 中间：散点图数据源切换 (仅在 Scatter 模式下显示) */}
+                {/*   中间：散点图数据源切换 (仅在 Scatter 模式下显示) */}
                 <div className="flex-1 flex justify-end mr-4">
                     {chartType === 'Scatter' && (
                         <Segmented<'Pivoted' | 'Raw'>
@@ -1043,7 +1045,7 @@ const getRadarOption = () => {
                     type="text" shape="circle" icon={<CloseOutlined className="text-gray-300 hover:text-white" />} 
                     onClick={() =>{
                         setChartVisible(false);
-                        setHighlightedCategory(null); // ✅ 关闭图表时清除高亮
+                        setHighlightedCategory(null); //   关闭图表时清除高亮
                     }} className="hover:bg-white/10"
                 />
             </div>
@@ -1056,7 +1058,7 @@ const getRadarOption = () => {
                     theme="dark" 
                     autoResize 
                     notMerge
-                    // ✅ 绑定事件
+                    //   绑定事件
                     onEvents={onChartEvents} 
                 />
             </div>
@@ -1064,11 +1066,11 @@ const getRadarOption = () => {
             {/* Footer */}
             <div className="h-10 shrink-0 flex items-center justify-between px-4 border-t border-white/5 bg-white/5 text-xs text-gray-300">
                 <div className="flex items-center gap-2 font-medium">
-                    {/* ✅ [修改] 联动状态指示灯 */}
+                    {/*   [修改] 联动状态指示灯 */}
                     <EnvironmentOutlined className={isMapLinkageEnabled ? 'text-cyan-400' : 'text-gray-400'} />
                     <span>地图颜色映射联动</span>
                 </div>
-                {/* ✅ [修改] 绑定 store 状态 */}
+                {/*   [修改] 绑定 store 状态 */}
                 <Switch 
                     size="small" 
                     checked={isMapLinkageEnabled} 
@@ -1095,7 +1097,7 @@ const getRadarOption = () => {
                     color: #fff !important; background-color: rgba(255,255,255,0.1) !important;
                 }
                 
-                /* ✅ 副切换器样式 (更小更精致，紫色系区分) */
+                /*   副切换器样式 (更小更精致，紫色系区分) */
                 .custom-segmented-glass-sm.ant-segmented {
                     background-color: rgba(0,0,0,0.3); color: #a78bfa;
                 }

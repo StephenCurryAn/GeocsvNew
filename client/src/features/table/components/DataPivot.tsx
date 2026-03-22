@@ -1,7 +1,7 @@
 import 'ag-grid-community/styles/ag-grid.css'; 
 import 'ag-grid-community/styles/ag-theme-alpine.css'; 
 import React, { useEffect, useState, useRef } from 'react';
-import { createPortal } from 'react-dom'; // 🌟 核心：引入传送门技术
+import { createPortal } from 'react-dom'; //   核心：引入传送门技术
 import { AgGridReact } from 'ag-grid-react'; 
 import { type ColDef, ModuleRegistry, AllCommunityModule } from 'ag-grid-community'; 
 import { App, Empty, Button, Space, Popconfirm, Pagination } from 'antd'; // ... 引入 antd 组件
@@ -16,9 +16,9 @@ ModuleRegistry.registerModules([ AllCommunityModule ]);
 interface DataPivotProps {
     data: any;          
     fileName: string;   
-    // ✅ 新增 fileId，因为导出需要告诉后端是哪个文件
+    //   新增 fileId，因为导出需要告诉后端是哪个文件
     fileId?: string;
-    // ✅ 新增分页 Props
+    //   新增分页 Props
     pagination?: {
         total: number;
         page: number;
@@ -37,12 +37,12 @@ interface DataPivotProps {
     onDeleteRow?: (recordId: string | number) => void;
     onAddColumn?: () => void;
     onDeleteColumn?: (fieldName: string) => void;
-    // ✅ 新增：重命名列回调
+    //   新增：重命名列回调
     onRenameColumn?: (oldFieldName: string, newFieldName: string) => void;
 }
 
 // ==========================================
-// 🌟 纯净大圆满版：双段式智能公式编辑器 (支持模型+列名双重补全)
+//   纯净大圆满版：双段式智能公式编辑器 (支持模型+列名双重补全)
 // ==========================================
 const FormulaCellEditor = (props: any) => {
     const [value, setValue] = useState(props.value || '');
@@ -51,7 +51,7 @@ const FormulaCellEditor = (props: any) => {
     const [showDropdown, setShowDropdown] = useState(false);
     const [dropdownRect, setDropdownRect] = useState({ top: 0, left: 0, width: 0 });
     
-    // 🌟 新增状态：记录当前下拉框里显示的是“模型(model)”还是“列名(column)”
+    //   新增状态：记录当前下拉框里显示的是“模型(model)”还是“列名(column)”
     const [suggestionType, setSuggestionType] = useState<'model' | 'column'>('column');
 
     const inputRef = useRef<HTMLInputElement>(null);
@@ -63,10 +63,10 @@ const FormulaCellEditor = (props: any) => {
         ?.map((col: any) => col.field)
         .filter((k: string) => k && !k.startsWith('_') && k !== 'id' && k !== 'cp' && !k.startsWith('__empty')) || [];
 
-    // 🌟 核心修复 1：将 availableModels 改为 State，并使用外部传入的值作为初始缓存，彻底删除硬编码兜底！
+    //   核心修复 1：将 availableModels 改为 State，并使用外部传入的值作为初始缓存，彻底删除硬编码兜底！
     const [availableModels, setAvailableModels] = useState<string[]>(props.availableModels || []);
 
-    // 🌟 核心修复 2：【JIT 实时刷新机制】
+    //   核心修复 2：【JIT 实时刷新机制】
     // 每次双击单元格进入编辑状态时，静默向后端拉取一次最新模型列表！
     // 这样不用刷新网页，AI 刚生成的模型立刻出现，删掉的模型立刻消失！
     useEffect(() => {
@@ -126,7 +126,7 @@ const FormulaCellEditor = (props: any) => {
         return { word: text.slice(start, cursorPosition), start, end: cursorPosition };
     };
 
-    // 🌟 核心升级：智能判断当前该提示什么
+    //   核心升级：智能判断当前该提示什么
     const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const val = e.target.value;
         setValue(val);
@@ -164,7 +164,7 @@ const FormulaCellEditor = (props: any) => {
         }
     };
 
-    // 🌟 核心升级：根据提示类型，执行不同的插入逻辑
+    //   核心升级：根据提示类型，执行不同的插入逻辑
     const insertSuggestion = (suggestion: string) => {
         let newVal = '';
         let newCursor = 0;
@@ -190,7 +190,7 @@ const FormulaCellEditor = (props: any) => {
             inputRef.current?.setSelectionRange(newCursor, newCursor);
             inputRef.current?.focus();
             
-            // 🌟 极限体验优化：如果你刚补全了模型名并加了 "("，我们主动触发一次事件让它立刻弹出列名提示！
+            //   极限体验优化：如果你刚补全了模型名并加了 "("，我们主动触发一次事件让它立刻弹出列名提示！
             if (suggestionType === 'model') {
                 const fakeEvent = { target: { value: newVal, selectionStart: newCursor } } as any;
                 handleChange(fakeEvent);
@@ -247,7 +247,7 @@ const FormulaCellEditor = (props: any) => {
                 {suggestions.map((s, i) => (
                     <li key={s} className={`px-3 py-2 cursor-pointer text-sm font-mono transition-all rounded flex items-center ${i === focusedIndex ? 'bg-cyan-600/90 text-white font-bold' : 'text-gray-300 hover:bg-cyan-900/40'}`}
                         onMouseDown={(e) => { e.preventDefault(); insertSuggestion(s); }}>
-                        {/* 🌟 视觉优化：模型名前面用紫色圆点，列名前面用青色圆点，一眼区分！ */}
+                        {/*   视觉优化：模型名前面用紫色圆点，列名前面用青色圆点，一眼区分！ */}
                         <span className={`w-2 h-2 rounded-full mr-2 shrink-0 ${
                             i === focusedIndex 
                                 ? 'bg-white shadow-[0_0_5px_white]' 
@@ -273,7 +273,7 @@ const FormulaCellEditor = (props: any) => {
 const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, pagination, onPageChange, 
     onRowClick, selectedFeature, onDataChange, 
     onAddRow, onDeleteRow, onAddColumn, onDeleteColumn, onRenameColumn }) => {
-    // ✅ 修改 2: 获取上下文感知的 message 实例
+    //   修改 2: 获取上下文感知的 message 实例
     // 注意：MapView 必须被包裹在 <App> 组件中（通常在 main.tsx 或 App.tsx 已经包了）
     const { message } = App.useApp();
     // Grid 引用，用于调用 API
@@ -284,10 +284,10 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
     const [columnDefs, setColumnDefs] = useState<ColDef[]>([]);
     // 记录当前选中的行索引，用于删除行
     const [selectedRecordId, setSelectedRecordId] = useState<string | number | null>(null);
-    // 🌟 1. 新增：存储后端真实模型列表的状态
+    //   1. 新增：存储后端真实模型列表的状态
     const [modelList, setModelList] = useState<string[]>([]);
     
-    // 🌟 2. 新增：组件初始化时，向后端请求活跃模型列表
+    //   2. 新增：组件初始化时，向后端请求活跃模型列表
     useEffect(() => {
         const fetchModels = async () => {
             try {
@@ -299,7 +299,7 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
                     // 提取出所有的 modelName (如 "LSI_AHP") 供编辑器补全使用
                     const modelNames = res.data.data.map((model: any) => model.modelName);
                     setModelList(modelNames);
-                    console.log("✅ 成功拉取真实模型列表:", modelNames);
+                    console.log("  成功拉取真实模型列表:", modelNames);
                 }
             } catch (error) {
                 console.error("❌ 获取真实模型列表失败:", error);
@@ -317,7 +317,7 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
         setColumnDefs([]);
         return;
     }
-    // ✅data 是 features 数组，直接处理
+    //  data 是 features 数组，直接处理
     // 因为App组件中是data={currentData?.features || []}传过来的数组 
     processGeoJSONFeatures(data, modelList);
 
@@ -364,7 +364,7 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
         const baseCols = keys
             .filter(k => !['_cp'].includes(k) && !k.startsWith('__empty_col_'))
             .map(key => {
-                // ✅ 判断当前列是否为那个包含超级长字符串的“几何坐标列”
+                //   判断当前列是否为那个包含超级长字符串的“几何坐标列”
                 const isGeomCoordsCol = (key === '_geom_coords');
 
                 return {
@@ -382,16 +382,16 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
                     resizable: true,
                     minWidth: 100,
 
-                    // ✅ 新增：如果是几何坐标列，初始宽度设为 200，且最高不超过 300
+                    //   新增：如果是几何坐标列，初始宽度设为 200，且最高不超过 300
                     width: isGeomCoordsCol ? 200 : 150,
                     maxWidth: isGeomCoordsCol ? 300 : undefined,
-                    // ✅ 新增核心防御：禁止该列参与表格外层的 autoSizeStrategy="fitCellContents"
+                    //   新增核心防御：禁止该列参与表格外层的 autoSizeStrategy="fitCellContents"
                     suppressAutoSize: isGeomCoordsCol, 
 
                     editable: !readOnlyFields.includes(key),
-                    cellEditor: FormulaCellEditor, // 🌟 修改为智能编辑器
-                    cellEditorPopup: true, // 🌟 新增：显式声明为弹窗模式
-                    // 🌟 修改 2：把这里写死的数组替换为传入的真实模型数组！
+                    cellEditor: FormulaCellEditor, //   修改为智能编辑器
+                    cellEditorPopup: true, //   新增：显式声明为弹窗模式
+                    //   修改 2：把这里写死的数组替换为传入的真实模型数组！
                     cellEditorParams: { 
                         availableModels: models
                     },
@@ -412,9 +412,9 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
             editable: true,
             minWidth: 100,
             width: 150,
-            cellEditor: FormulaCellEditor, // 🌟 修改为智能编辑器
-            cellEditorPopup: true, // 🌟 新增：显式声明为弹窗模式
-            // 🌟 修改 3：把这里写死的数组替换为传入的真实模型数组！
+            cellEditor: FormulaCellEditor, //   修改为智能编辑器
+            cellEditorPopup: true, //   新增：显式声明为弹窗模式
+            //   修改 3：把这里写死的数组替换为传入的真实模型数组！
             cellEditorParams: { 
                 availableModels: models
             }
@@ -424,7 +424,7 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
         return [...baseCols, ...emptyCols];
     };
 
-    // ✅把 processGeoJSON 改造一下，只处理 features 数组
+    //  把 processGeoJSON 改造一下，只处理 features 数组
     const processGeoJSONFeatures = (features: any[], models: string[]) => {
         const rows = features.map((feature: any) => {
         
@@ -433,7 +433,7 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
             try { cp = JSON.parse(cp); } catch(e) {}
         }
 
-        // 🌟 终极防死修复：如果后端没传 id，强行生成一个唯一 ID，绝不允许出现 undefined！
+        //   终极防死修复：如果后端没传 id，强行生成一个唯一 ID，绝不允许出现 undefined！
         let uniqueId = feature.properties?.id || feature._id || feature.id;
         if (uniqueId === undefined || uniqueId === null) {
             uniqueId = `tmp_${Math.random().toString(36).substr(2, 9)}`;
@@ -686,18 +686,18 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
             rowData={rowData}
             columnDefs={columnDefs}
             
-            // 🌟 灵魂属性新增：告诉 AG Grid 如何唯一识别每一行！
+            //   灵魂属性新增：告诉 AG Grid 如何唯一识别每一行！
             getRowId={(params) => {
                 return String(params.data.id);
             }}
 
-            // ✅关闭 AG Grid 的全量分页，因为只给了它一页数据
+            //  关闭 AG Grid 的全量分页，因为只给了它一页数据
             pagination={false}
             // paginationPageSize={20}
 
             animateRows={true}
 
-            // ✅自动调整列宽策略
+            //  自动调整列宽策略
             // 当表格数据准备好后，自动根据 [表头内容] 和 [单元格内容] 计算最佳宽度
             // 这会让列宽自动撑开，如果总宽度超过容器，AG Grid 会自动出现横向滚动条
             autoSizeStrategy={{
@@ -734,7 +734,7 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
                 }
             }}
 
-            // 🌟 修改：升级单元格修改事件，拦截公式输入并触发微服务计算
+            //   修改：升级单元格修改事件，拦截公式输入并触发微服务计算
             onCellValueChanged={async (event) => {
                 console.log("👉 [事件触发] onCellValueChanged 被成功唤醒！新值是:", event.newValue);
                 const { newValue, oldValue, colDef, node, data } = event;
@@ -743,7 +743,7 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
                 // 如果值没变，不触发任何操作
                 if (newValue === oldValue) return;
 
-                // 🌟 新增核心逻辑：检测是否输入了类 Excel 公式 (以 = 开头)
+                //   新增核心逻辑：检测是否输入了类 Excel 公式 (以 = 开头)
                 if (typeof newValue === 'string' && newValue.startsWith('=')) {
                     if (!fileId) {
                         message.error("未找到文件 ID，无法执行公式计算");
@@ -766,7 +766,7 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
                         
                         const allRealFields = event.api.getColumnDefs()?.map((col: any) => col.field) || [];
 
-                        // 🌟 2. 核心修复：智能参数放行
+                        //   2. 核心修复：智能参数放行
                         // 如果它匹配到了某个列名，就矫正大小写；如果匹配不到（比如是 "0.1"），直接原样保留，不再报错！
                         const processedArgs = rawArgs.map(arg => {
                             const cleanArg = arg.replace(/^['"]|['"]$/g, ''); // 尝试去掉引号对比列名
@@ -785,7 +785,7 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
                         node.setDataValue(field!, "⏳ 计算中...");
 
                         try {
-                            // 🌟 3. 修改接口调用，传入统一的 rawArgs 对象
+                            //   3. 修改接口调用，传入统一的 rawArgs 对象
                             const responseData = await geoService.executeModelFormula({
                                 fileId: fileId,
                                 modelName: modelName,
@@ -824,7 +824,7 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
                                 }
                             });
 
-                            // 🌟 第一步：动态批量追加表头配置
+                            //   第一步：动态批量追加表头配置
                             setColumnDefs(prev => {
                                 const newCols = [...prev];
                                 finalColNames.forEach((colName: string) => {
@@ -839,7 +839,7 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
                                 return newCols;
                             });
 
-                            // 🌟 第二步：纯 React 状态重绘行数据 
+                            //   第二步：纯 React 状态重绘行数据 
                             setRowData(prev => {
                                 return prev.map(row => {
                                     const matchScores = scoreMap.get(String(row.id));
@@ -850,7 +850,7 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
                                 });
                             });
 
-                            node.setDataValue(field!, "✅ 公式完成");
+                            node.setDataValue(field!, "  公式完成");
                             // 这里使用 finalColNames.join 就绝对不会报错了
                             message.success(`模型计算成功！新增列 [${finalColNames.join(', ')}] 已渲染`);
 
@@ -864,7 +864,7 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
                         message.warning("公式格式错误，请输入形如 =MODEL(col1, col2)");
                     }
                     
-                    return; // 🌟 公式处理完毕，直接 return，不要触发下方普通的保存逻辑
+                    return; //   公式处理完毕，直接 return，不要触发下方普通的保存逻辑
                 }
 
                 // --- 以下保持你原有的普通数据修改和保存逻辑 ---
@@ -876,7 +876,7 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
             }}
         />
         </div> 
-        {/* 3. ✅ 新增：底部服务器分页条 */}
+        {/* 3.   新增：底部服务器分页条 */}
         {pagination && (
             <div className="bg-[#111827] border-t border-gray-700 p-2 flex justify-end">
                 <Pagination 

@@ -288,7 +288,7 @@ const FileTree: React.FC<FileTreeProps> = ({ onDataLoaded, onSelectFile }) => {
       if (response) { // response 就是 data.data
           message.success(`${response.fileName} 上传成功！`);
           
-          // 2. ✅【关键修改】上传成功后，立即请求第一页数据
+          // 2.  【关键修改】上传成功后，立即请求第一页数据
           // 因为后端不再返回 geoJson，前端需要自己去拉
           const firstPageData = await geoService.getFileData(response._id, 1, 20);
 

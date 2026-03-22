@@ -10,7 +10,7 @@ import AnalysisPanel from '../../analysis/components/AnalysisPanel';
 interface LeftPanelProps {
   onDataLoaded: (fileName: string, data: any, fileId: string) => void;
   onSelectFile?: (fileName: string, fileId?: string) => void;
-  // ✅ 新增
+  //   新增
   activeFileId: string;
   activeFileFields: string[];
 }
@@ -68,7 +68,7 @@ const LeftPanel: React.FC<LeftPanelProps> = ({ onDataLoaded, onSelectFile, activ
             onSelectFile={onSelectFile}
           />
         ) : (
-          // ✅ 4. 替换原来的占位符
+          //   4. 替换原来的占位符
           <AnalysisPanel 
              fileId={activeFileId} 
              fields={activeFileFields}

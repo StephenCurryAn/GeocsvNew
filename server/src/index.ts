@@ -42,7 +42,7 @@ app.use(express.json());
 // 2. 路由注册 （所有与'/api/files'有关的请求路由，都交给 fileRoutes）
 app.use('/api/files', fileRoutes); // 挂载文件相关路由
 
-// ✅注册新路由 (以 /api/analysis 开头的请求都交给 analysisRoutes 处理)
+//  注册新路由 (以 /api/analysis 开头的请求都交给 analysisRoutes 处理)
 app.use('/api/analysis', analysisRoutes);
 
 // 3. 测试路由

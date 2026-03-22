@@ -7,7 +7,7 @@ interface ApiResponse<T> {
   data: T;
 }
 
-// ✅定义标记页数后端响应接口
+//  定义标记页数后端响应接口
 export interface PaginatedGeoResponse {
   type: 'FeatureCollection';
   features: any[]; // 你的 Feature 类型
@@ -19,7 +19,7 @@ export interface PaginatedGeoResponse {
   };
 }
 
-// ✅ 定义上传响应接口 (不再包含 geoJson 全量数据)
+//   定义上传响应接口 (不再包含 geoJson 全量数据)
 export interface UploadResponse {
   _id: string;
   fileName: string;
@@ -28,7 +28,7 @@ export interface UploadResponse {
   totalFeatures: number; // 告知前端有多少条数据
 }
 
-// ✅原始上传响应的接口
+//  原始上传响应的接口
 // /**
 //  * 上传响应接口
 //  * 定义后端文件上传接口返回的数据结构
@@ -57,7 +57,7 @@ export interface UploadResponse {
  */
 class GeoService {
   
-  // // ✅原始的上传地理数据的节点（后续需要保存csv或者下载的时候使用）
+  // //  原始的上传地理数据的节点（后续需要保存csv或者下载的时候使用）
   // /**
   //  * 上传地理数据文件
   //  * 支持 CSV、GeoJSON 等格式的文件上传，并转换为 GeoJSON 格式
@@ -140,7 +140,7 @@ class GeoService {
   //   }
   // }
 
-  // // ✅原始的获取数据的节点（后续需要保存csv或者下载的时候使用）
+  // //  原始的获取数据的节点（后续需要保存csv或者下载的时候使用）
   // /**
   //  * 获取文件内容 (修复 App.tsx 报错的关键)
   //  * 用于点击左侧文件树时，从后端拉取文件内容
@@ -157,7 +157,7 @@ class GeoService {
   // }
 
   /**
-   * ✅分页获取文件数据
+   *  分页获取文件数据
    * 替代原有的全量 getFileContent
    * @param id 文件ID
    * @param page 页码 (默认 1)
@@ -174,7 +174,7 @@ class GeoService {
     return res.data.data; 
   }
 
-  // ✅获取指定文件的所有数据 (用于地图全量展示)
+  //  获取指定文件的所有数据 (用于地图全量展示)
   // 传入一个足够大的 pageSize 来获取所有数据
   async getAllFileData(id: string): Promise<PaginatedGeoResponse> {
     // 假设后端允许较大的 pageSize，或者你可以专门写一个后端接口 /api/files/:id/all
@@ -362,7 +362,7 @@ class GeoService {
   }
 
   /**
-   * ✅ [修改] 真实调用后端生成空间网格
+   *   [修改] 真实调用后端生成空间网格
    */
   async generateGridAggregation(fileId: string, config: {
       shape: 'hex' | 'square',
@@ -379,7 +379,7 @@ class GeoService {
   }
 
   /**
-   * ✅ [新增] 导出网格数据 (触发下载)
+   *   [新增] 导出网格数据 (触发下载)
    */
   async exportGridAggregation(fileId: string, config: any) {
       try {
@@ -406,7 +406,7 @@ class GeoService {
       }
   }
 
-  // 🌟 新增：公式执行服务调用
+  //   新增：公式执行服务调用
   async executeModelFormula( data: { fileId: string; modelName: string; rawArgs: string[] } ) {
     const response = await apiClient.post('/analysis/execute-formula', data);
     return response.data;

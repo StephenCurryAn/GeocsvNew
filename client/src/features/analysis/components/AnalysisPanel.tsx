@@ -7,9 +7,9 @@ import {
     FunctionOutlined,
     ExperimentOutlined,
     AreaChartOutlined,
-    DeploymentUnitOutlined, // ✅ [新增] 用这个图标代表山脊图/分段
+    DeploymentUnitOutlined, 
     ThunderboltOutlined,
-    BoxPlotOutlined, // ✅ [新增] 引入图标
+    BoxPlotOutlined,
 } from '@ant-design/icons';
 import { useAnalysisStore } from '../../../stores/useAnalysisStore';
 import apiClient from '../../../services/apiClient';
@@ -37,7 +37,7 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({ fileId, fields }) => {
 
     const [statMode, setStatMode] = useState<StatMode>('Pivot');
 
-    // 🌟 1. 增加模型列表状态
+    //   1. 增加模型列表状态
     const [availableModels, setAvailableModels] = useState<any[]>([]);
 
     useEffect(() => {
@@ -53,7 +53,7 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({ fileId, fields }) => {
         };
         fetchModels();
 
-        // 🌟 新增：监听左下角 GeoAIAgent 派发的模型生成成功事件
+        //   新增：监听左下角 GeoAIAgent 派发的模型生成成功事件
         const handleModelAdded = (e: any) => {
             if (e.detail) {
                 setAvailableModels(prev => [...prev, e.detail]);
@@ -64,11 +64,11 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({ fileId, fields }) => {
         return () => window.removeEventListener('geoai-model-added', handleModelAdded);
     }, []);
 
-    // --- 1. 透视分析逻辑 ---
+    // 透视分析逻辑
     const handlePivotAnalyze = async () => {
         if (!fileId) { message.warning('请先在工作空间选择一个文件'); return; }
         if (!pivotConfig.groupByRow) { message.warning('请至少选择行分组字段'); return; }
-        // ✅ [修改] 箱线图模式下也需要 valueField
+        // 箱线图模式下也需要 valueField
         if (pivotConfig.method !== 'count' && !pivotConfig.valueField) { message.warning('请选择统计字段 (Value)'); return; }
         setLoading(true);
         try {
@@ -84,11 +84,11 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({ fileId, fields }) => {
                 setPivotResult(res.data.data, res.data.columns);
                 setPivotPanelOpen(true);
                 
-                // ✅ [新增] 自动切换图表类型
+                // 自动切换图表类型
                 if (pivotConfig.method === 'boxplot') {
                     setChartType('BoxPlot'); 
                 } else if (pivotConfig.method === 'ridgeline') {
-                    setChartType('Ridgeline'); // 自动切到山脊图
+                    setChartType('Ridgeline');
                 } else {
                     setChartType('Bar'); 
                 }
@@ -104,7 +104,7 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({ fileId, fields }) => {
         }
     };
 
-    // --- 2. 散点分析逻辑 ---
+    // 散点分析逻辑
     const handleScatterAnalyze = async () => {
         if (!fileId) { message.warning('请先选择文件'); return; }
         if (!scatterConfig.xField || !scatterConfig.yField) { message.warning('请选择 X 轴和 Y 轴字段'); return; }
@@ -210,7 +210,7 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({ fileId, fields }) => {
                                                     value={pivotConfig.groupByCol} 
                                                     onChange={(val) => setPivotConfig({ groupByCol: val })} 
                                                     showSearch
-                                                    // ✅ [修改] 分段模式下禁用列
+                                                    //   [修改] 分段模式下禁用列
                                                     disabled={pivotConfig.method === 'boxplot' || pivotConfig.method === 'ridgeline'}
                                                 >
                                                     {fields.map(f => <Option key={f} value={f}>{f}</Option>)}
@@ -220,7 +220,7 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({ fileId, fields }) => {
                                                 <Select className="w-full" value={pivotConfig.method} onChange={(val) => {
                                                     setPivotConfig({ 
                                                         method: val,
-                                                        // ✅ [修改] 选中 raw 模式时清空列
+                                                        //   [修改] 选中 raw 模式时清空列
                                                         groupByCol: (val === 'boxplot' || val === 'ridgeline') ? null : pivotConfig.groupByCol
                                                     })
                                                 }}>
@@ -235,7 +235,7 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({ fileId, fields }) => {
                                                             <span>箱线图(分布)</span>
                                                         </span>
                                                     </Option>
-                                                    {/* ✅ [新增] 分段/山脊图选项 */}
+                                                    {/*   [新增] 分段/山脊图选项 */}
                                                     <Option value="ridgeline">
                                                         <span className="flex items-center gap-2">
                                                             <DeploymentUnitOutlined className="text-emerald-400"/>
@@ -251,7 +251,7 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({ fileId, fields }) => {
                                                 placeholder="选择字段" 
                                                 value={pivotConfig.valueField} 
                                                 onChange={(val) => setPivotConfig({ valueField: val })} 
-                                                // ✅ [修改] boxplot 模式下也必须选字段
+                                                //   [修改] boxplot 模式下也必须选字段
                                                 disabled={pivotConfig.method === 'count'} 
                                                 showSearch
                                             >
@@ -334,7 +334,7 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({ fileId, fields }) => {
                                                         {model.description}
                                                     </div>
 
-                                                    {/* 🌟 3. 新增：参数元数据动态渲染区 */}
+                                                    {/*   3. 新增：参数元数据动态渲染区 */}
                                                     {model.parameters && model.parameters.length > 0 && (
                                                         <div className="flex flex-col gap-1 bg-emerald-950/40 p-2 rounded-md border border-emerald-900/60 mt-1">
                                                             <span className="text-[10px] text-emerald-500 font-bold uppercase tracking-widest mb-0.5">
@@ -351,7 +351,7 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({ fileId, fields }) => {
                                                         </div>
                                                     )}
 
-                                                    {/* 🌟 4. 修改：动态拼接精准的调用语法 */}
+                                                    {/*   4. 修改：动态拼接精准的调用语法 */}
                                                     <div className="mt-1 px-2 py-1.5 bg-black/60 rounded border border-emerald-800/80 font-mono text-xs text-emerald-400 break-all shadow-[0_0_8px_rgba(52,211,153,0.1)_inset]">
                                                         输入： <b className="text-white">={model.modelName}</b>(
                                                         {model.parameters && model.parameters.length > 0 
@@ -368,7 +368,7 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({ fileId, fields }) => {
                                                 {/* 左侧动态发光条 (默认极暗，悬浮瞬间亮起纯正祖母绿) */}
                                                 <div className="absolute left-0 top-0 bottom-0 w-1 bg-emerald-950 group-hover:bg-emerald-400 transition-colors duration-300"></div>
                                                 
-                                                {/* 🌟 模型核心指令名称: text-sm(与标题同大), font-bold, tracking-wide(微调字间距显得精致) */}
+                                                {/*   模型核心指令名称: text-sm(与标题同大), font-bold, tracking-wide(微调字间距显得精致) */}
                                                 <span className="text-sm font-bold tracking-wide text-emerald-400 group-hover:text-emerald-300 transition-colors duration-300 drop-shadow-sm">
                                                     {model.modelName}
                                                 </span>
