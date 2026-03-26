@@ -84,7 +84,7 @@ const SplitTablePanel: React.FC<SplitTablePanelProps> = ({ children }) => {
             headerName: pivotConfig.groupByRow, 
             pinned: 'left', 
             width: 150,
-            //   修改：字体颜色改为纯白
+            //    ：字体颜色改为纯白
             cellStyle: { fontWeight: 'bold', color: '#ffffff' }, 
             filter: true,
         });
@@ -95,7 +95,7 @@ const SplitTablePanel: React.FC<SplitTablePanelProps> = ({ children }) => {
                 field: colKey,
                 headerName: colKey,
                 width: 120,
-                //   修改：字体颜色改为纯白，保持右对齐
+                //    ：字体颜色改为纯白，保持右对齐
                 cellStyle: { textAlign: 'right', color: '#ffffff' }, 
                 valueFormatter: (params) => params.value == null ? '-' : params.value
             });
@@ -199,7 +199,7 @@ const SplitTablePanel: React.FC<SplitTablePanelProps> = ({ children }) => {
                     --ag-odd-row-background-color: #111827;
                     --ag-row-border-color: #374151;
                     --ag-header-foreground-color: #9ca3af;
-                    /*   修改：默认文字颜色改为纯白 */
+                    /*    ：默认文字颜色改为纯白 */
                     --ag-foreground-color: #ffffff; 
                 }
 

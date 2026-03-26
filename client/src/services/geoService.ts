@@ -85,7 +85,7 @@ class GeoService {
 
   //     // 构建表单数据，用于文件上传
   //     // new FormData() 是在内存里创建了一个 “虚拟的 HTML 表单”。
-  //     // 它的核心作用是：专门用来打包“文件流”和“数据”，以便通过代码（Ajax/Axios）发送给后端
+  //     // 它的 作用是：专门用来打包“文件流”和“数据”，以便通过代码（Ajax/Axios）发送给后端
   //     // 通常我们跟后端交互用的是 JSON 格式（比如 { "name": "张三", "age": 18 }）。 
   //     // JSON 处理纯文本非常方便，但它有一个巨大的弱点：它不擅长运送“二进制文件”（比如图片、视频、SHP文件等）。
   //     // 如果你想用 JSON 发文件，你得把文件转成一长串乱码（Base64），这会让文件体积暴增，传输极慢。
@@ -245,7 +245,7 @@ class GeoService {
   //  * 更新文件数据 (用于表格编辑保存)
   //  * @param fileId 文件ID
   //  * @param recordId 行id
-  //  * @param data 修改后的数据 (Properties)
+  //  * @param data  后的数据 (Properties)
   //  */
   // async updateFileData(fileId: string, recordId: number | string, data: any): Promise<any> {
   //   try {
@@ -263,10 +263,10 @@ class GeoService {
   //   }
   // }
   /**
-   * 更新文件数据 (修改行)
+   * 更新文件数据 ( 行)
    * @param fileId 文件ID
    * @param recordId 行ID (properties.id)
-   * @param data 修改后的属性对象
+   * @param data  后的属性对象
    */
   async updateFileData(fileId: string, recordId: number | string, data: any): Promise<any> {
     // 对应后端路由: PUT /api/files/:id/update
@@ -362,7 +362,7 @@ class GeoService {
   }
 
   /**
-   *   [修改] 真实调用后端生成空间网格
+   *   [ ] 真实调用后端生成空间网格
    */
   async generateGridAggregation(fileId: string, config: {
       shape: 'hex' | 'square',

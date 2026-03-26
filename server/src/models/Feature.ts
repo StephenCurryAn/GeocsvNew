@@ -1,7 +1,7 @@
 import mongoose, { Document, Schema } from 'mongoose';
 
 // 1. 定义 GeoJSON Geometry 的接口结构
-// GeoJSON 的核心在于 Geometry，它决定了是点、线还是面
+// GeoJSON 的 在于 Geometry，它决定了是点、线还是面
 interface IGeometry {
   type: 'Point' | 'LineString' | 'Polygon' | 'MultiPoint' | 'MultiLineString' | 'MultiPolygon';
   coordinates: number[] | number[][] | number[][][]; // 坐标数组嵌套层级不同
@@ -33,7 +33,7 @@ const featureSchema = new Schema<IFeature>({
     required: true
   },
 
-  // GeoJSON 核心: 几何对象
+  // GeoJSON  : 几何对象
   // 按照 MongoDB 的 GeoJSON 存储规范定义
   geometry: {
     type: {
@@ -59,7 +59,7 @@ const featureSchema = new Schema<IFeature>({
 
 // 4. 关键索引优化
 // 地理空间索引 (Geospatial Index)
-// 核心：创建 2dsphere 空间索引（最实用最常用最好的索引（曲面球体））
+//  ：创建 2dsphere 空间索引（最实用最常用最好的索引（曲面球体））
 // 这允许你执行 "查找我附近 5km 的点" 或 "查找屏幕矩形范围内的数据"
 // featureSchema.index({ geometry: '2dsphere' });
 

@@ -12,7 +12,7 @@ import {
 import { useAnalysisStore, type ChartType, type ColorThemeType } from '../../../stores/useAnalysisStore';
 import * as echarts from 'echarts/core';
 
-//   [修改] 升级主题配置接口
+//   [ ] 升级主题配置接口
 // type: 'single' (单色+透明度变化) | 'gradient' (双色/多色插值)
 interface ThemeConfig {
     label: string;
@@ -160,13 +160,13 @@ const ChartOverlay: React.FC = () => {
 
         let series: any[] = [];
         if (!is2D) {
-            //   [修改] 一维模式：使用 mapColorTheme
+            //   [ ] 一维模式：使用 mapColorTheme
             series.push({
                 name: pivotConfig.valueField || '统计值',
                 type: 'bar',
                 data: pivotData.map(item => item.value),
                 itemStyle: {
-                    //   [修改] 使用主题色的渐变
+                    //   [ ] 使用主题色的渐变
                     color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
                         { offset: 0, color: theme.gradient[0] }, // 亮色
                         { offset: 1, color: theme.gradient[1] }  // 暗色/透明
@@ -187,7 +187,7 @@ const ChartOverlay: React.FC = () => {
                 barMaxWidth: 50,
             });
         } else {
-            //   [修改] 二维模式：使用 CONTRAST_PALETTES 进行双色渐变渲染
+            //   [ ] 二维模式：使用 CONTRAST_PALETTES 进行双色渐变渲染
             series = generatedColumns.map((colKey, index) => {
                 // 获取对应的对立色对 [Low, High]
                 const palette = CONTRAST_PALETTES[index % CONTRAST_PALETTES.length];
@@ -295,7 +295,7 @@ const ChartOverlay: React.FC = () => {
                 name: 'Data Analysis',
                 type: 'radar',
                 data: seriesData.map((item, index) => {
-                    //   [修改] 一维模式使用主题色
+                    //   [ ] 一维模式使用主题色
                     const color = is2D ? NEON_PALETTE[index % NEON_PALETTE.length][0] : theme.primary;
                     return {
                         ...item,
@@ -388,7 +388,7 @@ const ChartOverlay: React.FC = () => {
         let yAxisData = pivotData.map(item => item.rowKey); // 行头 (Rows)
 
         // 2. 智能排序逻辑
-        //   [修改] 使用 localeCompare 的 numeric: true 选项
+        //   [ ] 使用 localeCompare 的 numeric: true 选项
         // 这是一种“自然排序”算法，能够正确处理：
         // - 纯数字：["1", "10", "2"] -> ["1", "2", "10"]
         // - 带字符数字：["第1周", "第10周", "第2周"] -> ["第1周", "第2周", "第10周"]
@@ -523,7 +523,7 @@ const ChartOverlay: React.FC = () => {
 
         // 3. 生成 Jitter 散点数据 (坐标互换)
         // 旧(垂直): [index + jitter, value]
-        //   [修改] 新(横向): [value, index + jitter] 
+        //   [ ] 新(横向): [value, index + jitter] 
         const scatterSeriesData: number[][] = [];
         validData.forEach((item, index) => {
             item.value.forEach((val: number) => {
@@ -570,7 +570,7 @@ const ChartOverlay: React.FC = () => {
                 bottom: '10%',
                 containLabel: true // 自动防止Y轴文字溢出
             },
-            //   [修改] X 轴变成数值轴
+            //   [ ] X 轴变成数值轴
             xAxis: {
                 type: 'value',
                 name: pivotConfig.valueField || 'Value',
@@ -584,7 +584,7 @@ const ChartOverlay: React.FC = () => {
                 axisLabel: { color: '#9ca3af' },
                 axisLine: { show: true, lineStyle: { color: 'rgba(255,255,255,0.1)' } }
             },
-            //   [修改] Y 轴变成分类轴
+            //   [ ] Y 轴变成分类轴
             yAxis: {
                 type: 'category',
                 data: categoryData,
@@ -912,10 +912,10 @@ const ChartOverlay: React.FC = () => {
     };
 
     if (!isChartVisible) return null;
-    //   [修改] 判断是否是 2D 分析模式 (有行也有列)
+    //   [ ] 判断是否是 2D 分析模式 (有行也有列)
 
     const is2DAnalysis = pivotData && pivotConfig.groupByRow && pivotConfig.groupByCol;
-    //   [新增] 核心判断：只有“收集”模式且“一维”时，才允许箱线图
+    //   [新增]  判断：只有“收集”模式且“一维”时，才允许箱线图
     const isBoxPlotAvailable = pivotConfig.method === 'boxplot' && !pivotConfig.groupByCol;
     
     //   [新增] 判断山脊图是否可用: 
@@ -1066,11 +1066,11 @@ const ChartOverlay: React.FC = () => {
             {/* Footer */}
             <div className="h-10 shrink-0 flex items-center justify-between px-4 border-t border-white/5 bg-white/5 text-xs text-gray-300">
                 <div className="flex items-center gap-2 font-medium">
-                    {/*   [修改] 联动状态指示灯 */}
+                    {/*   [ ] 联动状态指示灯 */}
                     <EnvironmentOutlined className={isMapLinkageEnabled ? 'text-cyan-400' : 'text-gray-400'} />
                     <span>地图颜色映射联动</span>
                 </div>
-                {/*   [修改] 绑定 store 状态 */}
+                {/*   [ ] 绑定 store 状态 */}
                 <Switch 
                     size="small" 
                     checked={isMapLinkageEnabled} 

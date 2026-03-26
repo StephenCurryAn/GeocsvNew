@@ -7,3 +7,17 @@ Content-Type: application/json
     "displayName": "等权重求和模型",
     "userDescription": "帮我把传入的所有列的数据加起来，最后算一个平均值返回。"
 }
+
+
+### 测试多节点 AI 透视与绘图流水线
+
+POST http://localhost:3000/api/analysis/dynamic-pipeline
+Content-Type: application/json
+
+{
+  "userPrompt": "帮我把这两个数据做相交，计算每个公园周边500m内的道路数量，然后画一个雷达图给我看。",
+  "fileIds": [
+    "69859383bd06d85f331c377f",
+    "698be3bc496854a8863db8ae"
+  ]
+}

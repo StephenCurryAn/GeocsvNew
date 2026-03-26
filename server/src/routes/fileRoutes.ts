@@ -58,7 +58,7 @@ router.get('/:id/data', getFileData); // 分页读取路由
  * PUT /:id
  * 重命名文件或文件夹
  */
-// PUT 请求：整体更新/修改资源
+// PUT 请求：整体更新/ 资源
 // 在 RESTful 规范里，更新现有资源通常用 PUT（或 PATCH）
 router.put('/:id', renameNode);
 
@@ -72,8 +72,8 @@ router.delete('/:id', deleteNode);
  * POST /:id/update
  * 更新文件 数据接口
  * 对应前端: geoService.updateFileData
- * 逻辑: 根据 rowIndex 修改 GeoJSON 中的 properties 并写回硬盘
- * 发生在前端用户操作后，需要将修改后的内容保存到服务器
+ * 逻辑: 根据 rowIndex   GeoJSON 中的 properties 并写回硬盘
+ * 发生在前端用户操作后，需要将 后的内容保存到服务器
  */
 // http://localhost:3000/api/files/65a1.../update
 router.post('/:id/update', updateFileData);

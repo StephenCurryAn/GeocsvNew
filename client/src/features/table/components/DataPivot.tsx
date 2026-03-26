@@ -1,7 +1,7 @@
 import 'ag-grid-community/styles/ag-grid.css'; 
 import 'ag-grid-community/styles/ag-theme-alpine.css'; 
 import React, { useEffect, useState, useRef } from 'react';
-import { createPortal } from 'react-dom'; //   核心：引入传送门技术
+import { createPortal } from 'react-dom'; //    ：引入传送门技术
 import { AgGridReact } from 'ag-grid-react'; 
 import { type ColDef, ModuleRegistry, AllCommunityModule } from 'ag-grid-community'; 
 import { App, Empty, Button, Space, Popconfirm, Pagination } from 'antd'; // ... 引入 antd 组件
@@ -63,10 +63,10 @@ const FormulaCellEditor = (props: any) => {
         ?.map((col: any) => col.field)
         .filter((k: string) => k && !k.startsWith('_') && k !== 'id' && k !== 'cp' && !k.startsWith('__empty')) || [];
 
-    //   核心修复 1：将 availableModels 改为 State，并使用外部传入的值作为初始缓存，彻底删除硬编码兜底！
+    //    修复 1：将 availableModels 改为 State，并使用外部传入的值作为初始缓存，彻底删除硬编码兜底！
     const [availableModels, setAvailableModels] = useState<string[]>(props.availableModels || []);
 
-    //   核心修复 2：【JIT 实时刷新机制】
+    //    修复 2：【JIT 实时刷新机制】
     // 每次双击单元格进入编辑状态时，静默向后端拉取一次最新模型列表！
     // 这样不用刷新网页，AI 刚生成的模型立刻出现，删掉的模型立刻消失！
     useEffect(() => {
@@ -126,7 +126,7 @@ const FormulaCellEditor = (props: any) => {
         return { word: text.slice(start, cursorPosition), start, end: cursorPosition };
     };
 
-    //   核心升级：智能判断当前该提示什么
+    //    升级：智能判断当前该提示什么
     const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const val = e.target.value;
         setValue(val);
@@ -164,7 +164,7 @@ const FormulaCellEditor = (props: any) => {
         }
     };
 
-    //   核心升级：根据提示类型，执行不同的插入逻辑
+    //    升级：根据提示类型，执行不同的插入逻辑
     const insertSuggestion = (suggestion: string) => {
         let newVal = '';
         let newCursor = 0;
@@ -273,7 +273,7 @@ const FormulaCellEditor = (props: any) => {
 const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, pagination, onPageChange, 
     onRowClick, selectedFeature, onDataChange, 
     onAddRow, onDeleteRow, onAddColumn, onDeleteColumn, onRenameColumn }) => {
-    //   修改 2: 获取上下文感知的 message 实例
+    //     2: 获取上下文感知的 message 实例
     // 注意：MapView 必须被包裹在 <App> 组件中（通常在 main.tsx 或 App.tsx 已经包了）
     const { message } = App.useApp();
     // Grid 引用，用于调用 API
@@ -385,13 +385,13 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
                     //   新增：如果是几何坐标列，初始宽度设为 200，且最高不超过 300
                     width: isGeomCoordsCol ? 200 : 150,
                     maxWidth: isGeomCoordsCol ? 300 : undefined,
-                    //   新增核心防御：禁止该列参与表格外层的 autoSizeStrategy="fitCellContents"
+                    //   新增 防御：禁止该列参与表格外层的 autoSizeStrategy="fitCellContents"
                     suppressAutoSize: isGeomCoordsCol, 
 
                     editable: !readOnlyFields.includes(key),
-                    cellEditor: FormulaCellEditor, //   修改为智能编辑器
+                    cellEditor: FormulaCellEditor, //    为智能编辑器
                     cellEditorPopup: true, //   新增：显式声明为弹窗模式
-                    //   修改 2：把这里写死的数组替换为传入的真实模型数组！
+                    //     2：把这里写死的数组替换为传入的真实模型数组！
                     cellEditorParams: { 
                         availableModels: models
                     },
@@ -412,9 +412,9 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
             editable: true,
             minWidth: 100,
             width: 150,
-            cellEditor: FormulaCellEditor, //   修改为智能编辑器
+            cellEditor: FormulaCellEditor, //    为智能编辑器
             cellEditorPopup: true, //   新增：显式声明为弹窗模式
-            //   修改 3：把这里写死的数组替换为传入的真实模型数组！
+            //     3：把这里写死的数组替换为传入的真实模型数组！
             cellEditorParams: { 
                 availableModels: models
             }
@@ -607,15 +607,15 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
                     // 过滤掉空白公式列和空值
                     if (!colId || colId.startsWith('__empty_col_')) return;
 
-                    // 4. 系统核心字段保护
+                    // 4. 系统 字段保护
                     const readOnlyFields = ['id', '_geometry', 'cp', '_cp', '_lng', '_lat', '_geom_coords', 'name'];
                     if (readOnlyFields.includes(colId)) {
-                        message.warning(`[${colId}] 是系统保留字段，禁止修改！`);
+                        message.warning(`[${colId}] 是系统保留字段，禁止 ！`);
                         return;
                     }
 
                     // 5. 弹窗询问新列名（输入框默认填入原列名）
-                    const newCol = prompt(`修改列名 [${colId}] 为：`, colId);
+                    const newCol = prompt(` 列名 [${colId}] 为：`, colId);
                     
                     // 6. 校验输入并触发回调
                     if (newCol && newCol.trim() !== '' && newCol.trim() !== colId && onRenameColumn) {
@@ -734,7 +734,7 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
                 }
             }}
 
-            //   修改：升级单元格修改事件，拦截公式输入并触发微服务计算
+            //    ：升级单元格 事件，拦截公式输入并触发微服务计算
             onCellValueChanged={async (event) => {
                 console.log("👉 [事件触发] onCellValueChanged 被成功唤醒！新值是:", event.newValue);
                 const { newValue, oldValue, colDef, node, data } = event;
@@ -743,7 +743,7 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
                 // 如果值没变，不触发任何操作
                 if (newValue === oldValue) return;
 
-                //   新增核心逻辑：检测是否输入了类 Excel 公式 (以 = 开头)
+                //   新增 逻辑：检测是否输入了类 Excel 公式 (以 = 开头)
                 if (typeof newValue === 'string' && newValue.startsWith('=')) {
                     if (!fileId) {
                         message.error("未找到文件 ID，无法执行公式计算");
@@ -766,7 +766,7 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
                         
                         const allRealFields = event.api.getColumnDefs()?.map((col: any) => col.field) || [];
 
-                        //   2. 核心修复：智能参数放行
+                        //   2.  修复：智能参数放行
                         // 如果它匹配到了某个列名，就矫正大小写；如果匹配不到（比如是 "0.1"），直接原样保留，不再报错！
                         const processedArgs = rawArgs.map(arg => {
                             const cleanArg = arg.replace(/^['"]|['"]$/g, ''); // 尝试去掉引号对比列名
@@ -785,7 +785,7 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
                         node.setDataValue(field!, "⏳ 计算中...");
 
                         try {
-                            //   3. 修改接口调用，传入统一的 rawArgs 对象
+                            //   3.  接口调用，传入统一的 rawArgs 对象
                             const responseData = await geoService.executeModelFormula({
                                 fileId: fileId,
                                 modelName: modelName,
@@ -867,8 +867,8 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
                     return; //   公式处理完毕，直接 return，不要触发下方普通的保存逻辑
                 }
 
-                // --- 以下保持你原有的普通数据修改和保存逻辑 ---
-                console.log('普通单元格已修改:', event);
+                // --- 以下保持你原有的普通数据 和保存逻辑 ---
+                console.log('普通单元格已 :', event);
                 const recordId = data.id;
                 if (recordId && onDataChange) {
                     onDataChange(recordId, data);

@@ -183,7 +183,7 @@ async function loadShpLibrary() {
 }
 
 /**
- * 函数作用：CSV 转 GeoJSON 核心逻辑，允许保留没有几何数据的普通行（防止增行后不显示）
+ * 函数作用：CSV 转 GeoJSON  逻辑，允许保留没有几何数据的普通行（防止增行后不显示）
  * 用到了 PapaParse 库 和 getArrayDepth 函数
  */
 function parseCsvToGeoJSON(csvString: string) {
@@ -252,7 +252,7 @@ function parseCsvToGeoJSON(csvString: string) {
         const features = data.map((row, index) => {
             const rawGeom = row[geomKey];
             // 值还是和原来一样，“...”这是引用展开运算符，把 row 里面的所有字段都复制一份
-            // 为了防止修改原始数据，这里是浅拷贝，例如：
+            // 为了防止 原始数据，这里是浅拷贝，例如：
             // {
             //     name: "天安门",
             //     city: "Beijing",
@@ -427,11 +427,11 @@ function parseCsvToGeoJSON(csvString: string) {
  * const { isGeo, data } = parseCsvToGeoJSON(content);
  * 
  * 增加了 dbExtension 参数，优先使用数据库存的后缀，防止物理文件名被改乱（如 .json_12345）导致识别失败
- * 此处因为前面修改了一些代码，所以根本不会有物理文件名被改乱的问题（因为upload函数定义文件节点的时候，
+ * 此处因为前面 了一些代码，所以根本不会有物理文件名被改乱的问题（因为upload函数定义文件节点的时候，
  * 就上传的是正确的文件名（没有被乱改）），
  * 但为了保险起见，还是保留这个参数
  */
-// 这里传进去的filePath是新修改的带有唯一标识符的物理路径，并且是绝对路径
+// 这里传进去的filePath是新 的带有唯一标识符的物理路径，并且是绝对路径
 const readAndParseFile = async (filePath: string, dbExtension?: string) => {
     // 1. 检查物理文件是否存在
     try {
@@ -549,7 +549,7 @@ const readAndParseFile = async (filePath: string, dbExtension?: string) => {
  */
 export const uploadFile = async (req: Request, res: Response) => {
     try {
-        // 关键修改:获取 parentId
+        // 关键 :获取 parentId
         // Multer 处理 FormData 时，文本字段会在 req.body 中
         // 前端传过来的可能是字符串 'null' 或 'undefined'，需要清洗
         /**
@@ -744,7 +744,7 @@ export const uploadFile = async (req: Request, res: Response) => {
                 console.log(`[Database] 写入完成`);
             }
             // 情况 B: 普通数组 (纯 CSV 表格)
-            // 暂时跳过，或者需要修改 Feature Model 来支持无 Geometry 的数据。
+            // 暂时跳过，或者需要  Feature Model 来支持无 Geometry 的数据。
             // 目前只处理带地理信息的 Feature。
         }
 
@@ -785,7 +785,7 @@ export const uploadFile = async (req: Request, res: Response) => {
 export const createFolder = async (req: Request, res: Response) => {
     try {
         // 这里面的req.body里面的一些属性是在前端的 geoService.ts 里被定义的
-        // 这里面name在前端根本就没有被定义（后续要是需要这个参数，可以去前端的geoService.ts修改代码）
+        // 这里面name在前端根本就没有被定义（后续要是需要这个参数，可以去前端的geoService.ts 代码）
         const { name, parentId } = req.body;
         // const { parentId } = req.body;
 
@@ -877,7 +877,7 @@ function buildTreeFromFlatArray(nodes: any[]) {
 
     // 首先创建所有节点的映射
     // ._doc 是 Mongoose 库自带的一个内部属性
-    // 核心数据，就存放在 ._doc 属性里
+    //  数据，就存放在 ._doc 属性里
     nodes.forEach(node => {
         nodeMap[node._id.toString()] = { ...node._doc }; // 使用 _doc 获取实际数据
     });
@@ -1035,7 +1035,7 @@ export const renameNode = async (req: Request, res: Response) => {
 /**
  * 删除节点 控制器
  * DELETE /api/files/:id
- *  修改：同步删除Feature表里的成千上万条数据
+ *   ：同步删除Feature表里的成千上万条数据
  */
 export const deleteNode = async (req: Request, res: Response) => {
     try {
@@ -1112,9 +1112,9 @@ export const renameColumn = async (req: Request, res: Response) => {
             { $rename: { [`properties.${oldName}`]: `properties.${newName}` } }
         );
 
-        // 如果你是直接读写 GeoJSON 文件，需要 fs.readFile -> JSON.parse -> 遍历修改 -> fs.writeFile
+        // 如果你是直接读写 GeoJSON 文件，需要 fs.readFile -> JSON.parse -> 遍历  -> fs.writeFile
 
-        res.status(200).json({ message: '列名修改成功' });
+        res.status(200).json({ message: '列名 成功' });
     } catch (error) {
         console.error('重命名列出错:', error);
         res.status(500).json({ error: '服务器内部错误' });
@@ -1125,13 +1125,13 @@ export const renameColumn = async (req: Request, res: Response) => {
  * 更新文件 控制器
  * 控制器作用：更新文件内部数据接口
  * 对应前端: geoService.updateFileData
- * 重要修改: 根据 recordId 来修改 GeoJSON 中的 properties 并写回硬盘，防止行顺序改变导致的一些问题
+ * 重要 : 根据 recordId 来  GeoJSON 中的 properties 并写回硬盘，防止行顺序改变导致的一些问题
  */
 export const updateFileData = async (req: Request, res: Response) => {
   try {
     // req.params.id是例如 http://localhost:3000/api/files/65a1.../update 中的id
     const fileId = req.params.id;
-    // 从请求体中获取 recordId 和 data (修改后的行数据)
+    // 从请求体中获取 recordId 和 data ( 后的行数据)
     const { recordId, data } = req.body; 
 
     console.log(`[Update] 收到更新请求 - 文件ID: ${fileId}, 记录ID: ${recordId}`);
@@ -1165,7 +1165,7 @@ export const updateFileData = async (req: Request, res: Response) => {
         return res.status(404).json({ code: 404, message: '未找到指定记录' });
     }
 
-    //  异步同步修改硬盘文件（建议在需要保存csv的时候再使用）
+    //  异步同步 硬盘文件（建议在需要保存csv的时候再使用）
     // // 1. 数据库校验
     // const dbNode = await FileNode.findById(fileId);
     // if (!dbNode || !dbNode.path) return res.status(404).json({ code: 404, message: '文件不存在' });
@@ -1194,7 +1194,7 @@ export const updateFileData = async (req: Request, res: Response) => {
 
     //     const targetFeature = fileData.features[targetIndex];
         
-    //     // 更新属性 (保留原有的 geometry 和其他未修改的属性)
+    //     // 更新属性 (保留原有的 geometry 和其他未 的属性)
     //     // 更新的逻辑：对象展开运算符 (...) 有一个非常重要的特性：“后来居上”（Last One Wins）
     //     // 当你在一个新对象里展开多个对象时，如果出现了相同的 key（键名），写在后面的会覆盖写在前面的。
     //     targetFeature.properties = { ...targetFeature.properties, ...data };
@@ -1206,7 +1206,7 @@ export const updateFileData = async (req: Request, res: Response) => {
     //     fileNode = await saveDataSmart(fileNode, fileData);
         
     //     // 更新数据库的时间戳
-    //     // 告诉 MongoosefileNode 这个对象里的 updatedAt（更新时间）字段已经被修改了
+    //     // 告诉 MongoosefileNode 这个对象里的 updatedAt（更新时间）字段已经被 了
     //     // 要不然数据库有时候觉得属性没变，它为了省事，根本不会向数据库发送保存请求
     //     fileNode.markModified('updatedAt'); 
     //     await fileNode.save(); 
@@ -1229,7 +1229,7 @@ export const updateFileData = async (req: Request, res: Response) => {
         
     //     // 保存
     //     fileNode = await saveDataSmart(fileNode, fileData);
-    //     // 告诉 MongoosefileNode 这个对象里的 updatedAt（更新时间）字段已经被修改了
+    //     // 告诉 MongoosefileNode 这个对象里的 updatedAt（更新时间）字段已经被 了
     //     // 要不然数据库有时候觉得属性没变，它为了省事，根本不会向数据库发送保存请求
     //     fileNode.markModified('updatedAt'); 
     //     await fileNode.save();
@@ -1280,7 +1280,7 @@ export const addRow = async (req: Request, res: Response) => {
         // 仅仅返回刚刚成功插入数据库的那这一行数据
         const savedFeature = await Feature.create(newFeatureData);
 
-        // 4. 更新文件节点的修改时间 (updatedAt)
+        // 4. 更新文件节点的 时间 (updatedAt)
         await FileNode.findByIdAndUpdate(id, { updatedAt: new Date() });
 
         res.status(200).json({ 
@@ -1289,7 +1289,7 @@ export const addRow = async (req: Request, res: Response) => {
             data: savedFeature // 返回新生成的对象（带 _id）
         });
 
-        // //  同步修改硬盘中的文件，等需要保存/下载csv的时候再使用
+        // //  同步 硬盘中的文件，等需要保存/下载csv的时候再使用
         // // 使用 const 接收 DB 查询结果，确保类型收窄
         // const dbNode = await FileNode.findById(id);
         // if (!dbNode || !dbNode.path) return res.status(404).json({ code: 404, message: '文件不存在' });
@@ -1317,9 +1317,9 @@ export const addRow = async (req: Request, res: Response) => {
         //     };
         //     data.features.push(newFeature);
         //     // 使用saveDataSmart保存，我感觉主要是针对shp数据，如果有新增的行
-        //     // 这算作是数据修改了，那么会把shp转换成json保存在硬盘，进行修改保存
+        //     // 这算作是数据 了，那么会把shp转换成json保存在硬盘，进行 保存
         //     // 所以需要传一下fileNode参数（改变了路径）
-        //     // data是修改之后的新数据
+        //     // data是 之后的新数据
         //     fileNode = await saveDataSmart(fileNode, data);
             
         //     fileNode.markModified('updatedAt');
@@ -1347,7 +1347,7 @@ export const deleteRow = async (req: Request, res: Response) => {
         const { id } = req.params;
         const { recordId } = req.body;
 
-        //  在features集合中修改
+        //  在features集合中 
         // 1. 校验文件
         const fileNode = await FileNode.findById(id);
         if (!fileNode) return res.status(404).json({ code: 404, message: '文件不存在' });
@@ -1369,7 +1369,7 @@ export const deleteRow = async (req: Request, res: Response) => {
 
         res.status(200).json({ code: 200, message: '删除行成功' });
 
-        // //  同步修改硬盘中的文件，等需要保存/下载csv的时候再使用
+        // //  同步 硬盘中的文件，等需要保存/下载csv的时候再使用
         // // 1. 使用 const 接收 DB 查询结果，确保类型收窄
         // const dbNode = await FileNode.findById(id);
         // if (!dbNode || !dbNode.path) return res.status(404).json({ code: 404, message: '文件不存在' });
@@ -1459,7 +1459,7 @@ export const addColumn = async (req: Request, res: Response) => {
 
         res.status(200).json({ code: 200, message: '新增列成功' });
 
-        // //  同步修改硬盘中的文件，等需要保存/下载csv的时候再使用
+        // //  同步 硬盘中的文件，等需要保存/下载csv的时候再使用
         // // 1. 使用 const 接收 DB 查询结果，确保类型收窄
         // const dbNode = await FileNode.findById(id);
         // if (!dbNode || !dbNode.path) return res.status(404).json({ code: 404, message: '文件不存在' });
@@ -1523,7 +1523,7 @@ export const deleteColumn = async (req: Request, res: Response) => {
 
         res.status(200).json({ code: 200, message: '删除列成功' });
 
-        // //  同步修改硬盘中的文件，等需要保存/下载csv的时候再使用
+        // //  同步 硬盘中的文件，等需要保存/下载csv的时候再使用
         // // 1. 使用 const 接收 DB 查询结果，确保类型收窄
         // const dbNode = await FileNode.findById(id);
         // if (!dbNode || !dbNode.path) return res.status(404).json({ code: 404, message: '文件不存在' });

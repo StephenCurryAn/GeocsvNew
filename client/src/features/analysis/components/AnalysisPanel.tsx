@@ -210,7 +210,7 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({ fileId, fields }) => {
                                                     value={pivotConfig.groupByCol} 
                                                     onChange={(val) => setPivotConfig({ groupByCol: val })} 
                                                     showSearch
-                                                    //   [修改] 分段模式下禁用列
+                                                    //   [ ] 分段模式下禁用列
                                                     disabled={pivotConfig.method === 'boxplot' || pivotConfig.method === 'ridgeline'}
                                                 >
                                                     {fields.map(f => <Option key={f} value={f}>{f}</Option>)}
@@ -220,7 +220,7 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({ fileId, fields }) => {
                                                 <Select className="w-full" value={pivotConfig.method} onChange={(val) => {
                                                     setPivotConfig({ 
                                                         method: val,
-                                                        //   [修改] 选中 raw 模式时清空列
+                                                        //   [ ] 选中 raw 模式时清空列
                                                         groupByCol: (val === 'boxplot' || val === 'ridgeline') ? null : pivotConfig.groupByCol
                                                     })
                                                 }}>
@@ -251,7 +251,7 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({ fileId, fields }) => {
                                                 placeholder="选择字段" 
                                                 value={pivotConfig.valueField} 
                                                 onChange={(val) => setPivotConfig({ valueField: val })} 
-                                                //   [修改] boxplot 模式下也必须选字段
+                                                //   [ ] boxplot 模式下也必须选字段
                                                 disabled={pivotConfig.method === 'count'} 
                                                 showSearch
                                             >
@@ -329,7 +329,7 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({ fileId, fields }) => {
                                                         {model.displayName || model.modelName}
                                                     </div>
                                                     
-                                                    {/* 2. 模型核心描述 */}
+                                                    {/* 2. 模型 描述 */}
                                                     <div className="text-sm text-gray-300 leading-relaxed">
                                                         {model.description}
                                                     </div>
@@ -351,7 +351,7 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({ fileId, fields }) => {
                                                         </div>
                                                     )}
 
-                                                    {/*   4. 修改：动态拼接精准的调用语法 */}
+                                                    {/*   4.  ：动态拼接精准的调用语法 */}
                                                     <div className="mt-1 px-2 py-1.5 bg-black/60 rounded border border-emerald-800/80 font-mono text-xs text-emerald-400 break-all shadow-[0_0_8px_rgba(52,211,153,0.1)_inset]">
                                                         输入： <b className="text-white">={model.modelName}</b>(
                                                         {model.parameters && model.parameters.length > 0 
@@ -368,7 +368,7 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({ fileId, fields }) => {
                                                 {/* 左侧动态发光条 (默认极暗，悬浮瞬间亮起纯正祖母绿) */}
                                                 <div className="absolute left-0 top-0 bottom-0 w-1 bg-emerald-950 group-hover:bg-emerald-400 transition-colors duration-300"></div>
                                                 
-                                                {/*   模型核心指令名称: text-sm(与标题同大), font-bold, tracking-wide(微调字间距显得精致) */}
+                                                {/*   模型 指令名称: text-sm(与标题同大), font-bold, tracking-wide(微调字间距显得精致) */}
                                                 <span className="text-sm font-bold tracking-wide text-emerald-400 group-hover:text-emerald-300 transition-colors duration-300 drop-shadow-sm">
                                                     {model.modelName}
                                                 </span>

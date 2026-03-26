@@ -3,13 +3,19 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-// 使用 OpenAI SDK 接入大模型 (DeepSeek 或 Qwen)
+// 移除所有 proxy 相关的环境变量设置
 const openai = new OpenAI({
-    baseURL: 'https://api.deepseek.com', // 或者你的阿里云 baseURL
-    apiKey: process.env.DEEPSEEK_API_KEY, // 确保 .env 里有这个配置
+    // 替换为阿里云百炼的 OpenAI 兼容端点
+    baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    // 去阿里云百炼控制台申请一个免费的 API Key 填入 .env
+    apiKey: process.env.ALIYUN_API_KEY, 
+    // 强烈建议设置超时时间
+    timeout: 120 * 1000, 
 });
 
-// 1. 替换顶部的接口定义，增加 parameters 字段
+// 后续调用时，模型名称可以换成 'qwen-max' 或者阿里云托管的 'deepseek-coder'
+
+// 模型函数接口定义
 export interface AIGeneratedModel {
     modelName: string;
     displayName: string;
@@ -22,7 +28,7 @@ export interface AIGeneratedModel {
 const SYSTEM_PROMPT = `
 你是一位顶尖的 WebGIS 算法工程师与空间统计学专家。你的任务是根据用户的自然语言需求，抽象并封装一个通用的地理空间分析模型。
 
-【核心交互逻辑转变（极其重要）】
+【 交互逻辑转变（极其重要）】
 你生成的代码必须是**高度通用、可复用的算子**。绝对不要把具体的列名（如“毁坏房”、“人口”）硬编码写死在 Python 代码里！
 相反，你需要在 \`parameters\` 中定义这个模型需要哪些列，并在 Python 代码中通过 \`parameters.get('参数名')\` 动态读取用户在前端选择的列名。
 
@@ -50,7 +56,7 @@ JSON 的结构必须严格如下：
   "pythonCode": "完整的纯 Python 代码字符串，注意代码内部的换行符转义 (\\n)"
 }
 
-【Python 代码编写核心架构逻辑（必读！！！）】
+【Python 代码编写 架构逻辑（必读！！！）】
 1. 必须且只能包含一个主执行函数：\`def execute(df, parameters):\`
 2. \`parameters\`: 这是一个字典，包含了用户在前端传入的动态列名或数值。
    ★ 重点注意（动态列提取与容错）：
@@ -81,9 +87,7 @@ JSON 的结构必须严格如下：
 
 `;
 
-/**
- * 调度大模型生成结构化模型数据
- */
+// 调度大模型生成结构化模型数据
 export const generateModelCodeFromAI = async (userPrompt: string): Promise<AIGeneratedModel> => {
     try {
         const response = await openai.chat.completions.create({
@@ -120,7 +124,169 @@ export const generateModelCodeFromAI = async (userPrompt: string): Promise<AIGen
         return parsedData;
 
     } catch (error: any) {
-        console.error("调用大模型 API 解析失败:", error);
+
         throw new Error("AI 智能体未能生成合法的模型代码，请调整指令语后重试。");
+    }
+};
+
+// 意图拆解接口定义
+export interface WorkflowBlueprint {
+    pivot_strategy: {
+        files_needed: string[];      // 需要用到的文件名列表
+        operations: string[];        // 空间计算与聚合步骤（如网格化、相交、分组）
+        output_schema: string[];     // 预期产出的列名（如 ['学区名', '平均房价', '房源数']）
+    };
+    chart_strategy: {
+        chart_type: string;          // 图表类型（如 radar, heatmap, bar）
+        requirements: string;        // 绘制图表的具体细节和要求
+    };
+    explanation: string;             // 解释给用户听的规划思路
+}
+
+// 通用 JSON/代码 字符串清理辅助函数
+const cleanCodeBlock = (rawContent: string): string => {
+    return rawContent
+        .replace(/^```(json|python)?\n?/i, "")
+        .replace(/\n?```$/, "")
+        .trim();
+};
+
+
+// 意图拆解节点，将自然语言需求拆解为数据透视和可视化
+export const planWorkflow = async (userPrompt: string, availableFiles: any[]): Promise<WorkflowBlueprint> => {
+    // 动态提取当前工作区的文件信息
+    const filesInfo = availableFiles.map(f => `- 文件ID: ${f.id}, 文件名: ${f.fileName}, 字段包含: [${f.columns?.join(', ')}]`).join('\n');
+
+    const PLANNER_PROMPT = `
+你是一位顶尖的 WebGIS 数据分析架构师。
+你的任务是将用户的自然语言需求，严格拆解为“数据透视(空间聚合)”和“数据可视化(绘图)”两个独立阶段的蓝图。
+
+【当前可用的数据集】：
+${filesInfo || '暂无详细表结构，请根据用户描述推断'}
+
+【 规范】：
+1. 绝对不要写任何 Python 代码
+2. pivot_strategy 负责将海量明细数据聚合成精简的统计表。如果涉及空间计算，必须明确写在 operations 中。
+3. chart_strategy 负责根据聚合后的精简数据画图。
+4. 必须且只能输出一个合法的 JSON 对象。
+
+JSON 输出模板：
+{
+    "pivot_strategy": {
+        "files_needed": ["这里填上面提供的数据集名字或ID"],(这是需要用到的文件名列表)
+        "operations": ["生成5km六边形网格", "将事故点与网格进行空间连接 (sjoin)", "按网格ID分组计算总量"],(这是数据透视阶段的具体步骤，必须包含空间计算细节)
+        "output_schema": ["网格ID", "事故总数"](这是预期产出的列名)
+    },
+    "chart_strategy": {
+        "chart_type": "folium_map",(这是图表类型)
+        "requirements": "以事故总数为权重，绘制带有颜色梯度的交互式热力地图"(这是绘制图表的具体细节和要求)
+    },
+    "explanation": "我将为您把点数据聚合成5km网格，并生成可交互的空间热力地图。"(这是解释给用户听的规划思路)
+}
+`;
+
+    try {
+        const response = await openai.chat.completions.create({
+            model: "deepseek-coder",
+            messages: [
+                { role: "system", content: PLANNER_PROMPT },
+                { role: "user", content: `用户的需求是：\n${userPrompt}` }
+            ],
+            temperature: 0.1,
+        });
+
+        const rawContent = response.choices[0].message.content || "{}";
+        return JSON.parse(cleanCodeBlock(rawContent)) as WorkflowBlueprint;
+    } catch (error) {
+        console.error("拆解节点解析失败:", error);
+        throw new Error("规划失败，请检查需求描述。");
+    }
+};
+
+
+// 透视代码生成节点，根据拆解出的pivot_strategy生成Python代码
+export const generatePivotCode = async (pivotStrategy: any): Promise<string> => {
+    const PIVOT_CODER_PROMPT = `
+你是一位顶级的 Python 空间数据挖掘专家。
+请根据架构师提供的【数据透视策略】，编写一段极其健壮的 Python 空间聚合代码。
+
+【透视策略】：
+${JSON.stringify(pivotStrategy, null, 2)}
+
+【Python 代码严格规范】：
+1. 必须且只能包含一个主执行函数：\`def execute_pivot(gdf_dict, parameters):\`
+2. 数据获取：\`gdf_dict\` 是一个字典，请通过 \`df = gdf_dict.get('文件名或ID')\` 获取对应的 GeoDataFrame。
+3. 动态参数提取：涉及动态字段名，必须通过 \`parameters.get('参数名')\` 获取。
+4. 【脏数据处理原则】：
+   - 必须先将无效的 0、空字符串、纯空格替换为 np.nan：\`df[col] = df[col].replace([0, '', r'^\\s*$'], np.nan, regex=True)\`。
+   - 文本转数字参与计算时，必须使用 \`pd.to_numeric(df[col], errors='coerce')\`。
+5. 【专业空间计算】：
+   - 严禁使用 for 循环逐行计算！必须使用 geopandas 的向量化操作（如 sjoin, overlay, buffer）。
+   - 几何计算前，严禁直接在地理坐标系下计算！必须先 \`to_crs\` 转为以米为单位的局部 UTM 投影坐标系：\`df.to_crs(df.estimate_utm_crs())\`。
+6. 【返回值强制要求】：
+   - 必须将最终聚合完成的 DataFrame 转换为【列表字典】（List of Dicts）返回,绝对不要返回 HTML 或画图
+   - 代码示例：\`return aggregated_df.to_dict(orient='records')\`
+7. 只输出纯 Python 代码，绝对不要包含 Markdown 的 \`\`\`python 标签！
+`;
+
+    try {
+        const response = await openai.chat.completions.create({
+            model: "deepseek-coder",
+            messages: [
+                { role: "system", content: PIVOT_CODER_PROMPT },
+                { role: "user", content: "请开始编写健壮的空间透视Python代码" }
+            ],
+            temperature: 0.1,
+            max_tokens: 6000,
+        });
+
+        return cleanCodeBlock(response.choices[0].message.content || "");
+    } catch (error) {
+        console.error("Pivot Coder 生成失败:", error);
+        throw new Error("AI 生成数据透视代码失败。");
+    }
+};
+
+
+// 绘图代码生成节点，根据拆解出的chart_strategy生成Python代码
+export const generateChartCode = async (chartStrategy: any, dataSample: any[]): Promise<string> => {
+    const CHART_CODER_PROMPT = `
+你是一位顶级的 Python 数据可视化专家。
+请根据架构师提供的【图表策略】以及底层传来的【聚合数据样本】，编写一段专业的绘图代码。
+
+【图表策略】：
+${JSON.stringify(chartStrategy, null, 2)}
+
+【当前传入的数据样本 (前2行)】：
+${JSON.stringify(dataSample, null, 2)}
+强烈注意：请务必直接使用样本中的 Key 作为图表的 x 轴、y 轴或指标列名，绝对不要自己凭空编造列名！
+
+【Python 代码严格规范】：
+1. 必须且只能包含一个主执行函数：\`def execute_chart(df, parameters):\`
+2. \`df\` 已经是经过空间聚合后的标准 pandas DataFrame，里面装的就是上面的样本数据结构，不要再进行任何复杂的空间几何计算。
+3. 【HTML 生成规范】：
+   - 必须使用 \`plotly.express\` 或 \`plotly.graph_objects\` 生成美观、交互式的图表。
+   - 必须调用 \`fig.to_html(full_html=False, include_plotlyjs='cdn')\` 将图表导出为 HTML 字符串片段。
+4. 【返回值强制要求】：
+   - 必须返回一个 Python 字典，严格包含 'html_string' 这个 key。
+   - 代码示例：\`return {"html_string": html_str}\`
+5. 只输出纯 Python 代码，绝对不要包含 Markdown 的 \`\`\`python 标签！
+`;
+
+    try {
+        const response = await openai.chat.completions.create({
+            model: "deepseek-coder",
+            messages: [
+                { role: "system", content: CHART_CODER_PROMPT },
+                { role: "user", content: "请根据真实数据样本，编写完美的 Plotly 绘图代码。" }
+            ],
+            temperature: 0.1,
+            max_tokens: 3500
+        });
+
+        return cleanCodeBlock(response.choices[0].message.content || "");
+    } catch (error) {
+        console.error("Chart Coder 生成失败:", error);
+        throw new Error("AI 生成图表绘制代码失败。");
     }
 };

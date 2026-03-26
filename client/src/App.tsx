@@ -10,7 +10,7 @@ import { geoService , type PaginatedGeoResponse} from './services/geoService';
 import { App as AntdApp } from 'antd'; // 1. 引入 App 组件 (重命名为 AntdApp 避免冲突)
 
 function App() {
-    // 核心修改：使用 useApp Hook 获取带上下文的实例
+    //   ：使用 useApp Hook 获取带上下文的实例
     // 这样弹出的 message 和 modal 就会跟随全局主题（变黑），且不会报错
     const { message, modal } = AntdApp.useApp();
 
@@ -89,8 +89,8 @@ function App() {
     * 
     * 在 React 中，数据是单向流动的（从父到子）。
     * 父组件 (App)：持有数据（State）。
-    * 子组件 (DataPivot, LeftPanel)：只负责显示，没有权利直接修改父组件的数据。
-    * 那子组件想修改数据怎么办？ 父组件会写好一个函数（比如 handleDataChange），
+    * 子组件 (DataPivot, LeftPanel)：只负责显示，没有权利直接 父组件的数据。
+    * 那子组件想 数据怎么办？ 父组件会写好一个函数（比如 handleDataChange），
     * 然后像传递数据一样，把这个函数传给子组件。
     * 当子组件发生操作（比如用户填了表），子组件就“打电话”给父组件（调用这个函数），让父组件自己去改。
     * 这个“打电话”的过程，就是 Call Back（回调）。
@@ -176,7 +176,7 @@ function App() {
         await loadFileData(activeFileId, activeFileName, page, pageSize);
     };
 
-    // 处理表格数据修改
+    // 处理表格数据 
     const handleDataChange = async (recordId: string | number, newRowData: any) => {
         if (!activeFileName || !currentData) return;
         
@@ -310,13 +310,13 @@ function App() {
         }
 
         try {
-            message.loading({ content: '正在修改列名...', key: 'renameMsg' });
+            message.loading({ content: '正在 列名...', key: 'renameMsg' });
 
             // 发送请求给后端持久化保存 (稍后在 geoService 中实现)
             await geoService.renameColumn(activeFileId, oldName, newName);
             
             //   本地乐观更新 (Optimistic UI update)
-            // 不需要重新请求整个文件，直接修改前端内存里的数据，让表格瞬间刷新
+            // 不需要重新请求整个文件，直接 前端内存里的数据，让表格瞬间刷新
             if (currentData && currentData.features) {
                 const updatedFeatures = currentData.features.map((feature: any) => {
                     const properties = { ...feature.properties };
@@ -338,10 +338,10 @@ function App() {
                 }));
             }
 
-            message.success({ content: `列名 [${oldName}] 已修改为 [${newName}]`, key: 'renameMsg' });
+            message.success({ content: `列名 [${oldName}] 已 为 [${newName}]`, key: 'renameMsg' });
         } catch (error: any) {
             console.error(error);
-            message.error({ content: error.message || '修改列名失败', key: 'renameMsg' });
+            message.error({ content: error.message || ' 列名失败', key: 'renameMsg' });
         }
     };
 
@@ -370,7 +370,7 @@ function App() {
             // 当表格行被点击时，更新 App 的状态
             onRowClick={(record) => setSelectedFeature(record)}
             selectedFeature={selectedFeature}
-            // 传入修改回调
+            // 传入 回调
             onDataChange={handleDataChange}
             // 传入行列增删
             onAddRow={handleAddRow}
@@ -390,7 +390,7 @@ function App() {
           fileId={activeFileId}
           // 传入选中的要素，用于高亮和弹窗
           selectedFeature={selectedFeature}
-          // React 中最核心的父子组件通信模式，具体来说是子组件向父组件传递数据
+          // React 中最 的父子组件通信模式，具体来说是子组件向父组件传递数据
           // “父组件给子组件一个‘对讲机’（函数），当子组件里发生点击事件时，
           // 子组件通过这个对讲机把‘被点击的数据’（feature）传回给父组件，
           // 父组件再把它存起来(使用setSelectedFeature存在selectedFeature中)”

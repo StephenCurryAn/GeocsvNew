@@ -1,5 +1,4 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { App } from 'antd';
 import { 
     Bot, 
     Sparkles, 
@@ -19,7 +18,6 @@ interface ChatMessage {
 }
 
 const GeoAIAgent: React.FC = () => {
-    const { message } = App.useApp();
     const [isOpen, setIsOpen] = useState(false);
     const [isGenerating, setIsGenerating] = useState(false);
     const [generatedCode, setGeneratedCode] = useState<string | null>(null);
@@ -74,7 +72,6 @@ const GeoAIAgent: React.FC = () => {
         } catch (error: any) {
             const errorMsg = error.response?.data?.error || '神经元连接失败，请重试';
             setChatHistory(prev => [...prev, { role: 'agent', content: `[Error]: ${errorMsg}` }]);
-            message.error('AI 生成遇到阻碍');
         } finally {
             setIsGenerating(false);
         }

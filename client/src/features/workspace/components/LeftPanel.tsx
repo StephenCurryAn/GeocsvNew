@@ -42,7 +42,7 @@ const LeftPanel: React.FC<LeftPanelProps> = ({ onDataLoaded, onSelectFile, activ
           ]}
           className="bg-gray-800 text-gray-400 custom-segmented"
         />
-        {/* CSS 穿透：强制修改 Segmented 样式适配深色模式 */}
+        {/* CSS 穿透：强制  Segmented 样式适配深色模式 */}
         <style>{`
           .custom-segmented .ant-segmented-item-selected {
             background-color: #1677ff !important;

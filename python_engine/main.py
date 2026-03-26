@@ -13,18 +13,22 @@ import math
 from pymongo import MongoClient, UpdateOne
 from bson.objectid import ObjectId
 
+# 绘图库
+import plotly.express as px
+import plotly.graph_objects as go
+import folium
+import numpy as np
+
+
 app = FastAPI(title="动态模型计算引擎")
-# ==========================================
-#   核心突破：配置直连 MongoDB
-# ==========================================
+
+# 配置直连 MongoDB
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://admin:123456@172.18.0.2:27017/Geoex?authSource=admin")
-DB_NAME = "Geoex" # 如果你建库时取了别的名字（如 geocsv），请改这里！
+DB_NAME = "Geoex" 
 client = MongoClient(MONGO_URI)
 db = client[DB_NAME]
 
-# ==========================================
-#   数据模型改造：不再接收海量 Data，只接收“指令”
-# ==========================================
+# 数据模型改造
 class ModelInput(BaseModel):
     model_name: str
     file_id: str             #   Node.js 传来的文件ID
@@ -33,9 +37,7 @@ class ModelInput(BaseModel):
 
 MODEL_REGISTRY = {}
 
-# ==========================================
-# 模型热发现与重载机制
-# ==========================================
+# 模型重载机制
 def auto_discover_models():
     global MODEL_REGISTRY
     loaded_count = 0
@@ -218,6 +220,141 @@ async def execute_model(payload: ModelInput):
         traceback.print_exc()
         print(f"{'='*50}\n")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+
+# ==========================================
+# 数据透视和绘图的可扩展
+
+# 透视与绘图的输入数据模型
+class PivotInput(BaseModel):
+    python_code: str
+    file_ids: List[str]
+    parameters: Optional[Dict[str, Any]] = {}
+
+class ChartInput(BaseModel):
+    python_code: str
+    data: List[Dict[str, Any]] # Node.js 传来的 JSON 数组
+    parameters: Optional[Dict[str, Any]] = {}
+
+# 数据透视引擎 (只读数据库)
+@app.post("/api/models/pivot_only")
+async def execute_pivot_only(payload: PivotInput):
+    start_time = time.time()
+    try:
+        gdf_dict = {}
+        print(f"\n[Pivot Sandbox] 收到透视任务，准备提取 {len(payload.file_ids)} 个文件的数据...")
+        
+        # 1. 循环拉取所有被选中的文件，组装成字典
+        for fid in payload.file_ids:
+            cursor = db.features.find({"fileId": ObjectId(fid)})
+            df_data = []
+            for doc in cursor:
+                row = {"_id": str(doc["_id"]), "_geometry": doc.get("geometry")}
+                props = doc.get("properties", {})
+                row.update(props) # 把 properties 拍平拉出来
+                df_data.append(row)
+                
+            if not df_data:
+                continue
+                
+            df = pd.DataFrame(df_data)
+            
+            # 空间几何列恢复
+            if '_geometry' in df.columns:
+                df['geometry'] = df['_geometry'].apply(
+                    lambda g: shape(g) if isinstance(g, dict) and g.get('type') else None
+                )
+                df = gpd.GeoDataFrame(df, geometry='geometry')
+                if df.crs is None:
+                    df.set_crs(epsg=4326, inplace=True)
+                df.drop(columns=['_geometry'], inplace=True)
+                
+            # 将组装好的 GeoDataFrame 放入字典，键名为 fileId
+            gdf_dict[fid] = df
+
+        if not gdf_dict:
+            raise ValueError("所有传入的文件ID均未在数据库中找到数据！")
+
+        print("[Pivot Sandbox] 数据装载完毕，正在执行 AI 动态算子...")
+
+        # 2. 安全沙盒环境准备 (自动注入常用的包，防止 AI 忘记 import)
+        exec_globals = {
+            "pd": pd, "gpd": gpd, "np": np, "math": math
+        }
+        local_scope = {}
+        
+        # 3. 动态执行 AI 生成的代码
+        exec(payload.python_code, exec_globals, local_scope)
+        
+        if 'execute_pivot' not in local_scope:
+            raise ValueError("AI 生成的代码中未找到主函数 'execute_pivot'！")
+            
+        execute_pivot = local_scope['execute_pivot']
+        
+        # 4. 执行透视计算！
+        result_data = execute_pivot(gdf_dict, payload.parameters)
+        
+        print(f"[Pivot Sandbox] 透视成功！生成了 {len(result_data)} 条高度聚合数据。耗时: {round((time.time() - start_time)*1000, 2)}ms")
+        
+        return {
+            "status": "success",
+            "data": result_data # 直接返回 List of Dicts
+        }
+
+    except Exception as e:
+        print(f"\n{'='*50}")
+        print(f"内存透视算子执行崩溃，AI 写的代码如下:\n{payload.python_code}")
+        traceback.print_exc()
+        print(f"{'='*50}\n")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# 绘图引擎 (脱离数据库，只认数据)
+@app.post("/api/models/chart_only")
+async def execute_chart_only(payload: ChartInput):
+    start_time = time.time()
+    try:
+        print(f"\n[Chart Sandbox] 收到绘图任务，传入了 {len(payload.data)} 条聚合数据样本...")
+        
+        # 1. 把 Node.js 传来的 JSON 直接转回 Pandas DataFrame
+        df = pd.DataFrame(payload.data)
+        
+        # 2. 准备绘图沙盒 (给 AI 准备好画笔)
+        exec_globals = {
+            "pd": pd, "np": np, 
+            "px": px, "go": go, "folium": folium
+        }
+        local_scope = {}
+        
+        # 3. 动态执行 AI 写的绘图代码
+        exec(payload.python_code, exec_globals, local_scope)
+        
+        if 'execute_chart' not in local_scope:
+            raise ValueError("AI 生成的代码中未找到主函数 'execute_chart'！")
+            
+        execute_chart = local_scope['execute_chart']
+        
+        # 4. 执行画图！
+        result_dict = execute_chart(df, payload.parameters)
+        
+        if "html_string" not in result_dict:
+            raise ValueError("大模型未按规范返回包含 'html_string' 的字典！")
+            
+        print(f"[Chart Sandbox] 绘图渲染成功！耗时: {round((time.time() - start_time)*1000, 2)}ms")
+        
+        return {
+            "status": "success",
+            "html_string": result_dict["html_string"]
+        }
+
+    except Exception as e:
+        print(f"\n{'='*50}")
+        print(f"绘图算子执行崩溃，AI 写的代码如下:\n{payload.python_code}")
+        traceback.print_exc()
+        print(f"{'='*50}\n")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 if __name__ == "__main__":
     import uvicorn

@@ -1,5 +1,7 @@
 import { Router } from 'express';
-import { pivotAnalysis, generateGrid, exportGrid, getRegisteredModels, registerModelByAI, executeTableFormula, createModelViaNaturalLanguage } from '../controllers/analysisController';
+import { pivotAnalysis, generateGrid, exportGrid, 
+    getRegisteredModels, registerModelByAI, 
+    executeTableFormula, createModelViaNaturalLanguage, executeDynamicPipeline } from '../controllers/analysisController';
 
 const router = Router();
 
@@ -23,5 +25,9 @@ router.post('/execute-formula', executeTableFormula);
 
 // 通过自然语言创建模型路由
 router.post('/agent/generate-model', createModelViaNaturalLanguage);
+
+
+// 动态管道接口
+router.post('/dynamic-pipeline', executeDynamicPipeline);
 
 export default router;

@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import Feature from '../models/Feature';
 import ModelRegistry from '../models/ModelRegistry';
-import { generateModelCodeFromAI } from '../utils/llmService';
+import { generateModelCodeFromAI, planWorkflow, generatePivotCode, generateChartCode } from '../utils/llmService';
 import mongoose from 'mongoose';
 import * as turf from '@turf/turf';
 import axios from 'axios';
@@ -245,7 +245,7 @@ export const generateGrid = async (req: Request, res: Response): Promise<void> =
             return;
         }
         
-        //   [配置] 定义缓冲区圈数 n (可在此处修改，或从前端传入)
+        //   [配置] 定义缓冲区圈数 n (可在此处 ，或从前端传入)
         const BUFFER_RINGS = 2; // 显示周围 2 圈网格
 
         console.log(`[Grid] Generating ${shape} grid (${size}km) for file ${fileId}`);
@@ -304,7 +304,7 @@ export const generateGrid = async (req: Request, res: Response): Promise<void> =
             const geometryType = feature.geometry.type;
             let rawValue = 1;
             
-            //   [修改] 确定 rawValue (根据模式)
+            //   [ ] 确定 rawValue (根据模式)
             if (method === 'coverage') {
                 // 覆盖率模式：计算几何体自身的绝对量（面积或长度）
                 if (isPolygonLayer) {
@@ -611,7 +611,7 @@ export const exportGrid = async (req: Request, res: Response): Promise<void> => 
             const geometryType = feature.geometry.type;
             const candidateCells = gridIndex.query(feature);
 
-            //   [新增] 计算 rawValue (核心指标)
+            //   [新增] 计算 rawValue ( 指标)
             let rawValue = 1; // 默认为计数 (count)
             if (method === 'coverage') {
                 if (isPolygonLayer) {
@@ -658,7 +658,7 @@ export const exportGrid = async (req: Request, res: Response): Promise<void> => 
                         cell.properties.count += 1;
                         cell.properties._weight += ratio;
                         
-                        //   [新增] 累加核心 Value
+                        //   [新增] 累加  Value
                         // Count模式: 1 * ratio
                         // Coverage模式: Area * ratio (即网格内的实际面积)
                         cell.properties.value += rawValue * ratio;
@@ -807,7 +807,7 @@ export const registerModelByAI = async (req: Request, res: Response) => {
 };
 
 // ==========================================
-// 2. 核心模型函数计算 (高速调度网关 BFF)
+// 2.  模型函数计算 (高速调度网关 BFF)
 // ==========================================
 export const executeTableFormula = async (req: Request, res: Response) => {
   try {
@@ -824,7 +824,7 @@ export const executeTableFormula = async (req: Request, res: Response) => {
         modelDef = { parameters: [] } as any; 
     }
 
-    //   核心突破：动态参数分类与路由 (保持原有优秀逻辑)
+    //    ：动态参数分类与路由 (保持原有优秀逻辑)
     if (rawArgs && Array.isArray(rawArgs)) {
         reqColumns = [];
         reqParams = {};
@@ -887,9 +887,8 @@ export const executeTableFormula = async (req: Request, res: Response) => {
   }
 };
 
-// ==========================================
-//   核心突破：Agentic Workflow 模型智能生成与元数据提取
-// ==========================================
+
+// 模型智能生成与元数据提取
 export const createModelViaNaturalLanguage = async (req: Request, res: Response) => {
     try {
         const { userDescription } = req.body;
@@ -904,7 +903,7 @@ export const createModelViaNaturalLanguage = async (req: Request, res: Response)
         // 1. 唤醒大模型，返回结构化的 JSON 数据（包含名字、描述、参数、代码）
         const aiResult = await generateModelCodeFromAI(userDescription);
         
-        //   关键修改：在这里解构出 parameters
+        //   关键 ：在这里解构出 parameters
         const { modelName, displayName, description, parameters, requiredColumns, pythonCode } = aiResult;
 
         console.log(`[GeoAI Agent] 思考完成！模型名: ${modelName}，提取到 ${parameters?.length || 0} 个参数。准备注入系统。`);
@@ -926,7 +925,7 @@ export const createModelViaNaturalLanguage = async (req: Request, res: Response)
                 modelName: modelName.toUpperCase(), 
                 displayName: displayName, 
                 description: description, 
-                parameters: parameters || [], //   核心：把大模型解析出的参数定义直接存入数据库！
+                parameters: parameters || [], //    ：把大模型解析出的参数定义直接存入数据库！
                 requiredColumns: requiredColumns || [], //   新增：存入必须的列名
                 status: 'active' 
             },
@@ -943,5 +942,104 @@ export const createModelViaNaturalLanguage = async (req: Request, res: Response)
     } catch (error: any) {
         console.error("大模型 Agent 执行失败:", error);
         res.status(500).json({ error: error.message || '系统内部异常' });
+    }
+};
+
+
+// 数据透视API期望的返回类型
+interface PivotApiResponse {
+    status: string;
+    data: any[]; // 一个包含字典的数组
+}
+
+// 绘图API期望的返回类型
+interface ChartApiResponse {
+    status: string;
+    html_string: string; // 一段 HTML 字符串
+}
+
+// 多节点进行可扩展的透视和绘图
+export const executeDynamicPipeline = async (req: Request, res: Response): Promise<void> => {
+    try {
+        const { userPrompt, fileIds } = req.body;
+
+        if (!userPrompt || !fileIds || fileIds.length === 0) {
+            res.status(400).json({ error: "缺少用户需求或未选择任何文件" });
+            return;
+        }
+
+        console.log(`\n======================================================`);
+        console.log(`[Pipeline] 分析文件数: ${fileIds.length}`);
+        console.log(`[Pipeline] 用户意图: "${userPrompt}"`);
+        
+
+        // 提取工作区文件元数据 (给 Planner 当上下文)
+        const availableFiles = [];
+        for (const fId of fileIds) {
+            // 直接去数据库查该文件的一条 Feature，以此获取真实的列名
+            const sample = await Feature.findOne({ fileId: new mongoose.Types.ObjectId(fId) });
+            if (sample) {
+                availableFiles.push({
+                    id: fId,
+                    fileName: `文件_${fId.slice(-4)}`, // 也可以换成真实文件名
+                    columns: Object.keys(sample.properties || {})
+                });
+            }
+        }
+
+        // 1 意图拆解节点
+        console.log(`[Pipeline] 节点1正在拆解意图...`);
+        const blueprint = await planWorkflow(userPrompt, availableFiles);
+        console.log(`[Pipeline] 拆解意图完成:`, blueprint.explanation);
+
+        // 2 数据透视代码生成节点
+        console.log(`[Pipeline] 节点2正在编写透视代码...`);
+        const pivotCode = await generatePivotCode(blueprint.pivot_strategy);
+
+        // 3 Python执行透视
+        console.log(`[Pipeline] 节点3正在执行空间透视...`);
+        const pivotResponse = await axios.post<PivotApiResponse>(`${PYTHON_API_URL}/models/pivot_only`, {
+            python_code: pivotCode,
+            file_ids: fileIds
+        });
+        
+        // 预期Python返回的JSON数组结构
+        const aggregatedData = pivotResponse.data.data; 
+        if (!aggregatedData || aggregatedData.length === 0) {
+            throw new Error("透视结果为空，请检查需求或数据是否匹配");
+        }
+        console.log(`[Pipeline] 透视计算成功，共有 ${aggregatedData.length} 条统计记录`);
+
+        // 4 绘图代码生成节点
+        console.log(`[Pipeline] 节点4正在编写绘图代码...`);
+        // 传前 3 条数据当样本，保证大模型写的图表列名正确
+        const chartCode = await generateChartCode(blueprint.chart_strategy, aggregatedData.slice(0, 3));
+
+
+        // 5 Python执行绘图
+        console.log(`[Pipeline] 节点5正在渲染图表...`);
+        const chartResponse = await axios.post<ChartApiResponse>(`${PYTHON_API_URL}/models/chart_only`, {
+            python_code: chartCode,
+            data: aggregatedData // 这里直接把数据传过去画图
+        });
+        const htmlContent = chartResponse.data.html_string;
+
+        console.log(`[Pipeline] 全部执行成功，返回前端渲染。`);
+        console.log(`======================================================\n`);
+
+        // 返回给前端
+        res.json({
+            code: 200,
+            blueprint: blueprint,     // 可以返回给前端展示“AI的思考过程”
+            tableData: aggregatedData,// 供前端渲染透视后的精简数据表格
+            chartHtml: htmlContent    // 供前端 iframe 渲染酷炫的可视化图表
+        });
+
+    } catch (error: any) {
+        console.error("\n[Pipeline错误]", error.response?.data || error.message);
+        res.status(500).json({ 
+            error: '执行失败', 
+            details: error.response?.data?.detail || error.message 
+        });
     }
 };

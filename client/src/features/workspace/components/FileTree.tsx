@@ -182,7 +182,7 @@ const FileTree: React.FC<FileTreeProps> = ({ onDataLoaded, onSelectFile }) => {
         fetchFileTree(); // 刷新树以获取最新状态
     } catch (error: any) {
         message.error(error.message);
-        // 即使失败也要退出编辑模式，或者保持编辑模式让用户修改
+        // 即使失败也要退出编辑模式，或者保持编辑模式让用户 
         // 这里选择保持编辑模式
         // 如果这个输入框（inputRef）目前存在于页面上，请把光标自动移进去（聚焦）。
         inputRef.current?.focus();
@@ -288,7 +288,7 @@ const FileTree: React.FC<FileTreeProps> = ({ onDataLoaded, onSelectFile }) => {
       if (response) { // response 就是 data.data
           message.success(`${response.fileName} 上传成功！`);
           
-          // 2.  【关键修改】上传成功后，立即请求第一页数据
+          // 2.  【关键 】上传成功后，立即请求第一页数据
           // 因为后端不再返回 geoJson，前端需要自己去拉
           const firstPageData = await geoService.getFileData(response._id, 1, 20);
 
@@ -477,7 +477,7 @@ const FileTree: React.FC<FileTreeProps> = ({ onDataLoaded, onSelectFile }) => {
       <div className="flex-1 overflow-y-auto py-2" onClick={handleTreeClick}>
         {/* 🎨 样式注入：覆盖 Ant Design 默认的白色样式，适配黑色炫酷主题 */}
         <style>{`
-          /* 1. 核心：强制移除 Tree 组件的默认白色背景和黑色文字 */
+          /* 1.  ：强制移除 Tree 组件的默认白色背景和黑色文字 */
           .dark-tree.ant-tree {
             background: transparent !important;
             color: #ffffff !important; /* ✨ 从 #9ca3af 改为 #e5e7eb (更亮) */
@@ -561,14 +561,14 @@ const FileTree: React.FC<FileTreeProps> = ({ onDataLoaded, onSelectFile }) => {
               <span
                 className="
                   flex items-center justify-center
-                  text-gray-400       /* 1. 修改颜色：这里改成浅灰色，你可以改 */
+                  text-gray-400       /* 1.  颜色：这里改成浅灰色，你可以改 */
                   hover:text-white    /* 可选：鼠标悬停时变亮 */
                   transition-transform duration-200 /* 可选：添加平滑过渡效果 */
                 "
               >
                 {expanded ? (
                   <DownOutlined
-                    /* 2. 修改粗细：Ant Design 图标默认很细，通过加描边来实现“加粗”效果 */
+                    /* 2.  粗细：Ant Design 图标默认很细，通过加描边来实现“加粗”效果 */
                     style={{ strokeWidth: '150', stroke: 'currentColor' }}
                   />
                 ) : (

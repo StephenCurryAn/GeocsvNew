@@ -13,10 +13,10 @@ export interface ScatterConfig {
     xField: string | null;
     yField: string | null;
 }
-//   [修改] 添加 'Ridgeline' 到图表类型
+//   [ ] 添加 'Ridgeline' 到图表类型
 export type ChartType = 'Bar' | 'Radar' | 'Scatter' | 'Pie' | 'Heatmap' | 'BoxPlot' | 'Ridgeline';
 
-//   [修改] 扩展支持的色系 Key，增加渐变色系
+//   [ ] 扩展支持的色系 Key，增加渐变色系
 export type ColorThemeType = 
     // 单色系 (Opacity Mode)
     | 'cyan' | 'purple' | 'blue' | 'green' | 'yellow' | 'red' 
