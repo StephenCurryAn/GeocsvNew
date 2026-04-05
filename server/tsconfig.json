@@ -2,9 +2,9 @@
   "compilerOptions": {
     /* 1. 基础编译设置 */
     "target": "es2016",                                  /* 编译成兼容性较好的 JS 版本 */
-    "module": "commonjs",                                /* Node.js 默认使用 CommonJS 规范 (require/module.exports) */
-    "moduleResolution": "node",                          /* 按照 Node 的方式查找文件 */
-    "baseUrl": "./",                                     /* 基础路径 */
+    "module": "Node16",                                /* Node.js 默认使用 CommonJS 规范 (require/module.exports) */
+    "moduleResolution": "Node16",                          /* 按照 Node 的方式查找文件 */
+    // "baseUrl": "./",                                     /* 基础路径 */
 
     /* 2. 目录管理 (非常重要！) */
     "rootDir": "./src",                                  /* 告诉 TS：我的源代码都在 src 文件夹里 */
