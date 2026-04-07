@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { uploadFile, createFolder, getFileTree, getFileData,
         renameNode, deleteNode, updateFileData,
-        addRow, deleteRow, addColumn, deleteColumn, exportFile, renameColumn } from '../controllers/fileController';
+        addRow, deleteRow, addColumn, deleteColumn, exportFile, renameColumn, getTile } from '../controllers/fileController';
 import upload from '../utils/uploadConfig';
 
 /**
@@ -91,6 +91,14 @@ router.post('/:id/column', addColumn);
 router.post('/:id/column/delete', deleteColumn);
 // 重命名列名
 router.put('/:id/columns/rename', renameColumn);
+
+/**
+ * GET /:id/tiles/:z/:x/:y
+ * MVT 矢量瓦片接口（PostGIS ST_AsMVT）
+ * 注意：此路由必须在 /:id/data 之前，防止路由冲突
+ * MapLibre GL 前端会自动按需请求各层级瓦片
+ */
+router.get('/:id/tiles/:z/:x/:y', getTile);
 
 /**
  * GET /:id/export

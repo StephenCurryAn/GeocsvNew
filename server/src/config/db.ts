@@ -1,30 +1,51 @@
-import mongoose from 'mongoose';
+import { Pool } from 'pg';
 
-/**
- * 数据库连接函数
- * 连接到本地 MongoDB 实例
- */
+// 1. 创建 PostgreSQL 连接池
+const pool = new Pool({
+  user: 'geocsv',             // 你在 Docker 中设置的用户名
+  host: '127.0.0.1',          // 本地地址 (避免 localhost 解析问题)
+  database: 'geocsv',         // 你在 Docker 中设置的数据库名
+  password: 'geocsv',         // 你在 Docker 中设置的密码
+  port: 5432,
+
+  // 连接池优化配置
+  max: 20,                    // 最大并发连接数
+  idleTimeoutMillis: 30000,   // 空闲连接释放时间
+  connectionTimeoutMillis: 2000, // 连接超时时间
+});
+
+// 监听连接池状态
+pool.on('connect', () => {
+  console.log('[Database] PostgreSQL 连接池分配成功');
+});
+
+pool.on('error', (err) => {
+  console.error('[Database] PostgreSQL 连接池发生意外错误', err);
+  process.exit(-1);
+});
+
+// 2. 导出一个统一的 SQL 执行辅助函数 (防 SQL 注入)
+export const query = async (text: string, params?: any[]) => {
+  const start = Date.now();
+  const res = await pool.query(text, params);
+  const duration = Date.now() - start;
+  // 如果查询超过 500ms，打印慢查询日志帮助排查卡顿
+  if (duration > 500) {
+    console.warn(`[Slow Query] executed query: { text: ${text}, duration: ${duration}ms, rows: ${res.rowCount} }`);
+  }
+  return res;
+};
+
+// 3. 替换你原来的 connectDB 函数，用于 index.ts 启动时的验证
 export const connectDB = async (): Promise<void> => {
   try {
-    // MongoDB 连接字符串
-    // const mongoURI = 'mongodb://geoapp:geoapp123@localhost:27017/Geoex';
-    //      1：将 localhost 强行改为 127.0.0.1，避开 Node.js 的 IPv6 解析坑
-    //      2：使用你刚才 mongosh 测试成功的 admin 账号，并带上 ?authSource=admin
-    // const mongoURI = 'mongodb://admin:123456@127.0.0.1:27017/Geoex?authSource=admin';
-    
-    //      3：如果你的 MongoDB 是在 Docker 里跑的，确保用容器 IP 而不是 localhost
-    // 容器 IP 可以通过 `docker inspect <container_id>` 查看
-    const mongoURI = 'mongodb://admin:123456@172.18.0.2:27017/Geoex?authSource=admin';
-
-    // （补充：如果你确实在 MongoDB 里专门建过 geoapp 这个子账号，你也可以用下面这行：）
-    // const mongoURI = 'mongodb://geoapp:geoapp123@127.0.0.1:27017/Geoex';
-
-    // 连接到 MongoDB
-    const conn = await mongoose.connect(mongoURI);
-    
-    console.log(`MongoDB 连接成功: ${conn.connection.host}`);
+    // 测试连接，并顺便查一下 PostGIS 的版本，确认空间扩展正常
+    const res = await pool.query('SELECT PostGIS_Version();');
+    console.log(`[Database] 成功连接 PostGIS! 版本: ${res.rows[0].postgis_version}`);
   } catch (error) {
-    console.error('数据库连接失败:', error);
-    process.exit(1); // 连接失败时退出进程
+    console.error('[Database] 数据库连接失败或未安装 PostGIS 扩展:', error);
+    process.exit(1);
   }
 };
+
+export default pool;

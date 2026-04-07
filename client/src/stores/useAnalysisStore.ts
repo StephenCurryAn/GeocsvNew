@@ -65,6 +65,14 @@ interface AnalysisState {
     // 比如用户点击了 "2021" 年的柱子，这里就存 "2021"
     activeColumn: string | null;
     setActiveColumn: (col: string | null) => void;
+
+    // --- AI 图表透出渲染状态 ---
+    aiChartOption: any | null;
+    setAiChartOption: (option: any) => void;
+    aiChartHtml: string | null;
+    setAiChartHtml: (html: string | null) => void;
+    chartMode: 'traditional' | 'ai';
+    setChartMode: (mode: 'traditional' | 'ai') => void;
 }
 
 export const useAnalysisStore = create<AnalysisState>((set) => ({
@@ -118,5 +126,12 @@ export const useAnalysisStore = create<AnalysisState>((set) => ({
     //   [新增] 初始化
     activeColumn: null,
     setActiveColumn: (col) => set({ activeColumn: col }),
+
+    aiChartOption: null,
+    setAiChartOption: (option) => set({ aiChartOption: option }),
+    aiChartHtml: null,
+    setAiChartHtml: (html) => set({ aiChartHtml: html }),
+    chartMode: 'traditional',
+    setChartMode: (mode) => set({ chartMode: mode }),
 
 }));

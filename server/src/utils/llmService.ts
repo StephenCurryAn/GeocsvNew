@@ -126,14 +126,22 @@ export const generateModelCodeFromAI = async (userPrompt: string): Promise<AIGen
 };
 
 export interface WorkflowBlueprint {
-    pivot_strategy: {
-        files_needed: string[];      
-        operations: string[];        
-        output_schema: string[];     
-    };
-    chart_strategy: {
-        chart_type: string;          
-        requirements: string;        
+    task_type: string;
+    data_dependencies: Array<{
+        file_id: string;
+        role: string;
+        description: string;
+    }>;
+    parameters: Array<{
+        name: string;
+        type: string;
+        defaultValue: any;
+        description: string;
+    }>;
+    visualization_spec: {
+        chart_type: string;
+        dimensions: string[];
+        metrics: string[];
     };
     explanation: string;             
 }
@@ -151,20 +159,45 @@ const cleanCodeBlock = (rawContent: string): string => {
 };
 
 export const planWorkflow = async (userPrompt: string, availableFiles: any[]): Promise<WorkflowBlueprint> => {
-    const filesInfo = availableFiles.map(f => `- 文件ID: ${f.id}, 文件名: ${f.fileName}, 字段包含: [${f.columns?.join(', ')}]`).join('\n');
+    const filesInfo = availableFiles.map(f => `- 文件ID: ${f.fileId}, 名称: ${f.name}, 几何类型: ${f.geomType}, 字段包含: [${f.columns?.join(', ')}]`).join('\n');
 
     const PLANNER_PROMPT = `
-你是一位顶尖的 WebGIS 数据分析架构师。
-你的任务是将用户的自然语言需求，严格拆解为“数据透视(空间聚合)”和“数据可视化(绘图)”两个独立阶段的蓝图。
+你是一位顶尖的 WebGIS 数据分析架构师（Planner Agent）。
+你的任务是将用户的自然语言需求，基于当前工作区可用的图层 Schema，严格拆解为标准化的执行蓝图 (Blueprint)。
 
-【当前可用的数据集】：
+【当前可用的图层数据集】：
 ${filesInfo || '暂无详细表结构，请根据用户描述推断'}
 
 【 规范】：
-1. 绝对不要写任何 Python 代码
-2. pivot_strategy 负责将海量明细数据聚合成精简的统计表。如果涉及空间计算，必须明确写在 operations 中。
-3. chart_strategy 负责根据聚合后的精简数据画图。
-4. 必须且只能输出一个合法的 JSON 对象。绝对不要输出其他任何说明文字。
+1. 绝对不要写任何 Python 代码。
+2. 必须且只能输出一个合法的 JSON 对象。绝对不要包含 \`\`\`json 等 Markdown 包裹符。
+3. 请严格按照以下 JSON Schema 输出：
+{
+  "task_type": "任务类型，例如 spatial_join_pivot, buffer_analysis 等",
+  "data_dependencies": [
+    {
+      "file_id": "被选中的文件ID",
+      "role": "该文件在计算中的角色, 必须为 TargetLayer (基准层/面图层) 或 JoinLayer (客体关联点/线图层)",
+      "description": "简短描述该数据用途"
+    }
+  ],
+  "spatial_predicate": "空间关系模式，例如 within (包含), intersects (相交), nearest (最近邻), buffer_intersects (缓冲相交)",
+  "parameters": [
+    {
+      "name": "需要被抽离的通用参数名，例如 buffer_radius",
+      "type": "参数类型如 number, string",
+      "defaultValue": 1000,
+      "description": "参数描述"
+    }
+  ],
+  "visualization_spec": {
+    "engine": "渲染引擎策略。如果需求是基础统计图（柱状/雷达/饼图/折线/散点），必须填 'echarts'；如果要求地图热力图等 ECharts 较难画的空间专题图，则填 'html_iframe'",
+    "chart_type": "图表类型",
+    "dimensions": ["展示维度的输出列名（X轴/类目）"],
+    "metrics": ["要统计展示的数据列名（Y轴/数值）"]
+  },
+  "explanation": "你对整个拆解逻辑的简短解释"
+}
 `;
 
     try {
@@ -185,19 +218,32 @@ ${filesInfo || '暂无详细表结构，请根据用户描述推断'}
     }
 };
 
-export const generatePivotCode = async (pivotStrategy: any): Promise<string> => {
+export const generatePivotCode = async (blueprint: WorkflowBlueprint): Promise<string> => {
     const PIVOT_CODER_PROMPT = `
-你是一位顶级的 Python 空间数据挖掘专家。
-请根据架构师提供的【数据透视策略】，编写一段极其健壮的 Python 空间聚合代码。
-【透视策略】：
-${JSON.stringify(pivotStrategy, null, 2)}
+你是一位顶级的 Python 空间数据挖掘专家（Coder Agent）。
+请根据架构师提供的【执行蓝图(Blueprint)】，编写一段极其健壮的 Python 空间聚合代码。
+【执行蓝图】：
+${JSON.stringify(blueprint, null, 2)}
 
 【Python 代码严格规范】：
 1. 必须且只能包含一个主执行函数：\`def execute_pivot(gdf_dict, parameters):\`
-2. 必须先将无效的 0、空字符串、纯空格替换为 np.nan
-3. 几何计算前，必须转为局部投影：\`df.to_crs(df.estimate_utm_crs())\`
-4. 【返回值强制要求】：必须将最终聚合完成的 DataFrame 转换为【列表字典】返回，绝对不要返回 HTML 或画图
-5. 只输出纯 Python 代码，绝对不要包含 Markdown 的 \`\`\`python 标签！
+2. \`gdf_dict\` 包含了蓝图中 \`data_dependencies\` 声明的各个 \`file_id\` 对应的 GeoDataFrame。
+3. 系统已自动为你将所有 GeoDataFrame 的坐标系统一为 EPSG:3857 (米制)，可直接进行 buffer/空间距离计算。
+4. 必须先将无效的 0、空字符串、纯空格替换为 np.nan
+5. 【返回值强制要求】：请将最终聚合完成的结果转换为 Pandas DataFrame 直接返回（推荐），或者转为字典列表。系统会自动为你丢弃 geometry 并序列化。
+6. 只输出纯 Python 代码，绝对不要包含 Markdown 的 \`\`\`python 标签！
+
+【空间相交操作避坑指南】：
+- 缓冲相交 (Buffer Intersection): 
+  对于点寻面缓冲，或者面寻点缓冲，最佳实践：\`target['geometry'] = target.geometry.buffer(radius)\`，然后再用 \`gpd.sjoin(target, join_layer, how='inner', predicate='intersects')\`。
+- 距离找最近 (Nearest): 
+  如果需要查找周围最近的要素：\`gpd.sjoin_nearest(points, targets, distance_col="dist")\`。
+- 分组关联与聚合 (Spatial Join & Groupby):
+  千万不要盲目使用极其缓慢且容易出错的 \`pd.merge\`！推荐做法是：执行 \`gpd.sjoin\` 前，为主图层临时添加一个明确的辅助列，例如 \`target['target_id'] = range(len(target))\`，进行 sjoin 后，直接使用 \`grouped = joined.groupby('target_id').size().reset_index(name='count')\`。然后再通过 \`target_id\` 把原始表的重要属性拼回来，或者根据实际需要通过别的唯一列聚合。绝对不要写 \`groupby(target.index.name)\`，因为默认 index.name 通常为空 (None) 会导致崩溃！
+- **排序规范 (Sorting)**:
+  使用 \`sort_values\` 时必须显式指定 \`by\` 参数，例如：\`df.sort_values(by='count', ascending=False)\`。绝对不要省略 \`by\`！
+- **字段引用**: 
+  确保引用 \`gdf_dict\` 中列出的原始字段名，或者是在计算过程中新产生的字段名（如 \`count\`, \`dist\`）。
 `;
 
     try {
@@ -218,17 +264,18 @@ ${JSON.stringify(pivotStrategy, null, 2)}
     }
 };
 
-export const generateChartCode = async (chartStrategy: any, dataSample: any[]): Promise<string> => {
+export const generateChartCode = async (blueprint: WorkflowBlueprint, dataSample: any[]): Promise<string> => {
     const CHART_CODER_PROMPT = `
 你是一位顶级的 Python 数据可视化专家。请根据提供的【图表策略】及【数据样本】，编写专业的绘图代码。
-【图表策略】：${JSON.stringify(chartStrategy, null, 2)}
+【执行蓝图】：${JSON.stringify(blueprint, null, 2)}
 【数据样本】：${JSON.stringify(dataSample, null, 2)}
 
 【严格规范】：
 1. 包含主执行函数：\`def execute_chart(df, parameters):\`
-2. 使用 \`plotly.express\` 绘图，并调用 \`fig.to_html(full_html=False, include_plotlyjs='cdn')\` 导出
-3. 返回字典，包含 'html_string' 这个 key
-4. 只输出纯 Python 代码，绝对不要包含 Markdown 的 \`\`\`python 标签！
+2. **分支渲染策略**：检查执行蓝图中的 \`visualization_spec.engine\`：
+   - 如果是 \`'echarts'\`：你的 Python 代码需要利用传入的 df，组装出一个能够完美匹配 ECharts 的 Option 字典对象，并直接返回 \`{"echarts_option": option_dict}\`。推荐你在这个字典中发挥设计审美，比如设置深色主题、酷炫颜色和 Tooltip 联动体验。
+   - 如果是 \`'html_iframe'\`：你需要使用 \`plotly.express\` 或 \`folium\` 等 Python 绘图库进行绘制，并导出为 HTML 字符串，返回 \`{"html_string": html_content}\`（切记不要包括外部的巨大 js 库直接嵌入源码，使用 cdn）。
+3. 只输出纯 Python 代码，绝对不要包含 Markdown 的 \`\`\`python 标签！
 `;
 
     try {

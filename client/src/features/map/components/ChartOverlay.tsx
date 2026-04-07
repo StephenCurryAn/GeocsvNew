@@ -114,7 +114,9 @@ const ChartOverlay: React.FC = () => {
         //   引入新状态
         mapColorTheme, setMapColorTheme,
         //   [新增] 引入 activeColumn 相关 action
-        setActiveColumn
+        setActiveColumn,
+        // --- AI 图表状态 ---
+        chartMode, aiChartOption, aiChartHtml
     } = useAnalysisStore();
 
     // 散点图数据源切换：'Pivoted'(透视结果) vs 'Raw'(原始数据)
@@ -134,8 +136,11 @@ const ChartOverlay: React.FC = () => {
         let w = 500;
         let h = 450; 
         const len = pivotData?.length || 0;
-        
-        if (chartType === 'Bar') {
+
+        if (chartMode === 'ai') {
+            w = 550;
+            h = 420; // AI图表给个固定的适中尺寸即可
+        } else if (chartType === 'Bar') {
             w = Math.min(650, Math.max(450, len * 70 + 100)); // 稍微加宽
         } else if (chartType === 'Scatter' || chartType === 'Heatmap') { //   热力图也用方形
             w = 550;
@@ -145,7 +150,7 @@ const ChartOverlay: React.FC = () => {
             h = 520;
         }
         return { containerWidth: w, containerHeight: h };
-    }, [pivotData, chartType, isChartVisible]);
+    }, [pivotData, chartType, isChartVisible, chartMode]);
 
     // =================柱状图配置 =================
     const getBarOption = () => {
@@ -943,8 +948,12 @@ const ChartOverlay: React.FC = () => {
         >
             {/* 1. Header */}
             <div className="h-14 shrink-0 flex items-center justify-between px-4 border-b border-white/5 bg-linear-to-r from-white/5 to-transparent">
-                {/* 左侧：主图表切换 */}
-                <div className="mr-2">
+                {/* 左侧：主图表切换 (仅在传统图表模式显示) */}
+                <div className="mr-2 flex items-center">
+                    {chartMode === 'ai' ? (
+                        <span className="text-cyan-400 font-bold ml-2">AI 智能分析视图</span>
+                    ) : (
+                    <>
                     <Segmented<ChartType>
                         options={[
                             { label: '柱状图', value: 'Bar', icon: <BarChartOutlined /> },
@@ -1021,13 +1030,14 @@ const ChartOverlay: React.FC = () => {
                                 value: key
                             }))}
                          />
+                     )}
+                    </>
                     )}
-
                 </div>
 
                 {/*   中间：散点图数据源切换 (仅在 Scatter 模式下显示) */}
                 <div className="flex-1 flex justify-end mr-4">
-                    {chartType === 'Scatter' && (
+                    {chartMode !== 'ai' && chartType === 'Scatter' && (
                         <Segmented<'Pivoted' | 'Raw'>
                             options={[
                                 { label: '透视', value: 'Pivoted' },
@@ -1050,17 +1060,31 @@ const ChartOverlay: React.FC = () => {
                 />
             </div>
 
-            {/* 2. ECharts */}
+            {/* 2. 主区：ECharts 或 IFrame */}
             <div className="flex-1 w-full h-full p-2 relative">
-                <ReactECharts 
-                    option={getOption} 
-                    style={{ height: '100%', width: '100%' }} 
-                    theme="dark" 
-                    autoResize 
-                    notMerge
-                    //   绑定事件
-                    onEvents={onChartEvents} 
-                />
+                {chartMode === 'ai' && aiChartHtml ? (
+                    <div className="w-full h-full bg-white rounded flex-1">
+                        <iframe srcDoc={aiChartHtml} title="AI Spatial Chart" className="w-full h-full border-none" sandbox="allow-scripts"/>
+                    </div>
+                ) : chartMode === 'ai' && aiChartOption ? (
+                    <ReactECharts 
+                        option={aiChartOption} 
+                        style={{ height: '100%', width: '100%' }} 
+                        theme="dark" 
+                        autoResize 
+                        notMerge
+                    />
+                ) : (
+                    <ReactECharts 
+                        option={getOption} 
+                        style={{ height: '100%', width: '100%' }} 
+                        theme="dark" 
+                        autoResize 
+                        notMerge
+                        //   绑定事件
+                        onEvents={onChartEvents} 
+                    />
+                )}
             </div>
 
             {/* Footer */}
@@ -1079,6 +1103,7 @@ const ChartOverlay: React.FC = () => {
                         if(!checked) setHighlightedCategory(null);
                     }} 
                     className="bg-gray-500/50" 
+                    disabled={chartMode === 'ai'} // AI图表不能进行此类联动
                 />
             </div>
 

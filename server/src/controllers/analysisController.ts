@@ -1,8 +1,7 @@
 import { Request, Response } from 'express';
-import Feature from '../models/Feature';
-import ModelRegistry from '../models/ModelRegistry';
+import * as Feature from '../models/Feature';
+import * as ModelRegistry from '../models/ModelRegistry';
 import { generateModelCodeFromAI, planWorkflow, generatePivotCode, generateChartCode } from '../utils/llmService';
-import mongoose from 'mongoose';
 import * as turf from '@turf/turf';
 import axios from 'axios';
 import fs from 'fs';
@@ -102,81 +101,72 @@ export const pivotAnalysis = async (req: Request, res: Response) => {
             return res.status(400).json({ message:'缺少参数' });
         }
 
-        // 构建MongoDB聚合累加器
-        let accumulator: any = {};
+        const pool = require('../config/db').default;
+        
+        let aggSql = '';
+        const rField = groupByRow.replace('properties.', '');
+        const cField = groupByCol ? groupByCol.replace('properties.', '') : null;
+
         if (method === 'count') {
-            accumulator = { $sum: 1 };
+            aggSql = `COUNT(*) as value`;
         } else {
-            // 前端传来的只是字段名 "Rainfall"，Mongo需要 "$properties.Rainfall"
-            // 如果前端没传 properties. 前缀，加上
-            const vField = valueField.startsWith('properties.') ? valueField : `properties.${valueField}`;
-            const fieldPath = `$${vField}`;
-            
+            const vKey = valueField.replace('properties.', '');
+            // null 处理：如果字段不存在需要怎么处理？PostgreSQL在聚合时会忽略null。
+            const safeField = `(properties->>'${vKey}')::numeric`;
             switch (method) {
-                case 'sum': accumulator = { $sum: fieldPath }; break;
-                case 'avg': accumulator = { $avg: fieldPath }; break;
-                case 'max': accumulator = { $max: fieldPath }; break;
-                case 'min': accumulator = { $min: fieldPath }; break;
-                // 使用$push把同一分组下的所有原始数据塞进一个数组里返回
-                case 'boxplot': accumulator = { $push: fieldPath }; break;
-                case 'ridgeline': accumulator = { $push: fieldPath }; break;
-                default: accumulator = { $sum: fieldPath };
+                case 'sum': aggSql = `SUM(${safeField}) as value`; break;
+                case 'avg': aggSql = `AVG(${safeField}) as value`; break;
+                case 'max': aggSql = `MAX(${safeField}) as value`; break;
+                case 'min': aggSql = `MIN(${safeField}) as value`; break;
+                case 'boxplot': 
+                case 'ridgeline': 
+                    // jsonb_agg 等同于 mongodb 的 $push (去除为null的元素)
+                    aggSql = `jsonb_agg(${safeField}) as value`; 
+                    break;
+                default: aggSql = `SUM(${safeField}) as value`;
             }
         }
 
-        const rField = groupByRow.startsWith('properties.') ? groupByRow : `properties.${groupByRow}`;
-        const cField = groupByCol && !groupByCol.startsWith('properties.') ? `properties.${groupByCol}` : groupByCol;
-
-        // 文件ID过滤条件
-        const pipeline: any[] = [
-            { $match: { fileId: new mongoose.Types.ObjectId(fileId) } }
-        ];
-
-        // 区分一维还是二维分析
+        let rawResults: any[] = [];
         if (!cField) {
             // 一维分组
-            pipeline.push({
-                $group: {
-                    _id: `$${rField}`,
-                    value: accumulator
-                }
-            });
-            pipeline.push({ $sort: { value: -1 } }); // 默认降序
+            const sql = `
+                SELECT 
+                    properties->>'${rField}' as "_id",
+                    ${aggSql}
+                FROM spatial_features
+                WHERE file_id = $1
+                GROUP BY properties->>'${rField}'
+                ORDER BY value DESC NULLS LAST
+            `;
+            const result = await pool.query(sql, [fileId]);
+            rawResults = result.rows.map((r: any) => ({
+                _id: r._id,
+                value: method === 'boxplot' || method === 'ridgeline' 
+                         ? (Array.isArray(r.value) ? r.value.filter((v: any) => v !== null) : [])
+                         : Number(r.value)
+            }));
         } else {
             // 二维透视
-
             if (method === 'boxplot' || method === 'ridgeline') {
                 return res.status(400).json({ message: '二维模式不支持 raw array 聚合' });
             }
             
-            // 按行列分组计算统计值
-            pipeline.push({
-                $group: {
-                    _id: {
-                        row: `$${rField}`,
-                        col: `$${cField}`
-                    },
-                    val: accumulator
-                }
-
-            });
+            const sql = `
+                SELECT 
+                    properties->>'${rField}' as "row",
+                    properties->>'${cField}' as "col",
+                    ${aggSql}
+                FROM spatial_features
+                WHERE file_id = $1
+                GROUP BY properties->>'${rField}', properties->>'${cField}'
+            `;
+            const result = await pool.query(sql, [fileId]);
+            rawResults = result.rows.map((r: any) => ({
+                _id: { row: r.row, col: r.col },
+                val: Number(r.value)
+            }));
         }
-        // 示例的格式：
-        //         [
-        //   { 
-        //     "_id": { "row": "南京", "col": "2020" }, 
-        //     "val": 30   // (10 + 20)
-        //   },
-        //   { 
-        //     "_id": { "row": "南京", "col": "2021" }, 
-        //     "val": 50 
-        //   },
-        //   { 
-        //     "_id": { "row": "苏州", "col": "2020" }, 
-        //     "val": 30 
-        //   }
-        // ]
-        const rawResults = await Feature.aggregate(pipeline);
 
         // 数据格式化（转成echarts格式）
         let finalData: any[] = [];
@@ -250,7 +240,7 @@ export const generateGrid = async (req: Request, res: Response): Promise<void> =
 
         console.log(`[Grid] Generating ${shape} grid (${size}km) for file ${fileId}`);
         
-        const rawFeatures = await Feature.find({ fileId }).lean();
+        const rawFeatures = await Feature.findFeaturesByFileId(fileId);
         if (!rawFeatures || rawFeatures.length === 0) {
                 res.status(404).json({ error: 'No features found' });
                 return;
@@ -518,7 +508,7 @@ export const exportGrid = async (req: Request, res: Response): Promise<void> => 
         };
 
         // 1. 获取原始数据
-        const rawFeatures = await Feature.find({ fileId }).lean();
+        const rawFeatures = await Feature.findFeaturesByFileId(fileId);
         if (!rawFeatures || rawFeatures.length === 0) {
                 res.status(404).json({ error: 'No features found' });
                 return;
@@ -748,8 +738,17 @@ export const exportGrid = async (req: Request, res: Response): Promise<void> => 
 // 获取所有已注册的活跃模型
 export const getRegisteredModels = async (req: Request, res: Response) => {
   try {
-    // 只返回 active 状态的模型，并且不要把底层的 pythonCode 传给前端（节省带宽）
-    const models = await ModelRegistry.find({ status: 'active' }).select('-pythonCode');
+    const allModels = await ModelRegistry.getAllModels();
+    // 过滤 active 状态并在返回时展平 JSONB
+    const models = allModels
+        .filter(m => m.parameters_schema?.status !== 'inactive')
+        .map(m => ({
+            modelName: m.model_name,
+            displayName: m.parameters_schema?.displayName || m.model_name,
+            description: m.description,
+            parameters: m.parameters_schema?.parameters || [],
+            status: m.parameters_schema?.status || 'active'
+        }));
     res.json({ code: 200, data: models });
   } catch (error) {
     console.error("获取模型列表失败:", error);
@@ -784,17 +783,16 @@ export const registerModelByAI = async (req: Request, res: Response) => {
     fs.writeFileSync(filePath, pythonCode, 'utf8');
 
     // 步骤 B：元数据落库（记录在案，供前端动态读取公式列表）
-    const newModel = await ModelRegistry.findOneAndUpdate(
-      { modelName: modelName.toUpperCase() }, // 统一大写，如 LSI_AHP
-      { 
-        modelName: modelName.toUpperCase(), 
-        displayName, 
-        description, 
-        parameters, 
-        status: 'active' 
-      },
-      { upsert: true, new: true } // 如果存在则更新，不存在则创建
-    );
+    const newModelData = {
+      model_name: modelName.toUpperCase(),
+      description: description,
+      parameters_schema: {
+        displayName,
+        parameters,
+        status: 'active'
+      }
+    };
+    const newModel = await ModelRegistry.registerOrUpdateModel(newModelData);
 
     res.json({ 
       code: 200, 
@@ -817,11 +815,17 @@ export const executeTableFormula = async (req: Request, res: Response) => {
     let reqColumns: string[] = req.body.columns || [];
     let reqParams: Record<string, any> = req.body.params || {};
 
-    let modelDef = await ModelRegistry.findOne({ modelName: modelName.toUpperCase() });
-    if (!modelDef) {
-        console.warn(`[BFF 警告] MongoDB 未找到模型元数据: ${modelName}，将尝试直接穿透调度到底层引擎...`);
+    let modelDefRaw = await ModelRegistry.findModelByName(modelName.toUpperCase());
+    let modelDef: any;
+    if (!modelDefRaw) {
+        console.warn(`[BFF 警告] DB 未找到模型元数据: ${modelName}，将尝试直接穿透调度到底层引擎...`);
         // 构造一个虚拟的 modelDef，防止后面映射参数时报错
         modelDef = { parameters: [] } as any; 
+    } else {
+        modelDef = {
+            parameters: modelDefRaw.parameters_schema?.parameters || [],
+            requiredColumns: modelDefRaw.parameters_schema?.requiredColumns || []
+        };
     }
 
     //    ：动态参数分类与路由 (保持原有优秀逻辑)
@@ -918,19 +922,17 @@ export const createModelViaNaturalLanguage = async (req: Request, res: Response)
         const filePath = path.join(modelsDir, fileName);
         fs.writeFileSync(filePath, pythonCode, 'utf8');
 
-        // 3. 元数据落库 (MongoDB)
-        const newModel = await ModelRegistry.findOneAndUpdate(
-            { modelName: modelName.toUpperCase() },
-            { 
-                modelName: modelName.toUpperCase(), 
-                displayName: displayName, 
-                description: description, 
-                parameters: parameters || [], //    ：把大模型解析出的参数定义直接存入数据库！
-                requiredColumns: requiredColumns || [], //   新增：存入必须的列名
-                status: 'active' 
-            },
-            { upsert: true, new: true }
-        );
+        const newModelData = {
+            model_name: modelName.toUpperCase(),
+            description: description,
+            parameters_schema: {
+                displayName,
+                parameters: parameters || [],
+                requiredColumns: requiredColumns || [],
+                status: 'active'
+            }
+        };
+        const newModel = await ModelRegistry.registerOrUpdateModel(newModelData);
 
         res.json({ 
             code: 200, 
@@ -955,11 +957,76 @@ interface PivotApiResponse {
 // 绘图API期望的返回类型
 interface ChartApiResponse {
     status: string;
-    html_string: string; // 一段 HTML 字符串
+    engine?: 'echarts' | 'html_iframe';
+    html_string?: string;
+    chart_option?: any;
 }
+
+// ==========================================
+// 沙盒重跑：用户编辑代码后跳过 LLM 直接执行
+// ==========================================
+export const rerunPivotCode = async (req: Request, res: Response): Promise<void> => {
+    try {
+        const { pythonCode, fileIds, blueprint } = req.body;
+
+        if (!pythonCode || !fileIds || fileIds.length === 0) {
+            res.status(400).json({ error: "缺少 pythonCode 或 fileIds" });
+            return;
+        }
+
+        console.log(`\n[Rerun] 收到用户手动修改后的代码，文件数: ${fileIds.length}，跳过 LLM 直接执行...`);
+
+        // 直接调用 Python 执行透视（沙盒重跑）
+        const pivotResponse = await axios.post<PivotApiResponse>(`${PYTHON_API_URL}/models/pivot_only`, {
+            python_code: pythonCode,
+            file_ids: fileIds
+        });
+
+        const aggregatedData = pivotResponse.data.data;
+        if (!aggregatedData || aggregatedData.length === 0) {
+            throw new Error("透视结果为空，请检查代码逻辑或数据是否匹配");
+        }
+        console.log(`[Rerun] 透视成功！共 ${aggregatedData.length} 条记录，正在生成图表...`);
+
+        // 如果传入了 blueprint，继续走绘图流程；否则只返回数据
+        let engine: string | undefined;
+        let html_string: string | undefined;
+        let chart_option: any;
+
+        if (blueprint) {
+            const chartCode = await generateChartCode(blueprint, aggregatedData.slice(0, 3));
+            const chartResponse = await axios.post<ChartApiResponse>(`${PYTHON_API_URL}/models/chart_only`, {
+                python_code: chartCode,
+                data: aggregatedData
+            });
+            engine = chartResponse.data.engine;
+            html_string = chartResponse.data.html_string;
+            chart_option = chartResponse.data.chart_option;
+            console.log(`[Rerun] 图表渲染完成，引擎: ${engine}`);
+        }
+
+        res.json({
+            code: 200,
+            tableData: aggregatedData,
+            engine,
+            chartHtml: html_string,
+            chartOption: chart_option,
+            pythonCode // 回穿修改后的代码
+        });
+
+    } catch (error: any) {
+        const details = error.response?.data?.detail || error.response?.data?.details || error.message;
+        console.error("[Rerun错误]", details);
+        res.status(500).json({ error: '重跑失败', details });
+    }
+};
 
 // 多节点进行可扩展的透视和绘图
 export const executeDynamicPipeline = async (req: Request, res: Response): Promise<void> => {
+    // ⚠️ 关键：将 blueprint / pivotCode 提升到 try/catch 之外，使 catch 块可以访问
+    let blueprint: any = null;
+    let pivotCode: string = "";
+
     try {
         const { userPrompt, fileIds } = req.body;
 
@@ -971,30 +1038,22 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
         console.log(`\n======================================================`);
         console.log(`[Pipeline] 分析文件数: ${fileIds.length}`);
         console.log(`[Pipeline] 用户意图: "${userPrompt}"`);
-        
 
         // 提取工作区文件元数据 (给 Planner 当上下文)
         const availableFiles = [];
         for (const fId of fileIds) {
-            // 直接去数据库查该文件的一条 Feature，以此获取真实的列名
-            const sample = await Feature.findOne({ fileId: new mongoose.Types.ObjectId(fId) });
-            if (sample) {
-                availableFiles.push({
-                    id: fId,
-                    fileName: `文件_${fId.slice(-4)}`, // 也可以换成真实文件名
-                    columns: Object.keys(sample.properties || {})
-                });
-            }
+            const schema = await Feature.getFileSchemaSummary(fId);
+            availableFiles.push(schema);
         }
 
         // 1 意图拆解节点
         console.log(`[Pipeline] 节点1正在拆解意图...`);
-        const blueprint = await planWorkflow(userPrompt, availableFiles);
+        blueprint = await planWorkflow(userPrompt, availableFiles);
         console.log(`[Pipeline] 拆解意图完成:`, blueprint.explanation);
 
         // 2 数据透视代码生成节点
         console.log(`[Pipeline] 节点2正在编写透视代码...`);
-        const pivotCode = await generatePivotCode(blueprint.pivot_strategy);
+        pivotCode = await generatePivotCode(blueprint);
 
         // 3 Python执行透视
         console.log(`[Pipeline] 节点3正在执行空间透视...`);
@@ -1013,7 +1072,7 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
         // 4 绘图代码生成节点
         console.log(`[Pipeline] 节点4正在编写绘图代码...`);
         // 传前 3 条数据当样本，保证大模型写的图表列名正确
-        const chartCode = await generateChartCode(blueprint.chart_strategy, aggregatedData.slice(0, 3));
+        const chartCode = await generateChartCode(blueprint, aggregatedData.slice(0, 3));
 
 
         // 5 Python执行绘图
@@ -1022,9 +1081,10 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
             python_code: chartCode,
             data: aggregatedData // 这里直接把数据传过去画图
         });
-        const htmlContent = chartResponse.data.html_string;
+        
+        const { engine, html_string, chart_option } = chartResponse.data;
 
-        console.log(`[Pipeline] 全部执行成功，返回前端渲染。`);
+        console.log(`[Pipeline] 全部执行成功，渲染引擎: ${engine}。`);
         console.log(`======================================================\n`);
 
         // 返回给前端
@@ -1032,14 +1092,23 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
             code: 200,
             blueprint: blueprint,     // 可以返回给前端展示“AI的思考过程”
             tableData: aggregatedData,// 供前端渲染透视后的精简数据表格
-            chartHtml: htmlContent    // 供前端 iframe 渲染酷炫的可视化图表
+            engine: engine,           // 新增：前端根据这字段决定走 iframe 还是 ReactECharts
+            chartHtml: html_string,   // 如果是 html_iframe 则有值
+            chartOption: chart_option,// 如果是 echarts 则有值
+            pythonCode: pivotCode     // 新增：返回生成的聚合代码供用户编辑、审查或重跑
         });
 
     } catch (error: any) {
-        console.error("\n[Pipeline错误]", error.response?.data || error.message);
+        // 提取执行上下文，方便前端展示错误原因及出错的代码
+        const details = error.response?.data?.detail || error.response?.data?.details || error.message;
+        console.error("\n[Pipeline错误]", details);
+        
         res.status(500).json({ 
             error: '执行失败', 
-            details: error.response?.data?.detail || error.message 
+            details: details,
+            // blueprint / pivotCode 已提升到外层作用域，可直接安全访问
+            blueprint: blueprint,
+            pythonCode: pivotCode || null
         });
     }
 };

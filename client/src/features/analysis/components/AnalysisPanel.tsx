@@ -18,12 +18,13 @@ const { Option } = Select;
 
 interface AnalysisPanelProps {
     fileId: string;
+    selectedFileIds: string[];
     fields: string[]; 
 }
 
 type StatMode = 'Pivot' | 'Scatter';
 
-const AnalysisPanel: React.FC<AnalysisPanelProps> = ({ fileId, fields }) => {
+const AnalysisPanel: React.FC<AnalysisPanelProps> = ({ fileId, selectedFileIds, fields }) => {
     const { message } = App.useApp();
     const { 
         pivotConfig, setPivotConfig, 

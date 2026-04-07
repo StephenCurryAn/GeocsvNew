@@ -1,263 +1,469 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { 
-    Bot, 
-    Sparkles, 
-    TerminalSquare, 
-    X, 
-    Send, 
-    CheckCircle2, 
-    Loader2, 
-    Code2,
-    Cpu
-} from 'lucide-react';
+import { Button, Input, Avatar, Spin, Badge } from 'antd';
+import {
+    SendOutlined, RobotOutlined, UserOutlined, ClearOutlined,
+    CloseOutlined, ThunderboltOutlined, CodeOutlined, SettingOutlined, CheckCircleOutlined
+} from '@ant-design/icons';
 import { geoService } from '../../../services/geoService';
+import ReactECharts from 'echarts-for-react';
+import { useAnalysisStore } from '../../../stores/useAnalysisStore';
 
+// ============================================================
+// 类型定义
+// ============================================================
 interface ChatMessage {
-    role: 'system' | 'user' | 'agent';
+    id: string;
+    role: 'user' | 'assistant' | 'system';
     content: string;
+    timestamp: number;
+    // === 混合视图扩展字段 ===
+    engine?: 'echarts' | 'html_iframe';
+    chartOption?: any;
+    chartHtml?: string;
+    pythonCode?: string;
+    blueprint?: any; // 用于 rerun 时将蓝图一并回传给后端
 }
 
-const GeoAIAgent: React.FC = () => {
-    const [isOpen, setIsOpen] = useState(false);
-    const [isGenerating, setIsGenerating] = useState(false);
-    const [generatedCode, setGeneratedCode] = useState<string | null>(null);
-    const [prompt, setPrompt] = useState('');
+interface GeoAIAgentProps {
+    selectedFileIds?: string[];
+    isOpen?: boolean;
+    onClose?: () => void;
+}
+
+// ============================================================
+// 预设问题建议（引导用户）
+// ============================================================
+const QUICK_PROMPTS = [
+    '统计各图层的要素数量',
+    '计算缓冲区并显示结果',
+    '找出两图层的空间交集',
+    '分析点数据的空间分布',
+];
+
+// ============================================================
+// GeoAIAgent 组件 - 嵌入式面板设计
+// ============================================================
+const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
+    selectedFileIds = [],
+    isOpen = false,
+    onClose,
+}) => {
+    const [inputValue, setInputValue] = useState('');
+    const [loading, setLoading] = useState(false);
+    // 每条消息独立的「代码编辑状态」：key = msg.id, value = 当前编辑的代码文本
+    const [editedCodeMap, setEditedCodeMap] = useState<Record<string, string>>({});
+    // 每条消息独立的「重跑 loading 状态」
+    const [rerunLoadingMap, setRerunLoadingMap] = useState<Record<string, boolean>>({});
     
-    // 聊天记录状态
-    const [chatHistory, setChatHistory] = useState<ChatMessage[]>([
-        { role: 'system', content: '欢迎使用智能模型生成器。请直接用自然语言描述您的空间分析需求，我将自动推导模型参数并生成底层算子代码。' }
+    // 全局状态同步
+    const { 
+        setPivotResult, setPivotConfig, setPivotPanelOpen, 
+        setAiChartOption, setAiChartHtml, setChartMode, setChartVisible 
+    } = useAnalysisStore();
+
+    // 辅助函数：将 AI 返回的新数据结构同步到全局图表和透视表
+    const syncToGlobalStore = (res: any) => {
+        if (!res.tableData || res.tableData.length === 0) return;
+        
+        let rawData = res.tableData;
+        let displayData = rawData;
+        
+        // 如果数据量太大，截取前 50 和 后 50
+        if (rawData.length > 100) {
+            displayData = [...rawData.slice(0, 50), ...rawData.slice(-50)];
+        }
+
+        // 识别行索引名和其它数值列
+        const columns = Object.keys(displayData[0] || {}).filter(k => k !== 'geometry');
+        if (columns.length === 0) return;
+
+        const rowKeyName = columns[0];
+        const valueColumns = columns.slice(1);
+
+        // 转换成 SplitTablePanel 需要的格式 (必须包含 rowKey 字段)
+        const formattedPivotData = displayData.map((row: any) => ({
+            rowKey: row[rowKeyName] ?? 'Unknown',
+            ...row
+        }));
+
+        setPivotResult(formattedPivotData, valueColumns);
+        setPivotConfig({ groupByRow: rowKeyName, method: 'sum' });
+
+        if (res.engine || res.chartHtml || res.chartOption) {
+            setAiChartOption(res.chartOption || null);
+            setAiChartHtml(res.chartHtml || null);
+            setChartMode('ai');
+            setChartVisible(true);
+        }
+        
+        setPivotPanelOpen(true);
+    };
+
+    const [messages, setMessages] = useState<ChatMessage[]>([
+        {
+            id: 'welcome',
+            role: 'assistant',
+            content: '你好！我是 **GeoAI 空间智能助手**。\n\n请先在左侧文件树中勾选需要分析的数据图层，然后输入你的分析需求。\n\n例如："统计南京每个公园1km内的停车场数量"',
+            timestamp: Date.now(),
+        }
     ]);
 
-    const chatScrollRef = useRef<HTMLDivElement>(null);
+    const scrollRef = useRef<HTMLDivElement>(null);
+    const inputRef = useRef<any>(null);
 
-    // 每次聊天更新时，自动滚动到底部
+    // 消息更新时自动滚到底部
     useEffect(() => {
-        if (chatScrollRef.current) {
-            chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+        if (scrollRef.current) {
+            scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
         }
-    }, [chatHistory]);
+    }, [messages]);
 
-    const handleAIGenerate = async () => {
-        if (!prompt.trim() || isGenerating) return;
+    // 面板打开时聚焦输入框
+    useEffect(() => {
+        if (isOpen) {
+            setTimeout(() => inputRef.current?.focus(), 300);
+        }
+    }, [isOpen]);
 
-        const userText = prompt.trim();
-        setPrompt(''); // 清空输入框
-        setGeneratedCode(null);
-        setIsGenerating(true);
+    // ----------------------------------------------------------------
+    // 发送消息
+    // ----------------------------------------------------------------
+    const handleSend = async () => {
+        if (!inputValue.trim() || loading) return;
 
-        // 把用户输入加入聊天流
-        setChatHistory(prev => [...prev, { role: 'user', content: userText }]);
+        const userMsg: ChatMessage = {
+            id: `u-${Date.now()}`,
+            role: 'user',
+            content: inputValue,
+            timestamp: Date.now(),
+        };
+        setMessages(prev => [...prev, userMsg]);
+        const currentInput = inputValue;
+        setInputValue('');
+        setLoading(true);
+
+        // 添加"思考中"占位消息
+        const thinkingId = `thinking-${Date.now()}`;
+        setMessages(prev => [...prev, {
+            id: thinkingId,
+            role: 'system',
+            content: 'thinking',
+            timestamp: Date.now(),
+        }]);
 
         try {
-            // 现在我们只需要传用户说的这句话给后端！
-            const payload = {
-                userDescription: userText
-            };
+            const response = await geoService.generateModelByAI({
+                userPrompt: currentInput,
+                fileIds: selectedFileIds,
+            });
 
-            const response = await geoService.generateModelByAI(payload);
-            
-            // 后端把 AI 起好的真实名字返回来了！
-            const realModelName = response.data.modelName;
-            const realDisplayName = response.data.displayName;
+            // 调用辅助函数，把透视结果和图表塞给主界面
+            syncToGlobalStore(response);
 
-            setGeneratedCode(response.previewCode);
-            setChatHistory(prev => [...prev, { 
-                role: 'agent', 
-                content: `模型构建完成！已为您命名为【${realDisplayName}】(${realModelName}) 并挂载至系统。请在右侧终端查看底层逻辑。\n\n 调用语法: =${realModelName}()` 
-            }]);
-            
-            // 发送全局事件，通知 AnalysisPanel 更新模型列表
-            window.dispatchEvent(new CustomEvent('geoai-model-added', { detail: response.data }));
-            
+            // 移除占位，添加正式回复
+            setMessages(prev => {
+                const filtered = prev.filter(m => m.id !== thinkingId);
+                return [...filtered, {
+                    id: `a-${Date.now()}`,
+                    role: 'assistant',
+                    content: response.blueprint?.explanation
+                        || response.message
+                        || '✅ 分析完成！请查看分析结果和生成的执行代码。',
+                    timestamp: Date.now(),
+                    engine: response.engine,
+                    chartOption: response.chartOption,
+                    chartHtml: response.chartHtml,
+                    pythonCode: response.pythonCode,
+                    blueprint: response.blueprint  // 保存蓝图，用于 rerun 时绘图
+                }];
+            });
+
         } catch (error: any) {
-            const errorMsg = error.response?.data?.error || '神经元连接失败，请重试';
-            setChatHistory(prev => [...prev, { role: 'agent', content: `[Error]: ${errorMsg}` }]);
+            const errData = error.response?.data;
+            setMessages(prev => {
+                const filtered = prev.filter(m => m.id !== thinkingId);
+                return [...filtered, {
+                    id: `err-${Date.now()}`,
+                    role: 'assistant',
+                    content: `❌ 分析失败：${errData?.details || error.message || '未知错误'}`,
+                    timestamp: Date.now(),
+                    // 即使失败，也将中间产物传给渲染函数，以便用户审查代码
+                    pythonCode: errData?.pythonCode,
+                    chartHtml: 'error' // 标记为错误状态
+                }];
+            });
         } finally {
-            setIsGenerating(false);
+            setLoading(false);
         }
     };
 
-    const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-        if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault();
-            handleAIGenerate();
-        }
+    const handleClear = () => {
+        setMessages([{
+            id: 'cleared',
+            role: 'assistant',
+            content: '对话已清空。请选择数据图层后重新开始。',
+            timestamp: Date.now(),
+        }]);
     };
 
-    return (
-        <div className="fixed bottom-6 left-6 z-9999 flex flex-col items-start font-sans pointer-events-none">
-            {/* ========================================== */}
-            {/*   弹出式左右分栏 UI (Split-Pane Dialog) */}
-            {/* ========================================== */}
-            <div 
-                className={`mb-4 overflow-hidden transition-all duration-500 origin-bottom-left ${
-                    isOpen ? 'scale-100 opacity-100 pointer-events-auto' : 'scale-0 opacity-0 pointer-events-none'
-                }`}
-                style={{ width: '850px', height: '520px' }} 
+    // ----------------------------------------------------------------
+    // 渲染单条消息
+    // ----------------------------------------------------------------
+    const renderMessage = (msg: ChatMessage) => {
+        if (msg.role === 'system' && msg.content === 'thinking') {
+            return (
+                <div key={msg.id} className="flex items-start gap-2.5 my-3">
+                    <Avatar
+                        size={28}
+                        icon={<RobotOutlined />}
+                        className="shrink-0 bg-gradient-to-br from-blue-600 to-violet-600 shadow-md"
+                    />
+                    <div className="flex items-center gap-2 bg-geo-dark/80 border border-geo-border px-3 py-2 rounded-xl rounded-tl-none">
+                        <Spin size="small" />
+                        <span className="text-[11px] text-geo-text-secondary animate-pulse">正在思考分析方案...</span>
+                    </div>
+                </div>
+            );
+        }
+
+        const isUser = msg.role === 'user';
+
+        return (
+            <div
+                key={msg.id}
+                className={`flex items-start gap-2.5 my-3 ${isUser ? 'flex-row-reverse' : ''}`}
             >
-                <div className="w-full h-full rounded-2xl bg-geo-dark/95 backdrop-blur-xl border border-blue-500/40 shadow-[0_20px_50px_rgba(0,0,0,0.8),0_0_30px_rgba(59,130,246,0.2)] flex flex-col overflow-hidden">
+                <Avatar
+                    size={28}
+                    icon={isUser ? <UserOutlined /> : <RobotOutlined />}
+                    className={`shrink-0 shadow-md ${
+                        isUser
+                            ? 'bg-geo-accent'
+                            : 'bg-gradient-to-br from-blue-600 to-violet-600'
+                    }`}
+                />
+                <div className="flex flex-col gap-2 max-w-[85%]">
+                    <div
+                        className={`px-3.5 py-2.5 text-[12.5px] leading-relaxed whitespace-pre-wrap rounded-xl shadow-sm ${
+                            isUser
+                                ? 'bg-geo-accent text-white rounded-tr-none'
+                                : 'bg-geo-dark/80 border border-geo-border text-geo-text-secondary rounded-tl-none'
+                        }`}
+                    >
+                        {msg.content}
+                    </div>
                     
-                    {/* 顶部控制栏 */}
-                    <div className="h-12 bg-linear-to-r from-geo-panel to-geo-dark border-b border-blue-500/20 px-5 flex justify-between items-center shrink-0">
-                        <div className="flex items-center text-blue-400 font-mono text-xs tracking-widest font-bold drop-shadow-[0_0_8px_rgba(59,130,246,0.6)]">
-                            <Sparkles className="w-4 h-4 mr-2" /> 
-                            GEOAI
-                        </div>
-                        <button onClick={() => setIsOpen(false)} className="text-slate-400 hover:text-white transition-colors bg-slate-800/50 hover:bg-red-500/80 p-1.5 rounded-full">
-                            <X className="w-4 h-4" />
-                        </button>
-                    </div>
-
-                    {/* 主体分栏区 */}
-                    <div className="flex-1 flex overflow-hidden">
-                        
-                        {/* 左侧：自然语言对话区 (Chat Panel) */}
-                        <div className="w-[45%] flex flex-col border-r border-slate-700/60 bg-[#162032]/50 relative">
-                            {/* 对话历史记录区 */}
-                            <div ref={chatScrollRef} className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar">
-                                {chatHistory.map((msg, idx) => (
-                                    <div key={idx} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
-                                        <div className={`flex items-center gap-2 mb-1.5 px-1 opacity-80 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}>
-                                            {msg.role === 'user' ? <div className="w-5 h-5 rounded-full bg-blue-600 flex items-center justify-center text-white"><Sparkles className="w-3 h-3"/></div> : 
-                                             msg.role === 'system' ? <Cpu className="w-4 h-4 text-emerald-400"/> : 
-                                             <Bot className="w-4 h-4 text-blue-400"/>}
-                                            <span className="text-[10px] font-mono text-slate-400 tracking-wider">
-                                                {msg.role.toUpperCase()}
-                                            </span>
-                                        </div>
-                                        <div className={`px-4 py-2.5 rounded-2xl text-xs leading-relaxed max-w-[90%] shadow-md wrap-break-word ${
-                                            msg.role === 'user' 
-                                                ? 'bg-blue-600/90 text-white rounded-tr-sm' 
-                                                : msg.role === 'system'
-                                                ? 'bg-emerald-900/30 border border-emerald-500/30 text-emerald-200 rounded-tl-sm'
-                                                : 'bg-slate-800 border border-slate-700 text-slate-200 rounded-tl-sm'
-                                        }`}>
-                                            {msg.content}
-                                        </div>
-                                    </div>
-                                ))}
-                                {isGenerating && (
-                                    <div className="flex items-start">
-                                        <div className="px-4 py-3 rounded-2xl bg-slate-800 border border-blue-500/30 text-blue-300 rounded-tl-sm flex items-center gap-3">
-                                            <Loader2 className="w-4 h-4 animate-spin" />
-                                            <span className="text-xs font-mono tracking-widest animate-pulse">解析语义并编写算子...</span>
-                                        </div>
-                                    </div>
-                                )}
-                            </div>
-
-                            {/* 模糊输入区 */}
-                            <div className="p-4 bg-geo-dark border-t border-slate-800 shrink-0 relative">
-                                <textarea 
-                                    value={prompt}
-                                    onChange={(e) => setPrompt(e.target.value)}
-                                    onKeyDown={handleKeyDown}
-                                    placeholder="输入指令 (例: 帮我写一个综合风险评估模型，第一列权重0.3...)"
-                                    className="w-full bg-slate-900/80 border border-slate-700 rounded-xl px-4 py-3 pr-12 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/50 resize-none h-20 custom-scrollbar transition-all"
-                                />
-                                <button 
-                                    onClick={handleAIGenerate}
-                                    disabled={!prompt.trim() || isGenerating}
-                                    className={`absolute right-6 bottom-7 p-2 rounded-lg flex items-center justify-center transition-all ${
-                                        prompt.trim() && !isGenerating 
-                                        ? 'bg-blue-600 text-white hover:bg-blue-500 hover:shadow-[0_0_10px_rgba(37,99,235,0.6)]' 
-                                        : 'bg-slate-800 text-slate-600 cursor-not-allowed'
-                                    }`}
-                                >
-                                    <Send className="w-4 h-4" />
-                                </button>
-                            </div>
-                        </div>
-
-                        {/* 右侧：代码终端区 (Terminal Panel) */}
-                        <div className="w-[55%] bg-[#090e17] flex flex-col relative overflow-hidden">
-                            {/* Mac风格终端头 */}
-                            <div className="h-9 bg-[#161b22] border-b border-slate-800 flex items-center px-4 shrink-0">
-                                <div className="flex gap-1.5">
-                                    <div className="w-2.5 h-2.5 rounded-full bg-red-500/80"></div>
-                                    <div className="w-2.5 h-2.5 rounded-full bg-yellow-500/80"></div>
-                                    <div className="w-2.5 h-2.5 rounded-full bg-green-500/80"></div>
-                                </div>
-                                <div className="mx-auto flex items-center text-slate-500 text-[10px] font-mono tracking-widest">
-                                    <TerminalSquare className="w-3 h-3 mr-1.5" />
-                                    python_engine/models/auto_agent.py
-                                </div>
-                            </div>
+                    {/* 👇 👇 👇 混合渲染容器 👇 👇 👇 */}
+                    {!isUser && (msg.pythonCode || msg.engine) && (
+                        <div className="w-[320px] bg-geo-dark/95 border border-geo-border rounded-xl overflow-hidden shadow-lg animate-fade-in flex flex-col">
                             
-                            {/* 代码内容区 */}
-                            <div className="flex-1 p-5 overflow-auto custom-scrollbar relative">
-                                {!generatedCode && !isGenerating && (
-                                    <div className="absolute inset-0 flex flex-col items-center justify-center opacity-20 pointer-events-none">
-                                        <Code2 className="w-24 h-24 mb-4 text-blue-500" />
-                                        <span className="font-mono text-blue-500 tracking-widest">AWAITING GENERATION</span>
-                                    </div>
-                                )}
+                            {/* 图表渲染区 */}
+                            {msg.engine === 'echarts' && msg.chartOption && (
+                                <div className="w-full bg-slate-800/50 border-b border-geo-border p-1">
+                                    <ReactECharts option={msg.chartOption} style={{ height: '240px', width: '100%' }} />
+                                </div>
+                            )}
+                            {msg.engine === 'html_iframe' && msg.chartHtml && (
+                                <div className="w-full h-[260px] bg-white border-b border-geo-border">
+                                    <iframe srcDoc={msg.chartHtml} title="Spatial Chart" className="w-full h-full border-none" sandbox="allow-scripts"/>
+                                </div>
+                            )}
 
-                                {isGenerating && (
-                                    <div className="h-full w-full flex flex-col items-center justify-center text-blue-500/60 font-mono text-sm">
-                                        <div className="relative w-16 h-16 mb-4">
-                                            <div className="absolute inset-0 border-t-2 border-blue-500 rounded-full animate-spin"></div>
-                                            <div className="absolute inset-2 border-r-2 border-cyan-400 rounded-full animate-spin animation-delay-150"></div>
-                                        </div>
-                                        <span className="animate-pulse tracking-widest">BUILDING KERNEL...</span>
+                            {/* 代码透视区 */}
+                            {msg.pythonCode && (
+                                <div className="p-2">
+                                    <div className="flex items-center gap-2 mb-1.5 px-1 text-[10px] text-zinc-400 font-mono tracking-wider">
+                                        <CodeOutlined className="text-geo-accent" /> 
+                                        沙盒算子代码 (Python) — 可直接修改后重新执行
                                     </div>
-                                )}
+                                    <textarea
+                                        className="w-full h-32 bg-[#1e1e1e] text-[#ce9178] font-mono text-[11px] p-2 rounded-lg border border-[#333] outline-none shadow-inner resize-y transition-colors focus:border-geo-accent"
+                                        value={editedCodeMap[msg.id] ?? msg.pythonCode}
+                                        onChange={e => setEditedCodeMap(prev => ({ ...prev, [msg.id]: e.target.value }))}
+                                        spellCheck={false}
+                                    />
+                                    
+                                    {/* 交互闭环控制 */}
+                                    <div className="flex gap-2 mt-2 px-1">
+                                        <Button 
+                                            size="small" 
+                                            type="primary" 
+                                            loading={rerunLoadingMap[msg.id]}
+                                            icon={<SettingOutlined />}
+                                            className="flex-1 text-[11px] bg-geo-accent/90 hover:bg-geo-accent"
+                                            onClick={async () => {
+                                                const codeToRun = editedCodeMap[msg.id] ?? msg.pythonCode ?? '';
+                                                if (!codeToRun || selectedFileIds.length === 0) return;
 
-                                {generatedCode && !isGenerating && (
-                                    <div className="animate-fade-in-up">
-                                        <div className="flex items-center gap-2 mb-4 text-emerald-400 bg-emerald-950/30 border border-emerald-900/50 px-3 py-1.5 rounded font-mono text-xs">
-                                            <CheckCircle2 className="w-4 h-4" /> COMPILATION SUCCESSFUL
-                                        </div>
-                                        <pre className="text-[12px] font-mono leading-relaxed text-emerald-300 m-0 filter drop-shadow-[0_0_2px_rgba(52,211,153,0.3)]">
-                                            <code>{generatedCode}</code>
-                                        </pre>
+                                                setRerunLoadingMap(prev => ({ ...prev, [msg.id]: true }));
+                                                try {
+                                                    const res = await geoService.rerunCode({
+                                                        pythonCode: codeToRun,
+                                                        fileIds: selectedFileIds,
+                                                        blueprint: msg.blueprint
+                                                    });
+                                                    
+                                                    // 推送到主界面视图
+                                                    syncToGlobalStore(res);
+
+                                                    // 更新该条消息的图表和代码内容
+                                                    setMessages(prev => prev.map(m => m.id !== msg.id ? m : {
+                                                        ...m,
+                                                        engine: res.engine,
+                                                        chartOption: res.chartOption,
+                                                        chartHtml: res.chartHtml,
+                                                        pythonCode: codeToRun,
+                                                        content: res.engine
+                                                            ? `✅ 重跑成功！图表已更新。`
+                                                            : m.content
+                                                    }));
+                                                } catch (err: any) {
+                                                    const detail = err.response?.data?.details || err.message;
+                                                    setMessages(prev => prev.map(m => m.id !== msg.id ? m : {
+                                                        ...m,
+                                                        content: `❌ 重跑失败：${detail}`
+                                                    }));
+                                                } finally {
+                                                    setRerunLoadingMap(prev => ({ ...prev, [msg.id]: false }));
+                                                }
+                                            }}
+                                        >
+                                            重新执行代码
+                                        </Button>
+                                        <Button 
+                                            size="small" 
+                                            icon={<CheckCircleOutlined />}
+                                            className="flex-[0.8] text-[11px] border-geo-border text-geo-text-secondary hover:text-green-400 hover:border-green-400/50"
+                                            onClick={() => { /* TODO: Hook up model registry */ }}
+                                        >
+                                            固化为服务
+                                        </Button>
                                     </div>
-                                )}
-                            </div>
+                                </div>
+                            )}
                         </div>
+                    )}
+                </div>
+            </div>
+        );
+    };
 
-                    </div>
+    // ----------------------------------------------------------------
+    // 面板 UI
+    // ----------------------------------------------------------------
+    return (
+        <div className="flex flex-col h-full w-full bg-geo-panel">
+            {/* === 顶栏 === */}
+            <div className="h-11 flex items-center justify-between px-4 border-b border-geo-border shrink-0 bg-geo-dark/60">
+                <div className="flex items-center gap-2">
+                    <div className="w-2 h-2 rounded-full bg-blue-400 shadow-[0_0_8px_rgba(96,165,250,0.8)] animate-pulse" />
+                    <span className="text-[11px] font-semibold text-geo-text-primary tracking-wider uppercase">GeoAI 助手</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                    {selectedFileIds.length > 0 && (
+                        <Badge count={selectedFileIds.length} size="small" color="#3b82f6">
+                            <span className="text-[10px] text-geo-text-secondary">图层</span>
+                        </Badge>
+                    )}
+                    <Button
+                        type="text"
+                        size="small"
+                        icon={<ClearOutlined />}
+                        onClick={handleClear}
+                        className="text-geo-text-secondary hover:text-geo-text-primary hover:bg-white/5"
+                        title="清空对话"
+                    />
+                    <Button
+                        type="text"
+                        size="small"
+                        icon={<CloseOutlined />}
+                        onClick={onClose}
+                        className="text-geo-text-secondary hover:text-red-400 hover:bg-white/5"
+                        title="关闭面板"
+                    />
                 </div>
             </div>
 
-            {/* ========================================== */}
-            {/*   左下角悬浮发光触发器 (FAB) */}
-            {/* ========================================== */}
-            <div className="relative group pointer-events-auto">
-                <div className="absolute -inset-1.5 bg-linear-to-r from-blue-600 to-cyan-400 rounded-full blur opacity-40 group-hover:opacity-80 transition duration-500 animate-pulse"></div>
-                <button 
-                    onClick={() => setIsOpen(!isOpen)}
-                    className="relative w-14 h-14 bg-linear-to-br from-slate-900 to-geo-dark border border-blue-500/50 rounded-full flex items-center justify-center shadow-[0_0_20px_rgba(0,0,0,0.8)] cursor-pointer hover:scale-110 transition-transform duration-300 z-50 overflow-hidden"
-                >
-                    {/* 内部极光扫过效果 */}
-                    <div className="absolute inset-0 bg-linear-to-br from-transparent via-blue-400/10 to-transparent -translate-x-full group-hover:animate-shimmer"></div>
-                    {isOpen ? <X className="text-2xl text-blue-300 transition-all duration-300 rotate-90" /> : <Bot className="text-2xl text-blue-400 transition-all duration-300" />}
-                </button>
-                
-                {/* 提示气泡 */}
-                {!isOpen && (
-                    <div className="absolute left-16 top-1/2 -translate-y-1/2 px-4 py-2 bg-geo-dark/95 backdrop-blur border border-blue-900 rounded-lg text-xs text-blue-300 font-mono tracking-wider whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none shadow-[0_5px_15px_rgba(0,0,0,0.5)] flex items-center">
-                        <Sparkles className="w-3 h-3 mr-2" />
-                        INITIATE AI AGENT
-                    </div>
-                )}
+            {/* === 未选图层提示 === */}
+            {selectedFileIds.length === 0 && (
+                <div className="mx-3 mt-3 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/20 text-[11px] text-amber-400/80 flex items-center gap-2">
+                    <ThunderboltOutlined className="shrink-0" />
+                    请先在左侧资源管理器中勾选数据图层
+                </div>
+            )}
+
+            {/* === 消息区 === */}
+            <div
+                ref={scrollRef}
+                className="flex-1 overflow-y-auto px-3 py-2 space-y-0 scroll-smooth"
+                style={{
+                    scrollbarWidth: 'thin',
+                    scrollbarColor: '#334155 transparent',
+                }}
+            >
+                {messages.map(renderMessage)}
             </div>
-            
-            <style>{`
-                .custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
-                .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
-                .custom-scrollbar::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 4px; border: 1px solid #0f172a; }
-                .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #3b82f6; }
-                @keyframes shimmer {
-                    100% { transform: translateX(100%); }
-                }
-                .animate-shimmer {
-                    animation: shimmer 2s infinite;
-                }
-                .animation-delay-150 {
-                    animation-delay: 150ms;
-                }
-            `}</style>
+
+            {/* === 快捷问题 === */}
+            {messages.length <= 2 && selectedFileIds.length > 0 && (
+                <div className="px-3 pb-2">
+                    <p className="text-[10px] text-geo-text-secondary mb-1.5 uppercase tracking-wider">快捷分析</p>
+                    <div className="flex flex-wrap gap-1.5">
+                        {QUICK_PROMPTS.map(prompt => (
+                            <button
+                                key={prompt}
+                                onClick={() => setInputValue(prompt)}
+                                className="text-[11px] px-2.5 py-1 rounded-full bg-geo-dark border border-geo-border text-geo-text-secondary hover:border-blue-500/60 hover:text-blue-400 transition-all duration-150"
+                            >
+                                {prompt}
+                            </button>
+                        ))}
+                    </div>
+                </div>
+            )}
+
+            {/* === 输入区 === */}
+            <div className="shrink-0 px-3 pb-3 pt-2 border-t border-geo-border bg-geo-dark/40">
+                <div className="flex gap-2 items-end">
+                    <Input.TextArea
+                        ref={inputRef}
+                        value={inputValue}
+                        onChange={e => setInputValue(e.target.value)}
+                        onKeyDown={e => {
+                            if (e.key === 'Enter' && !e.shiftKey) {
+                                e.preventDefault();
+                                handleSend();
+                            }
+                        }}
+                        placeholder={
+                            selectedFileIds.length > 0
+                                ? '输入分析指令（Enter 发送，Shift+Enter 换行）...'
+                                : '请先选择数据图层...'
+                        }
+                        disabled={loading}
+                        autoSize={{ minRows: 2, maxRows: 5 }}
+                        className="flex-1 text-[12px] resize-none"
+                        style={{
+                            background: '#0f172a',
+                            border: '1px solid #334155',
+                            borderRadius: '8px',
+                            color: '#f1f5f9',
+                        }}
+                    />
+                    <Button
+                        type="primary"
+                        icon={<SendOutlined />}
+                        size="middle"
+                        loading={loading}
+                        onClick={handleSend}
+                        disabled={!inputValue.trim() || loading}
+                        className="mb-0.5 shrink-0 h-9 w-9 flex items-center justify-center rounded-lg bg-blue-600 border-blue-500 hover:bg-blue-500 shadow-[0_4px_12px_rgba(59,130,246,0.4)]"
+                    />
+                </div>
+                <p className="text-[10px] text-geo-text-secondary/50 mt-1.5 text-center">
+                    已关联 {selectedFileIds.length} 个图层 · Enter 发送 · Shift+Enter 换行
+                </p>
+            </div>
         </div>
     );
 };

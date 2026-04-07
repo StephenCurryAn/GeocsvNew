@@ -13,33 +13,37 @@ import apiClient from '../../../services/apiClient';
 // 向 AG Grid 的全局系统注册‘社区版’的所有功能模块，以便表格能正常运行
 ModuleRegistry.registerModules([ AllCommunityModule ]);
 
+// 多文件 Tab 条目类型
+export interface FileTabInfo {
+    fileId: string;
+    fileName: string;
+    data: any[];
+    pagination?: { total: number; page: number; pageSize: number; totalPages?: number };
+}
+
 interface DataPivotProps {
     data: any;          
     fileName: string;   
-    //   新增 fileId，因为导出需要告诉后端是哪个文件
     fileId?: string;
-    //   新增分页 Props
     pagination?: {
         total: number;
         page: number;
         pageSize: number;
     };
     onPageChange?: (page: number, pageSize: number) => void;
-
-    // 接收父组件传来的回调，行点击
     onRowClick?: (record: any) => void;
-    // 接收选中的 Feature
     selectedFeature?: any;
-    // 数据变更回调 (通知父组件保存)
     onDataChange?: (recordId: string | number, newData: any) => void;
-    // 行列操作回调
     onAddRow?: () => void;
     onDeleteRow?: (recordId: string | number) => void;
     onAddColumn?: () => void;
     onDeleteColumn?: (fieldName: string) => void;
-    //   新增：重命名列回调
     onRenameColumn?: (oldFieldName: string, newFieldName: string) => void;
+    // 多文件 Tab 支持
+    selectedFilesData?: FileTabInfo[];
+    onFileTabChange?: (fileId: string, fileName: string) => void;
 }
+
 
 // ==========================================
 //   纯净大圆满版：双段式智能公式编辑器 (支持模型+列名双重补全)
@@ -272,7 +276,8 @@ const FormulaCellEditor = (props: any) => {
 
 const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, pagination, onPageChange, 
     onRowClick, selectedFeature, onDataChange, 
-    onAddRow, onDeleteRow, onAddColumn, onDeleteColumn, onRenameColumn }) => {
+    onAddRow, onDeleteRow, onAddColumn, onDeleteColumn, onRenameColumn,
+    selectedFilesData, onFileTabChange }) => {
     //     2: 获取上下文感知的 message 实例
     // 注意：MapView 必须被包裹在 <App> 组件中（通常在 main.tsx 或 App.tsx 已经包了）
     const { message } = App.useApp();
@@ -490,21 +495,56 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
 
     if (!data || rowData.length === 0) {
     return (
-        <div className="h-full flex flex-col items-center justify-center bg-[#1f2937] rounded text-gray-400">
-            <Empty description={<span className="text-gray-400">请在左侧选择文件以查看属性表</span>} />
+        <div className="h-full flex flex-col">
+            {/* 多文件 Tab 进入清空状态时也要显示 */}
+            {selectedFilesData && selectedFilesData.length > 1 && (
+                <div className="flex items-center gap-0 overflow-x-auto border-b border-gray-700 shrink-0 bg-[#111827] px-2 pt-1">
+                    {selectedFilesData.map(f => (
+                        <button
+                            key={f.fileId}
+                            onClick={() => onFileTabChange?.(f.fileId, f.fileName)}
+                            className={`px-3 py-1.5 text-[11px] font-mono rounded-t border-b-2 transition-all whitespace-nowrap ${
+                                f.fileId === fileId
+                                    ? 'border-blue-400 text-blue-400 bg-blue-400/10'
+                                    : 'border-transparent text-gray-500 hover:text-gray-300'
+                            }`}
+                        >
+                            {f.fileName}
+                        </button>
+                    ))}
+                </div>
+            )}
+            <div className="flex-1 flex items-center justify-center bg-[#1f2937] text-gray-400">
+                <Empty description={<span className="text-gray-400">请在左侧选择文件以查看属性表</span>} />
+            </div>
         </div>
     );
     }
 
     return (
     <div className="flex flex-col h-full">
-        {/* <div className="mb-2 px-2 text-xs text-blue-400 font-mono flex justify-between">
-        <span>当前文件: {fileName}</span>
-        <span>记录数: {rowData.length}</span>
-        </div> */}
+
+        {/* 多文件切换 Tab 栏 */}
+        {selectedFilesData && selectedFilesData.length > 1 && (
+            <div className="flex items-center gap-0 overflow-x-auto border-b border-gray-700 shrink-0 bg-[#111827] px-2 pt-1">
+                {selectedFilesData.map(f => (
+                    <button
+                        key={f.fileId}
+                        onClick={() => onFileTabChange?.(f.fileId, f.fileName)}
+                        className={`px-3 py-1.5 text-[11px] font-mono rounded-t border-b-2 transition-all whitespace-nowrap ${
+                            f.fileId === fileId
+                                ? 'border-blue-400 text-blue-400 bg-blue-400/10'
+                                : 'border-transparent text-gray-500 hover:text-gray-300'
+                        }`}
+                    >
+                        <span className="truncate max-w-[120px] block">{f.fileName}</span>
+                    </button>
+                ))}
+            </div>
+        )}
 
         {/* 工具栏 */}
-        <div className="bg-[#1f2937] p-2 border-b border-gray-700 flex justify-between items-center">
+        <div className="bg-[#1f2937] px-2 py-1.5 border-b border-gray-700 flex justify-between items-center">
         <div className="text-xs text-blue-400 font-mono">
             <span>{fileName}</span>
             <span className="ml-2 text-gray-500">({rowData.length} records)</span>

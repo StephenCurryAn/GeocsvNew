@@ -9,13 +9,20 @@ import AnalysisPanel from '../../analysis/components/AnalysisPanel';
 // 定义接口，接收从 App.tsx 传下来的回调
 interface LeftPanelProps {
   onDataLoaded: (fileName: string, data: any, fileId: string) => void;
-  onSelectFile?: (fileName: string, fileId?: string) => void;
+  onSelectFiles?: (fileNames: string[], fileIds: string[]) => void;
   //   新增
+  selectedFileIds: string[];
   activeFileId: string;
   activeFileFields: string[];
 }
 
-const LeftPanel: React.FC<LeftPanelProps> = ({ onDataLoaded, onSelectFile, activeFileId, activeFileFields }) => {
+const LeftPanel: React.FC<LeftPanelProps> = ({ 
+  onDataLoaded, 
+  onSelectFiles, 
+  selectedFileIds, 
+  activeFileId, 
+  activeFileFields 
+}) => {
   // 控制显示哪个组件
   const [activeTab, setActiveTab] = useState<string>('workspace');
 
@@ -65,12 +72,13 @@ const LeftPanel: React.FC<LeftPanelProps> = ({ onDataLoaded, onSelectFile, activ
           // A. 显示文件树组件 (包含上传、新建、列表)
           <FileTree 
             onDataLoaded={onDataLoaded}
-            onSelectFile={onSelectFile}
+            onSelectFiles={onSelectFiles}
           />
         ) : (
           //   4. 替换原来的占位符
           <AnalysisPanel 
              fileId={activeFileId} 
+             selectedFileIds={selectedFileIds}
              fields={activeFileFields}
           />
         )}

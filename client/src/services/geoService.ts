@@ -415,12 +415,28 @@ class GeoService {
   // ==========================================
   // 🤖 GeoAI 智能体接口
   // ==========================================
-  async  generateModelByAI(data: { userDescription: string }){
+  async generateModelByAI(data: { userPrompt: string; fileIds: string[] }) {
     const response = await apiClient.post('/analysis/agent/generate-model', data);
+    return response.data;
+  };
+
+  // 沙盒重跑：跳过 LLM，直接把用户修改的代码发给 Python 引擎重跑
+  async rerunCode(data: { pythonCode: string; fileIds: string[]; blueprint?: any }) {
+    const response = await apiClient.post('/analysis/agent/rerun-code', data);
     return response.data;
   };
 
 }
 
-// 导出 GeoService 实例，使其他模块可以直接使用
+export interface PipelineResponse {
+  code: number;
+  blueprint?: any;
+  tableData?: any[];
+  engine?: 'echarts' | 'html_iframe';
+  chartHtml?: string;
+  chartOption?: any;
+  pythonCode?: string;
+  message?: string;
+}
+
 export const geoService = new GeoService();

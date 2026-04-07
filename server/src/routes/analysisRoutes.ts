@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { pivotAnalysis, generateGrid, exportGrid, 
     getRegisteredModels, registerModelByAI, 
-    executeTableFormula, createModelViaNaturalLanguage, executeDynamicPipeline } from '../controllers/analysisController';
+    executeTableFormula, createModelViaNaturalLanguage, executeDynamicPipeline, rerunPivotCode } from '../controllers/analysisController';
 
 const router = Router();
 
@@ -23,9 +23,12 @@ router.post('/register-ai', registerModelByAI);
 // 注册前端公式执行路由
 router.post('/execute-formula', executeTableFormula);
 
-// 通过自然语言创建模型路由
-router.post('/agent/generate-model', createModelViaNaturalLanguage);
+// 通过自然语言进行动态分析 (Multi-Agent 分析入口)
+router.post('/agent/generate-model', executeDynamicPipeline);
 
+
+// 沙盒重跑接口 (用户修改代码后跳过 LLM 重新执行)
+router.post('/agent/rerun-code', rerunPivotCode);
 
 // 动态管道接口
 router.post('/dynamic-pipeline', executeDynamicPipeline);

@@ -28,13 +28,39 @@ import { useAnalysisStore } from '../../../stores/useAnalysisStore'
 
 const { Option, OptGroup } = Select;
 
+// 多图层信息类型
+export interface FileLayerInfo {
+    fileId: string;
+    fileName: string;
+    totalFeatures: number;
+}
+
+// 多图层颜色调色板（每个图层分配一个主题色）
+const LAYER_PALETTE = [
+    '#00e5ff', // 科技青 (主文件)
+    '#ff6b35', // 暖橙
+    '#7c3aed', // 深紫
+    '#10b981', // 翠绿
+    '#f59e0b', // 琥珀
+    '#ec4899', // 玫瑰粉
+    '#06b6d4', // 天蓝
+    '#84cc16', // 荧光绿
+];
+
+// MVT 大数据阈值：超过此数量自动启用 MVT 瓦片模式
+const MVT_THRESHOLD = 5000;
+const MVT_TILE_URL_BASE = 'http://localhost:3000/api/files';
+
 interface MapViewProps {
-    data: any;        // GeoJSON 数据
+    data: any;        // GeoJSON 数据（当前激活文件）
     fileName: string; // 当前文件名
-    fileId?: string; // 当前选中的文件ID (必须要有这个才能去后台拉全量数据)
+    fileId?: string;  // 当前选中的文件ID
     selectedFeature?: any;
     onFeatureClick?: (feature: any) => void;
+    // 多图层支持
+    selectedFilesInfo?: FileLayerInfo[];
 }
+
 
 //   [ ] 扩展 GridConfig 接口，增加 coverage
 interface GridConfig {
@@ -174,7 +200,7 @@ const BASEMAPS = [
     }
 ];
 
-const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeature, onFeatureClick }) => {
+const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeature, onFeatureClick, selectedFilesInfo = [] }) => {
     //     2: 获取上下文感知的 message 实例
     // 注意：MapView 必须被包裹在 <App> 组件中（通常在 main.tsx 或 App.tsx 已经包了）
     const { message } = App.useApp();
@@ -200,6 +226,12 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
     const [showAll, setShowAll] = useState(false);
     const [allData, setAllData] = useState<any>(null);
     const [loading, setLoading] = useState(false);
+
+    // 多图层：当前激活的操作目标文件 ID（普通渲染/网格聚合的操作对象）
+    const [activeLayerFileId, setActiveLayerFileId] = useState<string>('');
+    // 多图层使用的 ref（记录当前已渲染的图层 IDs，用于清理）
+    const renderedExtraLayersRef = useRef<string[]>([]);
+
 
     //   [新增] 空间网格相关状态
     const [isGridMode, setIsGridMode] = useState(false);
@@ -322,6 +354,117 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
             }
         };
     }, []);
+
+    // ===== 多图层渲染 Effect =====
+    // 当 selectedFilesInfo 变化时，为每个非主文件添加独立图层（MVT 或 GeoJSON 全量）
+    useEffect(() => {
+        const map = mapInstance.current;
+        if (!map || !isMapLoaded) return;
+
+        // 1. 清理上次渲染的额外图层
+        renderedExtraLayersRef.current.forEach(layerId => {
+            const srcId = `extra-src-${layerId}`;
+            ['fill', 'line', 'point', 'border'].forEach(suffix => {
+                if (map.getLayer(`extra-${layerId}-${suffix}`)) map.removeLayer(`extra-${layerId}-${suffix}`);
+            });
+            if (map.getSource(srcId)) map.removeSource(srcId);
+        });
+        renderedExtraLayersRef.current = [];
+
+        if (!selectedFilesInfo || selectedFilesInfo.length <= 1) return;
+
+        // 2. 跳过主激活文件（已由 renderGeoJSON 渲染），只渲染其他文件
+        const extraFiles = selectedFilesInfo.filter(f => f.fileId !== fileId);
+        if (extraFiles.length === 0) return;
+
+        // 3. 为每个额外文件创建图层
+        extraFiles.forEach((fileInfo, idx) => {
+            const color = LAYER_PALETTE[(idx + 1) % LAYER_PALETTE.length];
+            const srcId = `extra-src-${fileInfo.fileId}`;
+            const layerIdBase = fileInfo.fileId;
+
+            // 智能判断：超过阈值用 MVT，否则加载 GeoJSON
+            const useMVT = fileInfo.totalFeatures > MVT_THRESHOLD;
+
+            if (useMVT) {
+                // MVT 矢量瓦片模式
+                map.addSource(srcId, {
+                    type: 'vector',
+                    tiles: [`${MVT_TILE_URL_BASE}/${fileInfo.fileId}/tiles/{z}/{x}/{y}`],
+                    minzoom: 0,
+                    maxzoom: 14,
+                });
+                map.addLayer({
+                    id: `extra-${layerIdBase}-fill`,
+                    type: 'fill',
+                    source: srcId,
+                    'source-layer': 'features',
+                    paint: { 'fill-color': color, 'fill-opacity': 0.5 },
+                    filter: ['==', '$type', 'Polygon'],
+                });
+                map.addLayer({
+                    id: `extra-${layerIdBase}-line`,
+                    type: 'line',
+                    source: srcId,
+                    'source-layer': 'features',
+                    paint: { 'line-color': color, 'line-width': 2, 'line-opacity': 0.8 },
+                    filter: ['==', '$type', 'LineString'],
+                });
+                map.addLayer({
+                    id: `extra-${layerIdBase}-point`,
+                    type: 'circle',
+                    source: srcId,
+                    'source-layer': 'features',
+                    paint: { 'circle-radius': 5, 'circle-color': color, 'circle-stroke-width': 1, 'circle-stroke-color': '#fff' },
+                    filter: ['==', '$type', 'Point'],
+                });
+                console.log(`[MultiLayer] MVT 模式已挂载: ${fileInfo.fileName} (${fileInfo.totalFeatures} 条)`);
+            } else {
+                // 小数据量：先用空 GeoJSON 占位，异步加载数据后补充
+                map.addSource(srcId, {
+                    type: 'geojson',
+                    data: { type: 'FeatureCollection', features: [] },
+                });
+                map.addLayer({
+                    id: `extra-${layerIdBase}-fill`,
+                    type: 'fill',
+                    source: srcId,
+                    paint: { 'fill-color': color, 'fill-opacity': 0.5 },
+                    filter: ['==', '$type', 'Polygon'],
+                });
+                map.addLayer({
+                    id: `extra-${layerIdBase}-line`,
+                    type: 'line',
+                    source: srcId,
+                    paint: { 'line-color': color, 'line-width': 2.5, 'line-opacity': 0.9, 'line-blur': 0.5 },
+                    filter: ['==', '$type', 'LineString'],
+                });
+                map.addLayer({
+                    id: `extra-${layerIdBase}-point`,
+                    type: 'circle',
+                    source: srcId,
+                    paint: { 'circle-radius': 6, 'circle-color': color, 'circle-stroke-width': 1.5, 'circle-stroke-color': '#fff' },
+                    filter: ['==', '$type', 'Point'],
+                });
+
+                // 异步加载全量 GeoJSON
+                geoService.getAllFileData(fileInfo.fileId).then(res => {
+                    if (!res || !map.getSource(srcId)) return;
+                    (map.getSource(srcId) as maplibregl.GeoJSONSource).setData({
+                        type: 'FeatureCollection',
+                        features: res.features || [],
+                    });
+                    console.log(`[MultiLayer] GeoJSON 模式已加载: ${fileInfo.fileName} (${res.features?.length} 条)`);
+                }).catch(e => console.warn(`[MultiLayer] 加载图层失败: ${fileInfo.fileId}`, e));
+            }
+
+            renderedExtraLayersRef.current.push(layerIdBase);
+        });
+
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [selectedFilesInfo, isMapLoaded, fileId]);
+
+
 
     //   [ ] 字段提取逻辑分离：
     // 1. numericFields (数值): 从 displayData 提取，用于当前地图的颜色渲染（支持网格的 value 字段）
@@ -1687,6 +1830,49 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                     color: rgba(255,255,255,0.5) !important;
                 }
             `}</style>
+
+            {/* ===== 多图层图例面板（右上角）===== */}
+            {selectedFilesInfo && selectedFilesInfo.length > 1 && (
+                <div
+                    className="absolute top-4 right-4 z-10 bg-geo-dark/90 backdrop-blur-md border border-geo-border rounded-xl px-3 py-2.5 shadow-2xl"
+                    style={{ minWidth: 160 }}
+                >
+                    <p className="text-[10px] font-semibold text-geo-text-secondary uppercase tracking-widest mb-2">图层图例</p>
+                    <div className="space-y-1.5">
+                        {selectedFilesInfo.map((f, idx) => {
+                            const color = LAYER_PALETTE[idx % LAYER_PALETTE.length];
+                            const isMVT = f.totalFeatures > MVT_THRESHOLD;
+                            return (
+                                <div key={f.fileId} className="flex items-center gap-2">
+                                    <span
+                                        className="w-3 h-3 rounded-sm shrink-0 shadow-sm"
+                                        style={{ backgroundColor: color, boxShadow: `0 0 6px ${color}80` }}
+                                    />
+                                    <span className="text-[11px] text-geo-text-secondary truncate max-w-[120px]">{f.fileName}</span>
+                                    {isMVT && (
+                                        <span className="text-[9px] bg-violet-500/20 text-violet-400 px-1 rounded border border-violet-500/30 shrink-0">MVT</span>
+                                    )}
+                                </div>
+                            );
+                        })}
+                    </div>
+                    {/* 图层操作目标选择器（网格聚合/渲染操作的对象） */}
+                    {selectedFilesInfo.length > 1 && (
+                        <div className="mt-3 pt-2.5 border-t border-geo-border">
+                            <p className="text-[10px] text-geo-text-secondary mb-1">操作目标图层</p>
+                            <select
+                                value={activeLayerFileId || fileId}
+                                onChange={(e) => setActiveLayerFileId(e.target.value)}
+                                className="w-full text-[11px] bg-geo-panel border border-geo-border rounded px-2 py-1 text-geo-text-primary outline-none cursor-pointer hover:border-blue-500/50 transition-colors"
+                            >
+                                {selectedFilesInfo.map(f => (
+                                    <option key={f.fileId} value={f.fileId}>{f.fileName}</option>
+                                ))}
+                            </select>
+                        </div>
+                    )}
+                </div>
+            )}
         </div>
     );
 };

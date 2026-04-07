@@ -8,7 +8,7 @@ import { geoService} from '../../../services/geoService';
 // FileTreeProps接口，实现子组件传导数据到父组件的接口
 export interface FileTreeProps {
   onDataLoaded: (fileName: string, data: any, fileId: string) => void;
-  onSelectFile?: (fileName: string, fileId: string) => void;
+  onSelectFiles?: (fileNames: string[], fileIds: string[]) => void;
 }
 
 // 定义树节点的数据结构
@@ -27,7 +27,7 @@ export interface TreeNode {
 
 // 创建文件树组件，并将FileTreeProps作为属性类型（制定规则）
 // onDataLoaded是一个回调函数，类型是(fileName: string, data: any, fileId: string) => void (对象解构，可以直接用onDataLoaded变量名)
-const FileTree: React.FC<FileTreeProps> = ({ onDataLoaded, onSelectFile }) => {
+const FileTree: React.FC<FileTreeProps> = ({ onDataLoaded, onSelectFiles }) => {
   // 使用 Hook 获取带上下文的实例
   const { message, modal } = AntdApp.useApp();
 
@@ -327,30 +327,17 @@ const FileTree: React.FC<FileTreeProps> = ({ onDataLoaded, onSelectFile }) => {
     }
   };
 
-  // 处理选中
-  // 这里用info作为参数是因为：
-  // “点击” (Select) 这个动作包含的信息很多，不仅仅是“点了谁”
-  // Ant Design 把它们打包在 info 对象里，是为了扩展性。
-  // info 对象里通常包含：
-  // info.node: 点了谁（主角）；
-  // info.selected: 现在是不是选中状态（布尔值）；
-  // info.event: 一些原生事件对象（用于处理右键菜单、阻止冒泡等）；
-  // 以及其他一些辅助信息，方便根据具体情况做不同的处理。
   const handleSelect = (keys: React.Key[], info: any) => {
-    const key = keys[0] as string;
-    if (!key) return;
-    
-    setSelectedKeys([key]); //改变状态，会触发组件重新渲染
+    setSelectedKeys(keys as string[]); 
 
-    // && onSelectFile，检查父组件 (App) 是否传了这个回调函数给我们
-    // onSelectFile: ((fileName: string, fileId: string) => void)，把这个文件的原始文件名和id扔给父组件
-    if (info.node.type === 'file' && onSelectFile) {
-      // 1. 刚上传时，有 rawFileName
-      // 2. 从数据库加载时，只有 title (它就是文件名)
-      // 所以如果 rawFileName 没值，就取 title
-      const fileName = info.node.rawFileName || info.node.title;
+    if (onSelectFiles) {
+      // 提取所有被选中节点的名称和 ID
+      // info.selectedNodes 是 Ant Design 提供的当前所有选中节点的数据
+      const fileNodes = info.selectedNodes.filter((node: any) => node.type === 'file');
+      const fileIds = fileNodes.map((node: any) => node.key);
+      const fileNames = fileNodes.map((node: any) => node.rawFileName || node.title);
       
-      onSelectFile(fileName, key);
+      onSelectFiles(fileNames, fileIds);
     }
   };
 
@@ -544,7 +531,7 @@ const FileTree: React.FC<FileTreeProps> = ({ onDataLoaded, onSelectFile }) => {
           </div>
         ) : (
           <Tree
-            className="dark-tree bg-transparent"
+            multiple // 允许多选
             blockNode // 这个很重要，让整行都能点击
             showIcon={false}
             defaultExpandAll

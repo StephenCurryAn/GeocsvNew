@@ -1,29 +1,39 @@
-import mongoose, { Document, Schema } from 'mongoose';
+import pool from '../config/db';
 
-export interface IModelRegistry extends Document {
-  modelName: string;       // 例如 "LSI_AHP"
-  displayName: string;     // 例如 "AHP滑坡易发性评估"
-  description: string;
-  parameters: {            // 记录参数，方便后续前端做智能提示
-    name: string;
-    type: string;
-    description: string;
-  }[];
-  requiredColumns?: string[];
-  status: string;
+export interface IModelRegistry {
+  id?: number;
+  model_name: string;
+  description?: string;
+  parameters_schema?: any; // JSONB
+  created_at?: Date;
 }
 
-const ModelRegistrySchema = new Schema({
-  modelName: { type: String, required: true, unique: true },
-  displayName: { type: String, required: true },
-  description: { type: String },
-  parameters: [{
-    name: String,
-    type: { type: String, enum: ['column', 'number', 'string'] },
-    description: String
-  }],
-  requiredColumns: [{ type: String }], //   新增：记录 AI 解析出的必须列名
-  status: { type: String, default: 'active' }
-}, { timestamps: true });
+export const findModelByName = async (modelName: string): Promise<IModelRegistry | null> => {
+  const sql = `SELECT * FROM models_registry WHERE model_name = $1 LIMIT 1`;
+  const result = await pool.query(sql, [modelName]);
+  return result.rows.length > 0 ? result.rows[0] : null;
+};
 
-export default mongoose.model<IModelRegistry>('ModelRegistry', ModelRegistrySchema);
+export const registerOrUpdateModel = async (modelData: IModelRegistry) => {
+  const sql = `
+    INSERT INTO models_registry (model_name, description, parameters_schema)
+    VALUES ($1, $2, $3)
+    ON CONFLICT (model_name) DO UPDATE 
+    SET description = EXCLUDED.description,
+        parameters_schema = EXCLUDED.parameters_schema
+    RETURNING *;
+  `;
+  const values = [
+    modelData.model_name, 
+    modelData.description, 
+    modelData.parameters_schema ? JSON.stringify(modelData.parameters_schema) : null
+  ];
+  const result = await pool.query(sql, values);
+  return result.rows[0];
+};
+
+export const getAllModels = async (): Promise<IModelRegistry[]> => {
+  const sql = `SELECT * FROM models_registry ORDER BY id ASC`;
+  const result = await pool.query(sql);
+  return result.rows;
+};

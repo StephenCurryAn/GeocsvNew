@@ -3,15 +3,15 @@ import sys
 import importlib
 import time
 import traceback
+import json
+import math
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 import pandas as pd
 import geopandas as gpd
-from shapely.geometry import shape
-import math 
-from pymongo import MongoClient, UpdateOne
-from bson.objectid import ObjectId
+from sqlalchemy import create_engine, text
+from psycopg2.extras import execute_batch
 
 # 绘图库
 import plotly.express as px
@@ -19,20 +19,17 @@ import plotly.graph_objects as go
 import folium
 import numpy as np
 
-
 app = FastAPI(title="动态模型计算引擎")
 
-# 配置直连 MongoDB
-MONGO_URI = os.getenv("MONGO_URI", "mongodb://admin:123456@172.18.0.2:27017/Geoex?authSource=admin")
-DB_NAME = "Geoex" 
-client = MongoClient(MONGO_URI)
-db = client[DB_NAME]
+# 配置 PostgreSQL + PostGIS (替代原来的 MongoDB)
+PG_URI = os.getenv("PG_URI", "postgresql://geocsv:geocsv@127.0.0.1:5432/geocsv")
+engine = create_engine(PG_URI, pool_size=10, max_overflow=20)
 
 # 数据模型改造
 class ModelInput(BaseModel):
     model_name: str
-    file_id: str             #   Node.js 传来的文件ID
-    columns: List[str]       #   Node.js 告诉我们需要拉取哪些属性列
+    file_id: str             # Node.js 传来的文件ID
+    columns: List[str]       # Node.js 告诉我们需要拉取哪些属性列
     parameters: Dict[str, Any]
 
 MODEL_REGISTRY = {}
@@ -41,11 +38,7 @@ MODEL_REGISTRY = {}
 def auto_discover_models():
     global MODEL_REGISTRY
     loaded_count = 0
-    
-    # 强制获取 models 文件夹的绝对路径
     models_dir = os.path.join(os.path.dirname(__file__), "models")
-    
-    # 防呆设计：如果没有 models 文件夹或 __init__.py，自动补全！
     if not os.path.exists(models_dir):
         os.makedirs(models_dir)
     init_file = os.path.join(models_dir, "__init__.py")
@@ -53,19 +46,15 @@ def auto_discover_models():
         with open(init_file, "w") as f:
             f.write("")
 
-    # 确保根目录在 sys.path 中
     if os.path.dirname(__file__) not in sys.path:
         sys.path.insert(0, os.path.dirname(__file__))
 
-    # 强制清空模块寻址缓存
     importlib.invalidate_caches()
-
     for filename in os.listdir(models_dir):
         if filename.endswith(".py") and not filename.startswith("__"):
             module_name = filename[:-3]
             full_module_name = f"models.{module_name}"
             try:
-                #   真正的热插拔：被加载过就 reload 刷新，没加载过就 import
                 if full_module_name in sys.modules:
                     module = importlib.reload(sys.modules[full_module_name])
                 else:
@@ -88,124 +77,101 @@ async def execute_model(payload: ModelInput):
     try:
         model_key = payload.model_name.upper()
 
-        # 1. 模型热加载检查
         if model_key not in MODEL_REGISTRY:
             print(f"[!] 内存中未找到模型 {model_key}，正在扫描硬盘热加载...")
             auto_discover_models()        
             if model_key not in MODEL_REGISTRY:
                 raise HTTPException(status_code=404, detail=f"模型 {payload.model_name} 不存在。")
 
-        print(f"\n[*] 正在从 MongoDB 拉取数据: fileId={payload.file_id}")
+        print(f"\n[*] 正在从 PostGIS 拉取数据: file_id={payload.file_id}")
         
-        # 2. 构造精确投影
-        projection = {"_id": 1, "geometry": 1, "properties.id": 1}
-        for col in payload.columns:
-            projection[f"properties.{col}"] = 1
-            
-        cursor = db.features.find({"fileId": ObjectId(payload.file_id)}, projection)
+        # 1. 构造 SQL 语句，直接利用 PostGIS 在底层过滤，并将需要的 properties 平铺出来
+        # 通过 -> 获取的是 jsonb 对象，但我们需要基本类型以便 pandas 处理，所以大部分时候用 ->> 提取文本
+        # 为了更好地保持数据类型，最稳妥的方法是取回整个 properties 在 pandas 端展平。GeoPandas 读取底层的速度远高于 pymongo!
+        sql = text("SELECT id, geom, properties FROM spatial_features WHERE file_id = :file_id")
         
-        df_data = []
-        for doc in cursor:
-            row = {"_id": doc["_id"], "_geometry": doc.get("geometry")}
-            props = doc.get("properties", {})
-            
-            # 【修复 2】：绝不随意填 0。如果是空字符串或纯空格，视为 None
-            for col in payload.columns:
-                val = props.get(col)
-                if val == '' or (isinstance(val, str) and str.isspace(val)):
-                    val = None
-                row[col] = val
-                
-            if "id" in props:
-                row["id"] = props["id"]
-                
-            df_data.append(row)
-            
-        if not df_data:
+        # 2. 空间觉醒与坐标系处理: 直接通过 gpd.read_postgis 完成，它底层调用 C 库将 WKB 转为 Geometry！
+        df = gpd.read_postgis(sql, con=engine.connect(), geom_col='geom', params={"file_id": payload.file_id})
+        
+        if df.empty:
             raise HTTPException(status_code=400, detail="未在数据库中找到对应文件的数据")
+            
+        if df.crs is None:
+            df.set_crs(epsg=4326, inplace=True)
+            
+        # 3. 展开 properties
+        # 将 properties 字典中的相关列解析为扁平的 DataFrame 列
+        for col in payload.columns:
+            df[col] = df['properties'].apply(lambda props: props.get(col) if isinstance(props, dict) else None)
+            # 处理空字符串的情况
+            df[col] = df[col].replace(r'^\s*$', np.nan, regex=True)
 
-        df = pd.DataFrame(df_data)
+        # 同样展开 properties 中的 id 以防模型用
+        df['prop_id'] = df['properties'].apply(lambda props: props.get('id') if isinstance(props, dict) else None)
+        df['id_col'] = df['prop_id'].combine_first(df['id'])
         
-        # 3. 空间觉醒与坐标系处理
-        if '_geometry' in df.columns:
-            # 安全解析 GeoJSON
-            df['geometry'] = df['_geometry'].apply(
-                lambda g: shape(g) if isinstance(g, dict) and g.get('type') else None
-            )
-            df = gpd.GeoDataFrame(df, geometry='geometry')
-            
-            # 【修复 3】：仅在没有 CRS 的情况下才默认设为 4326，绝不强制覆盖！
-            if df.crs is None:
-                df.set_crs(epsg=4326, inplace=True)
-            
-            df.drop(columns=['_geometry'], inplace=True)
-
         # 4. 执行 AI 模型计算
         print(f"[*] 开始执行空间分析: {model_key}")
         target_func = MODEL_REGISTRY[model_key]
         raw_result_dict = target_func(df, payload.parameters)
 
-        # 5. 极速打包与回写
-        print("[*] 计算完成，正在打包回写 MongoDB...")
-
+        # 5. 极速打包与回写 (使用 postgresql 的 UPDATE)
+        print("[*] 计算完成，正在打包回写 PostGIS...")
         result_col_names = list(raw_result_dict.keys())
-        bulk_ops = []
-        result_data = []
         
-        # 将结果列统一转为标准的 Python List，避免 Pandas 索引错位
         standardized_results = {}
         for col_name, col_data in raw_result_dict.items():
             if hasattr(col_data, 'tolist'):
                 standardized_results[col_name] = col_data.tolist()
             else:
                 standardized_results[col_name] = list(col_data)
-        
-        # 【修复 1】：抛弃极慢的 df.iterrows()，提取纯 Python 列表进行极速遍历
-        doc_ids = df['_id'].tolist()
-        row_ids = df['id'].tolist() if 'id' in df.columns else [str(x) for x in doc_ids]
-        num_rows = len(df)
 
+        # 准备批量参数
+        update_data = []
+        num_rows = len(df)
+        row_ids = df['id'].tolist()
+        
         for i in range(num_rows):
-            doc_id = doc_ids[i]
-            row_id = row_ids[i]
-            
-            update_fields = {}
-            row_scores = {"id": row_id}
-            
+            update_payload = {}
             for col_name in result_col_names:
                 try:
                     x = standardized_results[col_name][i]
                 except IndexError:
                     raise ValueError(f"严重错误：模型返回的列 '{col_name}' 长度与输入数据行数不一致！")
-                
-                # 安全的类型转换：处理 NaN, NaT, Inf
+                    
                 if pd.isna(x) or (isinstance(x, float) and math.isinf(x)):
                     score = None
                 elif hasattr(x, 'item'):
                     score = x.item()
                 else:
                     score = x
-                    
-                update_fields[f"properties.{col_name}"] = score
-                row_scores[col_name] = score
-                
-            result_data.append(row_scores)
+                update_payload[col_name] = score
+
+            # 使用 || 操作符拼接 jsonb。我们将 Python dict 转为 JSON 字符串
+            update_data.append((json.dumps(update_payload), row_ids[i]))
+
+        # 使用 psycopg2.extras.execute_batch 批量极速写入
+        if update_data:
+            update_sql = "UPDATE spatial_features SET properties = properties || %s::jsonb WHERE id = %s"
             
-            bulk_ops.append(
-                UpdateOne(
-                    {"_id": doc_id},
-                    {"$set": update_fields}
-                )
-            )
-        
-        # 【修复 4】：分批写入 MongoDB，防止内存爆炸 (Chunk Size = 10,000)
-        if bulk_ops:
-            BATCH_SIZE = 10000
-            for i in range(0, len(bulk_ops), BATCH_SIZE):
-                batch = bulk_ops[i:i + BATCH_SIZE]
-                db.features.bulk_write(batch, ordered=False) # ordered=False 进一步提升写入速度
-        
-        print(f"[*] 成功更新了 {len(bulk_ops)} 条要素的 {len(result_col_names)} 个属性！")
+            with engine.connect() as conn:
+                raw_conn = conn.connection
+                raw_cursor = raw_conn.cursor()
+                # page_size=10000 ensures large datasets don't kill string interpolation limits
+                execute_batch(raw_cursor, update_sql, update_data, page_size=5000)
+                raw_conn.commit()
+                raw_cursor.close()
+
+        print(f"[*] 成功更新了 {len(update_data)} 条要素的 {len(result_col_names)} 个属性！")
+
+        # 拼装给前端的 result_data，仅提取更新的数据
+        result_data = []
+        for i in range(num_rows):
+            rd = {"id": df['id_col'].iloc[i]}
+            for col_name in result_col_names:
+                 x = standardized_results[col_name][i]
+                 rd[col_name] = x.item() if hasattr(x, 'item') else x
+            result_data.append(rd)
 
         return {
             "status": "success",
@@ -221,11 +187,6 @@ async def execute_model(payload: ModelInput):
         print(f"{'='*50}\n")
         raise HTTPException(status_code=500, detail=str(e))
 
-
-
-# ==========================================
-# 数据透视和绘图的可扩展
-
 # 透视与绘图的输入数据模型
 class PivotInput(BaseModel):
     python_code: str
@@ -237,116 +198,161 @@ class ChartInput(BaseModel):
     data: List[Dict[str, Any]] # Node.js 传来的 JSON 数组
     parameters: Optional[Dict[str, Any]] = {}
 
-# 数据透视引擎 (只读数据库)
 @app.post("/api/models/pivot_only")
 async def execute_pivot_only(payload: PivotInput):
     start_time = time.time()
     try:
         gdf_dict = {}
-        print(f"\n[Pivot Sandbox] 收到透视任务，准备提取 {len(payload.file_ids)} 个文件的数据...")
+        print(f"\n[Pivot Sandbox] 收到透视任务，准备从 PostGIS 提取 {len(payload.file_ids)} 个文件的数据...")
         
-        # 1. 循环拉取所有被选中的文件，组装成字典
         for fid in payload.file_ids:
-            cursor = db.features.find({"fileId": ObjectId(fid)})
-            df_data = []
-            for doc in cursor:
-                row = {"_id": str(doc["_id"]), "_geometry": doc.get("geometry")}
-                props = doc.get("properties", {})
-                row.update(props) # 把 properties 拍平拉出来
-                df_data.append(row)
-                
-            if not df_data:
-                continue
-                
-            df = pd.DataFrame(df_data)
+            sql = text("SELECT id, geom, properties FROM spatial_features WHERE file_id = :file_id")
+            df = gpd.read_postgis(sql, con=engine.connect(), geom_col='geom', params={"file_id": fid})
             
-            # 空间几何列恢复
-            if '_geometry' in df.columns:
-                df['geometry'] = df['_geometry'].apply(
-                    lambda g: shape(g) if isinstance(g, dict) and g.get('type') else None
-                )
-                df = gpd.GeoDataFrame(df, geometry='geometry')
-                if df.crs is None:
-                    df.set_crs(epsg=4326, inplace=True)
-                df.drop(columns=['_geometry'], inplace=True)
+            if df.empty:
+                print(f"[Pivot Sandbox] 警告：file_id={fid} 未找到数据，跳过。")
+                continue
+            
+            # === 关键步骤：统一坐标系到 EPSG:3857（米制）===
+            # 4326 (WGS84 经纬度) -> 3857 (Web Mercator 米制)
+            # 米制坐标系是做 buffer/距离计算的必要条件！
+            if df.crs is None:
+                df = df.set_crs(epsg=4326)
+            if df.crs.to_epsg() != 3857:
+                df = df.to_crs(epsg=3857)
+                print(f"[Pivot Sandbox] ✅ file_id={fid} 坐标系已统一为 EPSG:3857 (Web Mercator)")
                 
-            # 将组装好的 GeoDataFrame 放入字典，键名为 fileId
+            # 展开 properties 到外层列，方便 AI 代码直接用列名访问
+            df_props = pd.json_normalize(df['properties'])
+            df = pd.concat([df[['id', 'geom']], df_props], axis=1)
+            
             gdf_dict[fid] = df
 
         if not gdf_dict:
             raise ValueError("所有传入的文件ID均未在数据库中找到数据！")
 
-        print("[Pivot Sandbox] 数据装载完毕，正在执行 AI 动态算子...")
+        print(f"[Pivot Sandbox] 数据装载完毕，已加载 {len(gdf_dict)} 个图层。正在执行 AI 动态算子...")
+        print(f"[Pivot Sandbox] 图层列表: {list(gdf_dict.keys())}")
 
-        # 2. 安全沙盒环境准备 (自动注入常用的包，防止 AI 忘记 import)
+        # 扩展执行沙盒，注入空间分析所需的全部工具
         exec_globals = {
-            "pd": pd, "gpd": gpd, "np": np, "math": math
+            "pd": pd,
+            "gpd": gpd,
+            "np": np,
+            "math": math,
+            # GeoPandas 空间操作快捷函数（AI 可直接调用）
+            "sjoin": gpd.sjoin,
+            "sjoin_nearest": gpd.sjoin_nearest,
+            # 数据字典（AI 核心操作对象）
+            "gdf_dict": gdf_dict,
+            # file_ids 列表（方便 AI 代码用索引访问特定图层）
+            "file_ids": payload.file_ids,
         }
         local_scope = {}
         
-        # 3. 动态执行 AI 生成的代码
         exec(payload.python_code, exec_globals, local_scope)
         
         if 'execute_pivot' not in local_scope:
             raise ValueError("AI 生成的代码中未找到主函数 'execute_pivot'！")
             
         execute_pivot = local_scope['execute_pivot']
-        
-        # 4. 执行透视计算！
         result_data = execute_pivot(gdf_dict, payload.parameters)
         
-        print(f"[Pivot Sandbox] 透视成功！生成了 {len(result_data)} 条高度聚合数据。耗时: {round((time.time() - start_time)*1000, 2)}ms")
+        # 自动纠错：如果 AI 没按要求返回 dict 列表，而是直接返回了 DataFrame
+        if isinstance(result_data, (pd.DataFrame, gpd.GeoDataFrame)):
+            # 如果包含几何列，转换前最好去掉，否则 JSON 序列化会失败
+            if isinstance(result_data, gpd.GeoDataFrame) and 'geometry' in result_data.columns:
+                result_data = result_data.drop(columns=['geometry'])
+            result_data = result_data.to_dict(orient='records')
+            
+        elif isinstance(result_data, dict):
+            # 极少数情况下 AI 会返回单个字典，或者没做 orient='records'
+            # 尝试直接包装为列表
+            result_data = [result_data]
+            
+        if not isinstance(result_data, list):
+            raise ValueError(f"AI 生成的算子返回了未知格式: {type(result_data)}，期待 list of dicts")
         
-        return {
-            "status": "success",
-            "data": result_data # 直接返回 List of Dicts
-        }
+        # 清理 Pandas NaN 和 Numpy 浮点数，同时防御异常对象
+        clean_result_data = []
+        for i, row in enumerate(result_data):
+            # 防止 AI 返回纯字符串列表
+            if not isinstance(row, dict):
+                continue
+                
+            clean_row = {}
+            for k, v in row.items():
+                if isinstance(v, (pd.DataFrame, pd.Series, gpd.GeoDataFrame, gpd.GeoSeries)):
+                    # 如果结果里嵌套了 DataFrame/Series，这是异常情况，直接跳过或者记录字符串
+                    clean_row[k] = f"[{type(v).__name__}]"
+                    continue
+                
+                # 安全的 NA 检查
+                try:
+                    if pd.api.types.is_scalar(v) and pd.isna(v):
+                        clean_row[k] = None
+                    elif hasattr(v, 'item'): 
+                        clean_row[k] = v.item()
+                    else: 
+                        # 如果是 geometry 对象，尝试转成 WKT，或者直接丢弃
+                        if hasattr(v, 'wkt'):
+                            clean_row[k] = v.wkt
+                        else:
+                            clean_row[k] = v
+                except Exception:
+                    clean_row[k] = str(v)
+                    
+            clean_result_data.append(clean_row)
+        
+        print(f"[Pivot Sandbox] 透视成功！生成了 {len(clean_result_data)} 条高度聚合数据。耗时: {round((time.time() - start_time)*1000, 2)}ms")
+        return {"status": "success", "data": clean_result_data}
 
     except Exception as e:
         print(f"\n{'='*50}")
-        print(f"内存透视算子执行崩溃，AI 写的代码如下:\n{payload.python_code}")
+        print(f"内存透视算子执行崩溃，错误类型: {type(e).__name__}, 内容: {str(e)}")
+        print(f"AI 写的代码如下:\n{payload.python_code}")
         traceback.print_exc()
         print(f"{'='*50}\n")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# 绘图引擎 (脱离数据库，只认数据)
 @app.post("/api/models/chart_only")
 async def execute_chart_only(payload: ChartInput):
     start_time = time.time()
     try:
         print(f"\n[Chart Sandbox] 收到绘图任务，传入了 {len(payload.data)} 条聚合数据样本...")
-        
-        # 1. 把 Node.js 传来的 JSON 直接转回 Pandas DataFrame
         df = pd.DataFrame(payload.data)
         
-        # 2. 准备绘图沙盒 (给 AI 准备好画笔)
-        exec_globals = {
-            "pd": pd, "np": np, 
-            "px": px, "go": go, "folium": folium
-        }
+        exec_globals = {"pd": pd, "np": np, "px": px, "go": go, "folium": folium}
         local_scope = {}
         
-        # 3. 动态执行 AI 写的绘图代码
         exec(payload.python_code, exec_globals, local_scope)
         
         if 'execute_chart' not in local_scope:
             raise ValueError("AI 生成的代码中未找到主函数 'execute_chart'！")
             
         execute_chart = local_scope['execute_chart']
-        
-        # 4. 执行画图！
         result_dict = execute_chart(df, payload.parameters)
         
-        if "html_string" not in result_dict:
-            raise ValueError("大模型未按规范返回包含 'html_string' 的字典！")
-            
-        print(f"[Chart Sandbox] 绘图渲染成功！耗时: {round((time.time() - start_time)*1000, 2)}ms")
-        
-        return {
-            "status": "success",
-            "html_string": result_dict["html_string"]
-        }
+        if "echarts_option" in result_dict:
+            # 返回 ECharts 配置
+            print(f"[Chart Sandbox] ECharts 渲染配置生成成功！耗时: {round((time.time() - start_time)*1000, 2)}ms")
+            return {
+                "status": "success", 
+                "engine": "echarts",
+                "chart_option": result_dict["echarts_option"]
+            }
+        elif "html_string" in result_dict:
+            # 返回 HTML 源码
+            print(f"[Chart Sandbox] HTML 绘图渲染成功！耗时: {round((time.time() - start_time)*1000, 2)}ms")
+            return {
+                "status": "success", 
+                "engine": "html_iframe",
+                "html_string": result_dict["html_string"]
+            }
+        else:
+            raise ValueError("大模型未按规范返回包含 'echarts_option' 或 'html_string' 的字典！")
+
 
     except Exception as e:
         print(f"\n{'='*50}")
@@ -354,7 +360,6 @@ async def execute_chart_only(payload: ChartInput):
         traceback.print_exc()
         print(f"{'='*50}\n")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 if __name__ == "__main__":
     import uvicorn
