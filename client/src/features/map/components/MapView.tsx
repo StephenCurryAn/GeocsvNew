@@ -662,64 +662,108 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
         });
         if (map.getSource(sourceId)) map.removeSource(sourceId);
 
-        // 添加数据源
-        map.addSource(sourceId, { type: 'geojson', data: geoJSON });
+        // 判断是否应该使用 MVT 矢量瓦片模式
+        const useMVT = fileId && (!geoJSON || !geoJSON.features || geoJSON.features.length >= MVT_THRESHOLD);
 
-        // 1. 填充层
-        map.addLayer({
-            id: 'geo-fill-layer', type: 'fill', source: sourceId,
-            paint: { 
-                'fill-color': '#00e5ff', 
-                'fill-opacity': 0.6,
-                //   [ ] 智能边框：网格模式透明，普通模式保留淡淡的轮廓
-                'fill-outline-color': isGridMode ? 'rgba(0,0,0,0)' : 'rgba(0,0,0,0.1)' 
-            },
-            filter: ['==', '$type', 'Polygon']
-        });
-        // 2.   面边框图层 (Polygon Border) - 只渲染 Polygon 的轮廓
-        // 它的任务是：高亮时变白，不参与颜色映射
-        map.addLayer({
-            id: 'geo-polygon-border', type: 'line', source: sourceId,
-            paint: { 
-                // 使用极低透明度的白色或黑色，取决于你的底图，这里用通用淡白
-                'line-color': 'rgba(255, 255, 255, 0.08)', 
-                //   [ ] 智能线宽：网格模式隐藏(0)，普通模式显示(1)
-                'line-width': isGridMode ? 0 : 1,
-                'line-opacity': 0.5
-            },
-            filter: ['==', '$type', 'Polygon']
-        });
+        if (useMVT) {
+            console.log(`[MapView] 启用 MVT 极速矢量瓦片渲染模式: ${fileId}`);
+            map.addSource(sourceId, {
+                type: 'vector',
+                // 由于新写了 tileController，瓦片接口在这里
+                tiles: [`http://localhost:3000/api/tiles/${fileId}/{z}/{x}/{y}`],
+                minzoom: 0,
+                maxzoom: 22
+            });
 
-        // 3.   线实体图层 (LineString Main) - 只渲染 LineString
-        // 它的任务是：像面一样展示炫酷的渐变色
-        map.addLayer({
-            id: 'geo-linestring-main', type: 'line', source: sourceId,
-            paint: { 
-                'line-color': '#00e5ff', 
-                'line-width': 3, // 默认粗一点，更有质感
-                'line-opacity': 0.8,
-                'line-blur': 1   // 加一点模糊，做出霓虹灯管效果
-            },
-            filter: ['==', '$type', 'LineString']
-        });
+            // 当使用 MVT 瓦片源时，必须在每一个图层配置中指定 'source-layer' (对应 ST_AsMVT 中设定的图层名 'default_layer')
+            map.addLayer({
+                id: 'geo-fill-layer', type: 'fill', source: sourceId, 'source-layer': 'default_layer',
+                paint: { 
+                    'fill-color': '#00e5ff', 
+                    'fill-opacity': 0.6,
+                    'fill-outline-color': isGridMode ? 'rgba(0,0,0,0)' : 'rgba(0,0,0,0.1)' 
+                },
+                filter: ['==', '$type', 'Polygon']
+            });
+            map.addLayer({
+                id: 'geo-polygon-border', type: 'line', source: sourceId, 'source-layer': 'default_layer',
+                paint: { 
+                    'line-color': 'rgba(255, 255, 255, 0.08)', 
+                    'line-width': isGridMode ? 0 : 1,
+                    'line-opacity': 0.5
+                },
+                filter: ['==', '$type', 'Polygon']
+            });
+            map.addLayer({
+                id: 'geo-linestring-main', type: 'line', source: sourceId, 'source-layer': 'default_layer',
+                paint: { 
+                    'line-color': '#00e5ff', 
+                    'line-width': 3, 
+                    'line-opacity': 0.8,
+                    'line-blur': 1   
+                },
+                filter: ['==', '$type', 'LineString']
+            });
+            map.addLayer({
+                id: 'geo-point-layer', type: 'circle', source: sourceId, 'source-layer': 'default_layer',
+                paint: { 'circle-radius': 6, 'circle-color': '#00e5ff', 'circle-stroke-width': 1, 'circle-stroke-color': '#ffffff' },
+                filter: ['==', '$type', 'Point']
+            });
+            map.addLayer({ id: 'geo-highlight-fill', type: 'fill', source: sourceId, 'source-layer': 'default_layer', paint: { 'fill-color': '#ffffff', 'fill-opacity': 0.2 }, filter: ['==', 'id', 'nothing-selected'] });
+            map.addLayer({ id: 'geo-highlight-line', type: 'line', source: sourceId, 'source-layer': 'default_layer', paint: { 'line-color': '#ffffff', 'line-width': 3 }, filter: ['==', 'id', 'nothing-selected'] });
+            map.addLayer({ id: 'geo-highlight-point', type: 'circle', source: sourceId, 'source-layer': 'default_layer', paint: { 'circle-radius': 8, 'circle-color': '#ffffff', 'circle-stroke-width': 2, 'circle-stroke-color': '#ff0000' }, filter: ['==', 'id', 'nothing-selected'] });
 
-        // 3. 点图层
-        map.addLayer({
-            id: 'geo-point-layer', type: 'circle', source: sourceId,
-            paint: { 'circle-radius': 6, 'circle-color': '#00e5ff', 'circle-stroke-width': 1, 'circle-stroke-color': '#ffffff' },
-            filter: ['==', '$type', 'Point']
-        });
-        // 高亮层 (略，保持原样)
-        map.addLayer({ id: 'geo-highlight-fill', type: 'fill', source: sourceId, paint: { 'fill-color': '#ffffff', 'fill-opacity': 0.2 }, filter: ['==', 'id', 'nothing-selected'] });
-        map.addLayer({ id: 'geo-highlight-line', type: 'line', source: sourceId, paint: { 'line-color': '#ffffff', 'line-width': 3 }, filter: ['==', 'id', 'nothing-selected'] });
-        map.addLayer({ id: 'geo-highlight-point', type: 'circle', source: sourceId, paint: { 'circle-radius': 8, 'circle-color': '#ffffff', 'circle-stroke-width': 2, 'circle-stroke-color': '#ff0000' }, filter: ['==', 'id', 'nothing-selected'] });
+        } else {
+            console.log(`[MapView] 启用普通 GeoJSON 渲染模式: ${fileName}`);
+            map.addSource(sourceId, { type: 'geojson', data: geoJSON });
+
+            map.addLayer({
+                id: 'geo-fill-layer', type: 'fill', source: sourceId,
+                paint: { 
+                    'fill-color': '#00e5ff', 
+                    'fill-opacity': 0.6,
+                    'fill-outline-color': isGridMode ? 'rgba(0,0,0,0)' : 'rgba(0,0,0,0.1)' 
+                },
+                filter: ['==', '$type', 'Polygon']
+            });
+            map.addLayer({
+                id: 'geo-polygon-border', type: 'line', source: sourceId,
+                paint: { 
+                    'line-color': 'rgba(255, 255, 255, 0.08)', 
+                    'line-width': isGridMode ? 0 : 1,
+                    'line-opacity': 0.5
+                },
+                filter: ['==', '$type', 'Polygon']
+            });
+            map.addLayer({
+                id: 'geo-linestring-main', type: 'line', source: sourceId,
+                paint: { 
+                    'line-color': '#00e5ff', 
+                    'line-width': 3, 
+                    'line-opacity': 0.8,
+                    'line-blur': 1   
+                },
+                filter: ['==', '$type', 'LineString']
+            });
+            map.addLayer({
+                id: 'geo-point-layer', type: 'circle', source: sourceId,
+                paint: { 'circle-radius': 6, 'circle-color': '#00e5ff', 'circle-stroke-width': 1, 'circle-stroke-color': '#ffffff' },
+                filter: ['==', '$type', 'Point']
+            });
+            map.addLayer({ id: 'geo-highlight-fill', type: 'fill', source: sourceId, paint: { 'fill-color': '#ffffff', 'fill-opacity': 0.2 }, filter: ['==', 'id', 'nothing-selected'] });
+            map.addLayer({ id: 'geo-highlight-line', type: 'line', source: sourceId, paint: { 'line-color': '#ffffff', 'line-width': 3 }, filter: ['==', 'id', 'nothing-selected'] });
+            map.addLayer({ id: 'geo-highlight-point', type: 'circle', source: sourceId, paint: { 'circle-radius': 8, 'circle-color': '#ffffff', 'circle-stroke-width': 2, 'circle-stroke-color': '#ff0000' }, filter: ['==', 'id', 'nothing-selected'] });
+        }
 
         if (fileName !== lastFileNameRef.current) {
-            try {
-                const bounds = bbox(geoJSON) as [number, number, number, number];
-                map.fitBounds(bounds, { padding: 50, maxZoom: 14, duration: 1500 });
-                lastFileNameRef.current = fileName; 
-            } catch(e) { console.warn('BBox calc failed', e) }
+            lastFileNameRef.current = fileName; 
+            // 若为 GeoJSON 则使用 turf bbox，若为 MVT 目前我们暂不移动镜头（或应该发请求去后获取 BBox）
+            if (geoJSON && geoJSON.features && geoJSON.features.length > 0) {
+                try {
+                    const bounds = bbox(geoJSON) as [number, number, number, number];
+                    map.fitBounds(bounds, { padding: 50, maxZoom: 14, duration: 1500 });
+                } catch(e) { console.warn('BBox calc failed', e) }
+            }
         }
     };
 

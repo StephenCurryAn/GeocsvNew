@@ -12,6 +12,7 @@ import express, { Request, Response } from 'express';
 import cors from 'cors'; // 跨域资源共享
 import fileRoutes from './routes/fileRoutes'; // 导入文件路由
 import analysisRoutes from './routes/analysisRoutes';
+import tileRoutes from './routes/tileRoutes';
 import { connectDB } from './config/db'; // 导入数据库连接函数
 
 const app = express();
@@ -42,8 +43,11 @@ app.use(express.json());
 // 2. 路由注册 （所有与'/api/files'有关的请求路由，都交给 fileRoutes）
 app.use('/api/files', fileRoutes); // 挂载文件相关路由
 
-//  注册新路由 (以 /api/analysis 开头的请求都交给 analysisRoutes 处理)
+// 注册新路由 (以 /api/analysis 开头的请求都交给 analysisRoutes 处理)
 app.use('/api/analysis', analysisRoutes);
+
+// 注册矢量瓦片路由
+app.use('/api/tiles', tileRoutes);
 
 // 3. 测试路由
 app.get('/api/health', (req: Request, res: Response) => {

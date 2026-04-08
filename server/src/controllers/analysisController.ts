@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import * as Feature from '../models/Feature';
 import * as ModelRegistry from '../models/ModelRegistry';
-import { generateModelCodeFromAI, planWorkflow, generatePivotCode, generateChartCode } from '../utils/llmService';
+import { generateModelCodeFromAI, planWorkflow, generatePivotCode, generateChartCode, fixPivotCode, fixChartCode } from '../utils/llmService';
 import * as turf from '@turf/turf';
 import axios from 'axios';
 import fs from 'fs';
@@ -1028,7 +1028,7 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
     let pivotCode: string = "";
 
     try {
-        const { userPrompt, fileIds } = req.body;
+        const { userPrompt, fileIds, context } = req.body;
 
         if (!userPrompt || !fileIds || fileIds.length === 0) {
             res.status(400).json({ error: "缺少用户需求或未选择任何文件" });
@@ -1048,43 +1048,127 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
 
         // 1 意图拆解节点
         console.log(`[Pipeline] 节点1正在拆解意图...`);
-        blueprint = await planWorkflow(userPrompt, availableFiles);
+        blueprint = await planWorkflow(userPrompt, availableFiles, context);
         console.log(`[Pipeline] 拆解意图完成:`, blueprint.explanation);
 
-        // 2 数据透视代码生成节点
-        console.log(`[Pipeline] 节点2正在编写透视代码...`);
-        pivotCode = await generatePivotCode(blueprint);
-
-        // 3 Python执行透视
-        console.log(`[Pipeline] 节点3正在执行空间透视...`);
-        const pivotResponse = await axios.post<PivotApiResponse>(`${PYTHON_API_URL}/models/pivot_only`, {
-            python_code: pivotCode,
-            file_ids: fileIds
-        });
-        
-        // 预期Python返回的JSON数组结构
-        const aggregatedData = pivotResponse.data.data; 
-        if (!aggregatedData || aggregatedData.length === 0) {
-            throw new Error("透视结果为空，请检查需求或数据是否匹配");
+        // 2 数据透视代码生成节点 / 或复用历史代码
+        if (blueprint.reuse_code && context?.lastPythonCode) {
+            console.log(`[Pipeline] 检测到意图为图表切换/追问，直接复用上一轮数据抽取代码。`);
+            pivotCode = context.lastPythonCode;
+        } else {
+            console.log(`[Pipeline] 节点2正在编写透视代码...`);
+            pivotCode = await generatePivotCode(blueprint);
         }
-        console.log(`[Pipeline] 透视计算成功，共有 ${aggregatedData.length} 条统计记录`);
+
+        // 3 Python执行透视 (带自愈修复环)
+        let aggregatedData: any = null;
+        let lastErrorDetails = "";
+        const MAX_RETRIES = 2;
+        let retries = 0;
+
+        while (retries <= MAX_RETRIES) {
+            try {
+                console.log(`[Pipeline] 节点3正在执行空间透视... (尝试 ${retries + 1}/${MAX_RETRIES + 1})`);
+                const pivotResponse = await axios.post<PivotApiResponse>(`${PYTHON_API_URL}/models/pivot_only`, {
+                    python_code: pivotCode,
+                    file_ids: fileIds
+                });
+                
+                aggregatedData = pivotResponse.data.data; 
+                if (!aggregatedData || aggregatedData.length === 0) {
+                    throw new Error("透视结果为空，请检查需求或数据是否匹配");
+                }
+                console.log(`[Pipeline] 透视计算成功，共有 ${aggregatedData.length} 条统计记录`);
+                break; // 成功则跳出循环，继续往下走
+            } catch (err: any) {
+                lastErrorDetails = err.response?.data?.detail || err.response?.data?.details || err.message;
+                console.error(`\n[Pipeline 容错捕捉] 沙盒执行引发异常: ${lastErrorDetails}`);
+
+                if (retries >= MAX_RETRIES) {
+                    console.log(`[Pipeline] 达到最大重试次数 (${MAX_RETRIES})，放弃自愈，准备将异常托管给前端...`);
+                    break;
+                }
+                
+                retries++;
+                console.log(`[Pipeline] 节点发觉错误，启动 Self-Healing 自愈修复环，呼叫 FixerAgent (第 ${retries} 次重试)...`);
+                try {
+                    pivotCode = await fixPivotCode(blueprint, pivotCode, lastErrorDetails);
+                    console.log(`[Pipeline] FixerAgent 自愈重写完成，准备再次向沙盒投入代码...`);
+                } catch (fixErr: any) {
+                    console.error("[Pipeline] FixerAgent 修复动作本身失败:", fixErr.message);
+                    break;
+                }
+            }
+        }
+
+        // 终局判定：如果重试已耗尽且依旧没有数据，走优雅降级方案，提前返回 200 让前端处理重入
+        if (!aggregatedData) {
+            console.log(`======================================================\n`);
+            res.status(200).json({
+                status: "failed",
+                error_message: "AI 多次尝试修复代码失败，已切换至人工接管模式。",
+                traceback: lastErrorDetails,
+                pythonCode: pivotCode // 携带最后挣扎生成的代码
+            });
+            return;
+        }
 
         // 4 绘图代码生成节点
         console.log(`[Pipeline] 节点4正在编写绘图代码...`);
         // 传前 3 条数据当样本，保证大模型写的图表列名正确
-        const chartCode = await generateChartCode(blueprint, aggregatedData.slice(0, 3));
+        let chartCode = await generateChartCode(blueprint, aggregatedData.slice(0, 3));
 
+        // 5 Python执行绘图 (带自愈修复环)
+        let chartResponseData: ChartApiResponse | null = null;
+        let chartErrorDetails = "";
+        let chartRetries = 0;
 
-        // 5 Python执行绘图
-        console.log(`[Pipeline] 节点5正在渲染图表...`);
-        const chartResponse = await axios.post<ChartApiResponse>(`${PYTHON_API_URL}/models/chart_only`, {
-            python_code: chartCode,
-            data: aggregatedData // 这里直接把数据传过去画图
-        });
-        
-        const { engine, html_string, chart_option } = chartResponse.data;
+        while (chartRetries <= MAX_RETRIES) {
+            try {
+                console.log(`[Pipeline] 节点5正在渲染图表... (尝试 ${chartRetries + 1}/${MAX_RETRIES + 1})`);
+                const chartResponse = await axios.post<ChartApiResponse>(`${PYTHON_API_URL}/models/chart_only`, {
+                    python_code: chartCode,
+                    data: aggregatedData
+                });
+                
+                chartResponseData = chartResponse.data;
+                console.log(`[Pipeline] 图表渲染成功，渲染引擎: ${chartResponseData.engine}。`);
+                break; // 成功则跳出循环
+            } catch (err: any) {
+                chartErrorDetails = err.response?.data?.detail || err.response?.data?.details || err.message;
+                console.error(`\n[Pipeline 容错捕捉] 图表沙盒引发异常: ${chartErrorDetails}`);
 
-        console.log(`[Pipeline] 全部执行成功，渲染引擎: ${engine}。`);
+                if (chartRetries >= MAX_RETRIES) {
+                    console.log(`[Pipeline] 图表渲染达到最大重试次数 (${MAX_RETRIES})，放弃自愈，将异常托管给前端...`);
+                    break;
+                }
+                
+                chartRetries++;
+                console.log(`[Pipeline] 呼叫 FixerAgent 进行图表代码自愈 (第 ${chartRetries} 次重试)...`);
+                try {
+                    chartCode = await fixChartCode(blueprint, chartCode, chartErrorDetails);
+                    console.log(`[Pipeline] FixerAgent (图表) 修复完成，准备重新投入沙盒...`);
+                } catch (fixErr: any) {
+                    console.error("[Pipeline] FixerAgent (图表) 修复动作本身失败:", fixErr.message);
+                    break;
+                }
+            }
+        }
+
+        if (!chartResponseData) {
+            console.log(`======================================================\n`);
+            res.status(200).json({
+                status: "failed",
+                error_message: "AI 多次尝试修复图表代码失败，已切换至人工接管模式。",
+                traceback: chartErrorDetails,
+                pythonCode: chartCode // 返回彻底崩溃的画图代码供用户审查
+            });
+            return;
+        }
+
+        const { engine, html_string, chart_option } = chartResponseData;
+
+        console.log(`[Pipeline] 全部执行成功，最终渲染引擎: ${engine}。`);
         console.log(`======================================================\n`);
 
         // 返回给前端

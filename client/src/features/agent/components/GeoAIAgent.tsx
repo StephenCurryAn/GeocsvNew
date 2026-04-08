@@ -22,6 +22,8 @@ interface ChatMessage {
     chartHtml?: string;
     pythonCode?: string;
     blueprint?: any; // 用于 rerun 时将蓝图一并回传给后端
+    status?: 'failed' | 'success'; // 是否为人机接管降级
+    traceback?: string;            // 真实 Python 报错沙盒栈
 }
 
 interface GeoAIAgentProps {
@@ -151,13 +153,39 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
             timestamp: Date.now(),
         }]);
 
+        // 获取最后一次成功的AI回复中的 blueprint 和 pythonCode 作为上下文
+        const lastAssistantMsg = [...messages].reverse().find(m => m.role === 'assistant' && m.blueprint && m.pythonCode);
+        const context = lastAssistantMsg ? {
+            lastBlueprint: lastAssistantMsg.blueprint,
+            lastPythonCode: lastAssistantMsg.pythonCode
+        } : undefined;
+
         try {
             const response = await geoService.generateModelByAI({
                 userPrompt: currentInput,
                 fileIds: selectedFileIds,
+                context: context
             });
 
-            // 调用辅助函数，把透视结果和图表塞给主界面
+            // 如果后端返回状态为 failed（自愈彻底失败降级机制）
+            if (response.status === 'failed') {
+                setMessages(prev => {
+                    const filtered = prev.filter(m => m.id !== thinkingId);
+                    return [...filtered, {
+                        id: `err-${Date.now()}`,
+                        role: 'assistant',
+                        content: response.error_message || 'AI 多次尝试修复代码失败，已切换至人工接管模式。',
+                        timestamp: Date.now(),
+                        status: 'failed',
+                        traceback: response.traceback,
+                        pythonCode: response.pythonCode,
+                        blueprint: context?.lastBlueprint
+                    }];
+                });
+                return; // 直接跳出，绝对不触发图表渲染
+            }
+
+            // 调用辅助函数，把透视结果和图表塞给主界面 (成功时)
             syncToGlobalStore(response);
 
             // 移除占位，添加正式回复
@@ -269,12 +297,25 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
                                 </div>
                             )}
 
+                            {/* 当状态为 failed 时的特殊回显：Traceback 栈和警示标签 */}
+                            {msg.status === 'failed' && msg.traceback && (
+                                <div className="p-3 bg-red-950/40 border-b border-red-900/50">
+                                    <div className="flex items-center gap-1.5 text-red-400 font-bold text-xs mb-2">
+                                        <CloseOutlined /> 
+                                        沙盒崩溃 / 自动自愈逾期限界
+                                    </div>
+                                    <div className="bg-[#1e1e1e]/60 rounded p-2 overflow-x-auto text-[10px] text-red-300 font-mono select-text border border-red-900/30">
+                                        {msg.traceback}
+                                    </div>
+                                </div>
+                            )}
+
                             {/* 代码透视区 */}
                             {msg.pythonCode && (
                                 <div className="p-2">
                                     <div className="flex items-center gap-2 mb-1.5 px-1 text-[10px] text-zinc-400 font-mono tracking-wider">
-                                        <CodeOutlined className="text-geo-accent" /> 
-                                        沙盒算子代码 (Python) — 可直接修改后重新执行
+                                        <CodeOutlined className={msg.status === 'failed' ? "text-red-400" : "text-geo-accent"} /> 
+                                        {msg.status === 'failed' ? '请审查并修正以下导致崩溃的算子代码：' : '沙盒算子代码 (Python) — 可直接修改后重新执行'}
                                     </div>
                                     <textarea
                                         className="w-full h-32 bg-[#1e1e1e] text-[#ce9178] font-mono text-[11px] p-2 rounded-lg border border-[#333] outline-none shadow-inner resize-y transition-colors focus:border-geo-accent"
