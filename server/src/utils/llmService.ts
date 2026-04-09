@@ -199,7 +199,7 @@ ${contextPrompt}
     }
   ],
   "visualization_spec": {
-    "engine": "【严格路由分类】：如果需求涉及基础准则数据分析图表（如柱状图、条形图 Bar、折线图 Line、饼图 Pie、雷达图 Radar、箱线图 Boxplot 等），【强制填写 'echarts'】。绝对不要生成 HTML！只有当用户要求极度复杂的高度定制空间专题拓扑网络图时，才可使用 'html_iframe'。",
+    "engine": "【严格路由分类】：如果需求涉及基础准则数据分析图表（如柱状图、折线图、饼图、雷达图、散点图等），【强制填写 'echarts'】。绝对不要生成 HTML！只有当用户要求极度复杂的高度定制空间专题拓扑网络图时，才可使用 'html_iframe'。",
     "chart_type": "图表类型",
     "dimensions": ["展示维度的输出列名（X轴/类目）"],
     "metrics": ["要统计展示的数据列名（Y轴/数值）"]
@@ -228,20 +228,32 @@ ${contextPrompt}
 
 export const generatePivotCode = async (blueprint: WorkflowBlueprint): Promise<string> => {
     const PIVOT_CODER_PROMPT = `
-你是一位顶级的 Python 空间数据挖掘专家（Coder Agent）。
-请根据架构师提供的【执行蓝图(Blueprint)】，编写一段极其健壮的 Python 空间聚合代码。
+你是一位高级 GeoAI 空间调度工程师。
+系统底层已经为你内置了绝对安全的领域特定算子库 (GeoPivot SDK)。
+你的任务是：根据用户的【执行蓝图】，严格进行【5+1 意图映射】，并组合调用 SDK 完成计算。
 【执行蓝图】：
 ${JSON.stringify(blueprint, null, 2)}
 
-【Python 代码严格规范】：
-1. 必须且只能包含一个主执行函数：\`def execute_pivot(gdf_dict, parameters):\`
-2. \`gdf_dict\` 包含了蓝图中 \`data_dependencies\` 声明的各个 \`file_id\` 对应的 GeoDataFrame。
-3. 系统已自动为你将所有 GeoDataFrame 的坐标系统一为 EPSG:3857 (米制)，可直接进行 buffer/空间距离计算。
-4. 必须先将无效的 0、空字符串、纯空格替换为 np.nan
-5. 【返回值强制要求】：请将最终聚合完成的结果转换为 Pandas DataFrame 直接返回（推荐），或者转为字典列表。系统会自动为你丢弃 geometry 并序列化。
-6. 只输出纯 Python 代码，绝对不要包含 Markdown 的 \`\`\`python 标签！
+【SDK 核心算子 API 文档】（已隐式 import，可直接调用）：
+1. 空间连接算子：
+   - safe_buffer_intersects(target_gdf, join_gdf, radius) -> 返回安全的相交 GeoDataFrame
+   - safe_intersects(target_gdf, join_gdf) -> 面与面/线与面的精确相交
+   - safe_within_contains(target_gdf, join_gdf, relation='within'或'contains')
+   - safe_nearest(target_gdf, join_gdf, max_distance=None)
+   注意：面包含点必须用 relation='contains'！点被面包含用 relation='within'。
+   【拓扑传参绝对红线】：绝对禁止互换 target_gdf 和 join_gdf 的传入顺序！target_gdf 必须永远作为第一个参数，以保证左表索引不丢失！
+   - 举例：如果 target_gdf 是面（区县），join_gdf 是点（POI），为了判断面包含点，必须写：safe_within_contains(target_gdf, join_gdf, relation='contains')，
+           或者直接用 safe_intersects(target_gdf, join_gdf)！绝对不许把 join_gdf 写在前面！
 
-【🚨大模型红线：5+1 空间数据透视核心范式 (The 5+1 Spatial Pivot Paradigm)🚨】
+2. 智能数据聚合：safe_aggregate(joined_gdf, agg_method, value_col=None, col_dim=None)
+
+【前端数据流规范 (极度重要)】：
+你返回的 DataFrame 必须严格符合 React 前端的数据格式，否则前端图表无法渲染！
+1. 提取合并：绝对不要把 target_gdf 的所有列都 join 进来！必须只提取【行维度列】与 agg_result 进行 join！
+2. 规范命名：必须将【行维度列】重命名为 'rowKey'！
+3. 纯净输出：返回值绝对不能包含 'geometry'、'id' 等无关属性！
+
+【大模型红线：5+1 空间数据透视核心范式 (The 5+1 Spatial Pivot Paradigm)】
 不要盲目应用普通的 Pandas 数据透视知识。空间数据透视必须基于『空间拓扑约束』，且基于6个标准要素：
 1. 空间约束 (Spatial Constraint)：如 buffer, intersects, nearest。
 2. 透视对象 (Target)：作为主体的主表（基准表，即左表）。
@@ -259,43 +271,39 @@ ${JSON.stringify(blueprint, null, 2)}
 # 透视方法: ...
 # 透视字段: ...
 
-【🐍 强制代码 Snippet 规范（不遵守将引发系统崩溃）】
-无论需求多庞杂，执行空间汇聚必须严格遵循以下四步走套路。
-绝对禁止使用 \`pd.merge\` 引发主键丢失！绝对禁止使用 \`.groupby(列名)\` 或 \`.groupby(target.index.name)\` 抛空异常！
+【执行与代码规范】：
+1. 第一步写出 #【5+1 意图映射】 注释。
+2. 将数据中的空值/0替换为 np.nan。
+3. 调用一个空间连接算子得到 joined。
+4. 调用 safe_aggregate，并将结果与主表进行 join 合并。
+   写法范例：\`result_gdf = target_gdf.join(safe_aggregate(joined, agg_method='size', col_dim=parameters.get('col_dim'))).fillna(0)\`
+5. 返回不含 geometry 列的纯 DataFrame 数据。
 
-Step 0: 数据准备 (Data Clean)
-必须统一采用极其安全的全表矢量化方法替换异常值（绝对禁止使用循环遍历或 df.dtypes 判断）：
-\`\`\`python
-target_gdf = target_gdf.replace(['', ' ', '0', 0], np.nan)
-join_gdf = join_gdf.replace(['', ' ', '0', 0], np.nan)
-\`\`\`
-
-Step 1: 处理空间约束 (Spatial Constraint)
-\`\`\`python
-# 例如缓冲相交、最近距离等
-target_gdf['geometry'] = target_gdf.geometry.buffer(...) # 可选
-joined = gpd.sjoin(target_gdf, join_gdf, how='inner', predicate='intersects')
-\`\`\`
-
-Step 2: 聚合处理 (安全分组机制)
-必须利用 \`sjoin\` 保留左表索引的特性，直接使用 \`level=0\` 进行安全分组！
-\`\`\`python
-# 计数 (Count): 
-agg_result = joined.groupby(level=0).size()
-# 或者求和 (Sum): 
-agg_result = joined.groupby(level=0)['目标字段'].sum()
-\`\`\`
-
-Step 3: 结果映射 (Result Mapping)
-利用 Pandas 索引自动对齐特性直接给原始主表赋值，彻底避开 pd.merge。
-\`\`\`python
-target_gdf['计算结果'] = agg_result
-target_gdf['计算结果'] = target_gdf['计算结果'].fillna(0)
-\`\`\`
-
-Step 4: 降维输出
-使用 \`sort_values\` 时必须显式指定 \`by\`（例如 \`df.sort_values(by='count', ascending=False)\`）。
-过滤掉不需要的属性列并丢弃 \`geometry\` 引擎负担，仅返回前端 UI 需要展示的属性列组合即可。
+# 极致简洁的标准 Few-Shot 示例代码：
+def execute_pivot(gdf_dict, parameters):
+    target_gdf = gdf_dict['target_id'].copy().replace(['', 0], np.nan)
+    join_gdf = gdf_dict['join_id'].copy().replace(['', 0], np.nan)
+    
+    # 1. 空间拓扑 (例如：区县面 包含 风景名胜点)
+    joined = safe_within_contains(target_gdf, join_gdf, relation='contains')
+    
+    # 2. 智能聚合 (传入 col_dim 可自动触发二维透视)
+    agg_result = safe_aggregate(
+        joined, 
+        agg_method='size', 
+        col_dim=parameters.get('col_dim'),
+        value_col=parameters.get('value_col')
+    )
+    
+    # 3.强制规范降维：仅选择行维度列参与合并，杜绝冗余字段！
+    # 请根据蓝图中的【行维度(Row)】动态推断此处的实际列名（例如 'NAME'、'区县' 等）
+    row_dim_col = '这里填入推断出的行维度真实列名' 
+    final_gdf = target_gdf[[row_dim_col]].join(agg_result).fillna(0)
+    
+    # 4. 强制重命名：将行维度列名改为 'rowKey'，适配前端 ECharts 引擎
+    final_gdf.rename(columns={row_dim_col: 'rowKey'}, inplace=True)
+    
+    return pd.DataFrame(final_gdf)
 `;
 
     try {
@@ -334,11 +342,13 @@ ${buggyCode}
 ${errorTraceback}
 \`\`\`
 
-请分析报错原因（如 Pandas 列名冲突、空值异常、非法合并方法、属性不存在等），彻底修复它并返回修复后的完整 Python 代码。
-你返回的代码必须继续严格遵守 【5+1 聚合规范】，特别是：
-1. 绝对禁止使用 \`pd.merge\`！
-2. 绝对禁止使用 \`.groupby(列名)\`，必须使用 \`joined.groupby(level=0)\` 进行安全分组并直接向主表索引赋值对齐！
-3. 返回修正后的完整 \`def execute_pivot(gdf_dict, parameters):\`。只输出代码，绝对不要包括任何代码包裹符例如 \`\`\`python。
+【修复红线 - 系统已内置 SDK】：
+沙盒中已全局注入了以下安全算子，你绝对不能手写底层 GeoPandas 方法（如 sjoin、buffer），必须直接调用：
+1. \`safe_buffer_intersects(target_gdf, join_gdf, radius)\` -> 返回相交后的 GeoDataFrame
+2. \`safe_aggregate(joined_gdf, agg_method, value_col=None)\` -> 返回安全聚合后的 Series
+
+请分析报错原因（如参数类型不对、字典键错误等），重新调用 SDK 编写完整的 \`def execute_pivot(gdf_dict, parameters):\` 函数。
+只输出纯 Python 代码，绝对不要包含 \`\`\`python 标签！
 `;
 
     try {
@@ -361,37 +371,22 @@ ${errorTraceback}
 
 export const generateChartCode = async (blueprint: WorkflowBlueprint, dataSample: any[]): Promise<string> => {
     const CHART_CODER_PROMPT = `
-你是一位顶级的 Python 数据可视化专家。请根据提供的【图表策略】及【数据样本】，编写专业的绘图代码。
+你是一位顶级的 BI 可视化数据映射专家。请根据提供的【执行蓝图】及【数据样本】，决定前端表现层的配置。
 【执行蓝图】：${JSON.stringify(blueprint, null, 2)}
 【数据样本】：${JSON.stringify(dataSample, null, 2)}
 
-【严格规范】：
-1. 包含主执行函数：\`def execute_chart(df, parameters):\`
-2. **安全参数提取 (Safe Parameter Extraction)**：在为图表生成标题（Title）或获取绘图参考量时，绝对禁止硬编码提取未知的字典键（如直接写 \`parameters['buffer_radius']\`，这会直接抛出 KeyError 导致系统回滚）。必须使用绝对安全的兜底获取方式（如 \`parameters.get('buffer_radius', 1000)\`），或者直接根据蓝图意图硬书写中文语义标题，彻底脱离对动态特定参数键的依赖！
-3. **分支渲染策略**：检查执行蓝图中的 \`visualization_spec.engine\`：
-   - 如果是 \`'echarts'\`：
-     🚨【ECharts 引擎红线 — 绝对禁止导入任何第三方绘图库】🚨
-     当 engine 为 'echarts' 时，严禁出现任何 \`import matplotlib\`、\`import plotly\`、\`import pyecharts\`、\`import folium\` 等第三方绘图库导入语句！你只需使用 Python 原生字典 + Pandas 的 \`.tolist()\` 方法完成数据注入即可。
-     
-     你必须严格参考以下【强制代码骨架模板（Few-Shot）】进行编写，不得偏离此结构：
-     \`\`\`python
-     def execute_chart(df, parameters):
-         # 直接从 df 中提取列表用于 xAxis 和 series（利用 Pandas tolist() 完成数据注入）
-         x_data = df.iloc[:, 0].astype(str).tolist() if not df.empty else []
-         y_data = df.iloc[:, 1].tolist() if not df.empty else []
-         
-         option_dict = {
-             "title": {"text": "请根据语义生成标题"},
-             "tooltip": {"trigger": "axis"},
-             "xAxis": {"type": "category", "data": x_data},
-             "yAxis": {"type": "value"},
-             "series": [{"type": "bar", "data": y_data}]
-         }
-         return {"echarts_option": option_dict}
-     \`\`\`
-     在此骨架基础上，发挥你的设计审美，比如设置深色主题、酷炫的渐变颜色（itemStyle.color 渐变）和 Tooltip 联动体验。最终必须仅返回 \`{"echarts_option": option_dict}\`。
-   - 如果是 \`'html_iframe'\`：你需要使用 \`plotly.express\` 或 \`folium\` 进行绘制，并导出为 HTML 字符串，返回 \`{"html_string": html_content}\`。⚠️请注意网络环境！生成的 HTML 源码中，强制使用国内稳定的 CDN（如 staticfile 或 bootcdn）替换掉一切原本库携带的外部脚本！如果不做替换将导致国内节点白屏以及 ERR_CONNECTION_RESET！
-4. 只输出纯 Python 代码，绝对不要包含 Markdown 的 \`\`\`python 标签！
+【核心架构分支指令】：检查蓝图中的 \`visualization_spec.engine\`：
+
+分支 A：
+系统前端已自带完美的可视化组件，你无需生成任何 Python 代码和配置！
+请直接输出一段极简 JSON，不要包含其他废话：
+{
+  "chart_metadata": "success"
+}
+
+分支 B：如果是 \`'html_iframe'\` (复杂图表)：
+你需要编写使用 plotly 等库的 Python 代码（包含 \`def execute_chart(df, parameters):\`）。
+强制要求：如果生成 HTML，必须将依赖替换为国内稳定的 CDN (如 bootcdn)。返回 \`{"html_string": html_content}\`。只输出纯代码，无 markdown 标签。
 `;
 
     try {

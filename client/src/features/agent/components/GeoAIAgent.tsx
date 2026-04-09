@@ -6,7 +6,7 @@ import {
 } from '@ant-design/icons';
 import { geoService } from '../../../services/geoService';
 import ReactECharts from 'echarts-for-react';
-import { useAnalysisStore } from '../../../stores/useAnalysisStore';
+import { useAnalysisStore, type ChartType } from '../../../stores/useAnalysisStore';
 
 // ============================================================
 // 类型定义
@@ -60,7 +60,8 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
     // 全局状态同步
     const { 
         setPivotResult, setPivotConfig, setPivotPanelOpen, 
-        setAiChartOption, setAiChartHtml, setChartMode, setChartVisible 
+        setAiChartOption, setAiChartHtml, setChartMode, setChartVisible,
+        setChartType 
     } = useAnalysisStore();
 
     // 辅助函数：将 AI 返回的新数据结构同步到全局图表和透视表
@@ -91,10 +92,31 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
         setPivotResult(formattedPivotData, valueColumns);
         setPivotConfig({ groupByRow: rowKeyName, method: 'sum' });
 
-        if (res.engine || res.chartHtml || res.chartOption) {
+        // 【核心修复】：智能切换前端的图表类型状态
+        if (res.aiChartType) {
+            // 将后端的 'radar' 转换为前端 store 期望的格式（如 'Radar', 'Pie'）
+            const formattedType = res.aiChartType.charAt(0).toUpperCase() + res.aiChartType.slice(1);
+            
+            // 如果后端说是 line，我们可以映射到前端的 Line 等等
+            // 请确保这里映射的值与你 ChartOverlay 中 Segmented 组件的 value 完全一致
+            if (['Bar', 'Line', 'Pie', 'Radar', 'Heatmap', 'Scatter', 'BoxPlot', 'Ridgeline'].includes(formattedType)) {
+                setChartType(formattedType as ChartType);
+            } else {
+                setChartType('Bar'); // 兜底
+            }
+        }
+
+        if (res.engine || res.chartHtml || res.chartOption || res.aiChartType) {
             setAiChartOption(res.chartOption || null);
             setAiChartHtml(res.chartHtml || null);
-            setChartMode('ai');
+
+            // 【核心修复】：智能判断渲染主导权
+            // 如果后端没有强行塞过来 chartOption 和 chartHtml，说明是交由前端原生组件配置渲染的！
+            if (!res.chartOption && !res.chartHtml) {
+                setChartMode('traditional'); // 解除 AI 锁定，释放所有原生 UI 控件！
+            } else {
+                setChartMode('ai');     // 只有复杂的 iframe 气泡图/HTML才保持 AI 锁定
+            }
             setChartVisible(true);
         }
         

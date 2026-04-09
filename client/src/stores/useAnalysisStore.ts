@@ -14,7 +14,7 @@ export interface ScatterConfig {
     yField: string | null;
 }
 //   [ ] 添加 'Ridgeline' 到图表类型
-export type ChartType = 'Bar' | 'Radar' | 'Scatter' | 'Pie' | 'Heatmap' | 'BoxPlot' | 'Ridgeline';
+export type ChartType = 'Bar' | 'Line' | 'Radar'   | 'Pie' | 'Heatmap' | 'Scatter' | 'BoxPlot' | 'Ridgeline' ;
 
 //   [ ] 扩展支持的色系 Key，增加渐变色系
 export type ColorThemeType = 

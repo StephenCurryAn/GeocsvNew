@@ -91,7 +91,9 @@ async def execute_model(payload: ModelInput):
         sql = text("SELECT id, geom, properties FROM spatial_features WHERE file_id = :file_id")
         
         # 2. 空间觉醒与坐标系处理: 直接通过 gpd.read_postgis 完成，它底层调用 C 库将 WKB 转为 Geometry！
-        df = gpd.read_postgis(sql, con=engine.connect(), geom_col='geom', params={"file_id": payload.file_id})
+        # 使用 with 语句防止数据库连接泄露
+        with engine.connect() as conn:
+            df = gpd.read_postgis(sql, con=engine.connect(), geom_col='geom', params={"file_id": payload.file_id})
         
         if df.empty:
             raise HTTPException(status_code=400, detail="未在数据库中找到对应文件的数据")
@@ -207,7 +209,9 @@ async def execute_pivot_only(payload: PivotInput):
         
         for fid in payload.file_ids:
             sql = text("SELECT id, geom, properties FROM spatial_features WHERE file_id = :file_id")
-            df = gpd.read_postgis(sql, con=engine.connect(), geom_col='geom', params={"file_id": fid})
+            # 使用 with 语句，确保查询完毕后连接立刻归还给连接池
+            with engine.connect() as conn:
+                df = gpd.read_postgis(sql, con=conn, geom_col='geom', params={"file_id": fid})
             
             if df.empty:
                 print(f"[Pivot Sandbox] 警告：file_id={fid} 未找到数据，跳过。")
@@ -235,27 +239,26 @@ async def execute_pivot_only(payload: PivotInput):
         print(f"[Pivot Sandbox] 图层列表: {list(gdf_dict.keys())}")
 
         # 扩展执行沙盒，注入空间分析所需的全部工具
-        exec_globals = {
+        # 【核心修复】：合并为一个唯一的执行环境 (exec_env)
+        exec_env = {
             "pd": pd,
             "gpd": gpd,
             "np": np,
             "math": math,
-            # GeoPandas 空间操作快捷函数（AI 可直接调用）
             "sjoin": gpd.sjoin,
             "sjoin_nearest": gpd.sjoin_nearest,
-            # 数据字典（AI 核心操作对象）
             "gdf_dict": gdf_dict,
-            # file_ids 列表（方便 AI 代码用索引访问特定图层）
             "file_ids": payload.file_ids,
         }
-        local_scope = {}
         
-        exec(payload.python_code, exec_globals, local_scope)
+        # 核心修改：只传入一个字典！这样注入的 SDK 算子和 AI 写的主函数都会在同一个全局作用域中
+        exec(payload.python_code, exec_env)
         
-        if 'execute_pivot' not in local_scope:
+        if 'execute_pivot' not in exec_env:
             raise ValueError("AI 生成的代码中未找到主函数 'execute_pivot'！")
             
-        execute_pivot = local_scope['execute_pivot']
+        execute_pivot = exec_env['execute_pivot']
+
         result_data = execute_pivot(gdf_dict, payload.parameters)
         
         # 自动纠错：如果 AI 没按要求返回 dict 列表，而是直接返回了 DataFrame
@@ -323,15 +326,15 @@ async def execute_chart_only(payload: ChartInput):
         print(f"\n[Chart Sandbox] 收到绘图任务，传入了 {len(payload.data)} 条聚合数据样本...")
         df = pd.DataFrame(payload.data)
         
-        exec_globals = {"pd": pd, "np": np, "px": px, "go": go, "folium": folium}
-        local_scope = {}
+        # 【核心修复】：单命名空间执行
+        exec_env = {"pd": pd, "np": np, "px": px, "go": go, "folium": folium, "df": df}
         
-        exec(payload.python_code, exec_globals, local_scope)
+        exec(payload.python_code, exec_env)
         
-        if 'execute_chart' not in local_scope:
+        if 'execute_chart' not in exec_env:
             raise ValueError("AI 生成的代码中未找到主函数 'execute_chart'！")
             
-        execute_chart = local_scope['execute_chart']
+        execute_chart = exec_env['execute_chart']
         result_dict = execute_chart(df, payload.parameters)
         
         if "echarts_option" in result_dict:
