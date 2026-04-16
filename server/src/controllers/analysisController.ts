@@ -110,6 +110,29 @@ def safe_nearest(target_gdf, join_gdf, max_distance=None):
         return gpd.sjoin_nearest(target_gdf, join_gdf, how='inner', max_distance=float(max_distance))
     return gpd.sjoin_nearest(target_gdf, join_gdf, how='inner')
 
+def safe_get_centroid_coords(gdf, x_col='lon', y_col='lat'):
+    """
+    【坐标提取算子】: 专门用于为前端绘图提供精确的 X/Y 经纬度坐标。
+    """
+    # 不可硬编码判断 'geometry' 字符串，因为底层列名可能是 'geom'
+    # 使用 getattr 和 isinstance 动态判断是否具备空间属性
+    if gdf.empty or not isinstance(gdf, gpd.GeoDataFrame) or getattr(gdf, 'geometry', None) is None:
+        return gdf
+        
+    # 1. 先用米制投影算质心，保证几何中心绝对准确且不报 Warning
+    metric_gdf = ensure_metric_crs(gdf)
+    
+    # 2. 将质心转回 Web 通用的 WGS84 经纬度
+    # metric_gdf.geometry.centroid 直接返回 GeoSeries，调用 to_crs 即可
+    centroids_wgs84 = metric_gdf.geometry.centroid.to_crs(epsg=4326)
+    
+    # 3. 将坐标赋给原表
+    result_gdf = gdf.copy()
+    result_gdf[x_col] = centroids_wgs84.x
+    result_gdf[y_col] = centroids_wgs84.y
+    
+    return result_gdf
+
 # ==========================================
 # 模块三：空间数据透视聚合算子 (OLAP Aggregation - The "M" & "V")
 # ==========================================
@@ -138,6 +161,57 @@ def safe_aggregate(joined_gdf, agg_method='size', value_col=None, col_dim=None):
             if agg_method == 'min':  return grouped[value_col].min().rename('value')
         return grouped.size().rename('value')
 `
+
+// ==========================================
+// [Phase 5] 绘图沙盒专属 SDK (Chart SDK)
+// 包含所有制图相关的标准化辅助函数，统一暗黑科技主题 UI
+// ==========================================
+const CHART_SDK_INJECTION = `
+import pandas as pd
+import numpy as np
+import json
+
+# ==========================================
+# 绘图标准化辅助模块 (Visualization Utilities)
+# ==========================================
+
+def apply_system_theme_plotly(fig, title=""):
+    """
+    【Plotly 统一样式算子】: 保证所有生成的 Plotly 图表符合系统极客深色 UI 规范。
+    强行覆盖大模型可能生成的丑陋默认白底样式。
+    """
+    fig.update_layout(
+        title=dict(text=title, font=dict(color='#22d3ee', size=16)),
+        template="plotly_dark",
+        paper_bgcolor='rgba(11, 17, 33, 0)',  # 完全透明，适配前端玻璃拟态
+        plot_bgcolor='rgba(11, 17, 33, 0)',
+        font=dict(color='#e5e7eb', family='sans-serif'),
+        margin=dict(t=50, l=10, r=10, b=10),
+        coloraxis_colorbar=dict(title=dict(font=dict(color='#9ca3af')), tickfont=dict(color='#9ca3af'))
+    )
+    return fig
+
+def create_system_base_map(center_lat, center_lon, zoom=11):
+    """
+    【Folium 底图算子】: 统一生成极客风格的暗色态街道底图。
+    """
+    import folium
+    # 使用 CartoDB dark_matter 作为默认赛博风底图
+    m = folium.Map(location=[center_lat, center_lon], zoom_start=zoom, tiles='CartoDB dark_matter')
+    return m
+
+def safe_render_folium(m):
+    """
+    【Folium 渲染算子】: 安全提取 HTML 并注入响应式 CSS，确保地图充满前端 Iframe。
+    """
+    html_str = m.get_root().render()
+    # 强制 iframe 内部地图 100% 充满容器，消除滚动条
+    html_str = html_str.replace(
+        '<style>html, body {width: 100%;height: 100%;margin: 0;padding: 0;}</style>', 
+        '<style>html, body {width: 100vw;height: 100vh;margin: 0;padding: 0;overflow:hidden;}</style>'
+    )
+    return html_str
+`;
 
 // 简易空间索引
 class SimpleGridIndex {
@@ -1243,24 +1317,24 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
 
         // 4 绘图代码/元数据生成节点
         console.log(`[Pipeline] 节点4正在构建图表配置/代码...`);
-        let chartCodeOrMetadata = await generateChartCode(blueprint, aggregatedData.slice(0, 3));
+        let chartCodeOrMetadata = "";
 
         // 5 渲染流分发：这是 Phase 5 的灵魂！
         let chartResponseData: any = null;
         let chartErrorDetails = "";
 
         if (blueprint.visualization_spec.engine === 'echarts') {
-            console.log(`[Pipeline] 命中 ECharts 路由，阻断沙盒，触发 TS 模板引擎接管渲染...`);
+            console.log(`[Pipeline] 命中 ECharts 路由，【跳过】绘图代码生成，直接触发前端 TS 引擎接管渲染...`);
             try {
-            // 提取大模型建议的图表类型（默认 bar）
-            const aiChartType = blueprint.visualization_spec.chart_type?.toLowerCase() || 'bar';
-            
-            chartResponseData = {
-                engine: 'echarts',
-                ai_chart_type: aiChartType, // 将图表类型传给前端！
-                chart_option: null,         // 绝对不传配置，强制前端使用原生组件！
-                html_string: ""
-            };
+                // 提取大模型建议的图表类型（默认 bar）
+                const aiChartType = blueprint.visualization_spec.chart_type?.toLowerCase() || 'bar';
+                
+                chartResponseData = {
+                    engine: 'echarts',
+                    ai_chart_type: aiChartType, // 将图表类型传给前端！
+                    chart_option: null,         // 绝对不传配置，强制前端使用原生组件！
+                    html_string: ""
+                };
                 console.log(`[Pipeline] TS 模板引擎渲染 ECharts 成功！`);
             } catch (err: any) {
                 console.error("[Pipeline] ECharts 元数据解析失败，可能是 AI 输出了非 JSON 格式:", err.message);
@@ -1269,14 +1343,19 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
         } 
         else {
             // 原有的 html_iframe 复杂渲染流，依然走 Python 沙盒
-            console.log(`[Pipeline] 命中 html_iframe 路由，进入 Python 渲染沙盒...`);
+            console.log(`[Pipeline] 命中 html_iframe 路由，进入 Node 4 呼叫 AI 编写 Plotly/Folium 制图代码...`);
+            // 只有走 Python 制图时，才消耗 Token 去生成代码
+            chartCodeOrMetadata = await generateChartCode(blueprint, aggregatedData.slice(0, 5));
+            // 在这里把绘图专属 SDK 拼接上去！
+            const finalChartCode = CHART_SDK_INJECTION + "\n\n" + chartCodeOrMetadata;
+
             const MAX_RETRIES = 2;
             let chartRetries = 0;
 
             while (chartRetries <= MAX_RETRIES) {
                 try {
                     const chartResponse = await axios.post(`${PYTHON_API_URL}/models/chart_only`, {
-                        python_code: chartCodeOrMetadata,
+                        python_code: finalChartCode,
                         data: aggregatedData
                     });
                     chartResponseData = chartResponse.data;

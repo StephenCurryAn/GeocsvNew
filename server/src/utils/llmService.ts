@@ -140,7 +140,9 @@ export interface WorkflowBlueprint {
         description: string;
     }>;
     visualization_spec: {
+        engine?: string;
         chart_type: string;
+        chart_library?: string;
         dimensions: string[];
         metrics: string[];
     };
@@ -152,10 +154,10 @@ const cleanCodeBlock = (rawContent: string): string => {
     if (blockMatch && blockMatch[1]) {
         return blockMatch[1].trim();
     }
-    const jsonMatch = rawContent.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-        return jsonMatch[0].trim();
-    }
+    // const jsonMatch = rawContent.match(/\{[\s\S]*\}/);
+    // if (jsonMatch) {
+    //     return jsonMatch[0].trim();
+    // }
     return rawContent.trim();
 };
 
@@ -199,8 +201,9 @@ ${contextPrompt}
     }
   ],
   "visualization_spec": {
-    "engine": "【严格路由分类】：如果需求涉及基础准则数据分析图表（如柱状图、折线图、饼图、雷达图、散点图等），【强制填写 'echarts'】。绝对不要生成 HTML！只有当用户要求极度复杂的高度定制空间专题拓扑网络图时，才可使用 'html_iframe'。",
+    "engine": "【严格路由分类】：如果需求涉及基础准则数据分析图表（如柱状图、折线图、饼图、雷达图、散点图等），【强制填写 'echarts'】。绝对不要生成 HTML！只有当用户要求极度复杂的高度定制空间专题相关图时，才可使用 'html_iframe'。",
     "chart_type": "图表类型",
+    "chart_library": "如果 engine 是 'html_iframe'，请明确指定绘图底层库：'plotly'（用于旭日图、树状图、3D散点等统计与抽象图表）或 'folium'（用于带真实街道底图的交互式地图）。如果 engine 是 'echarts'，填 null。",
     "dimensions": ["展示维度的输出列名（X轴/类目）"],
     "metrics": ["要统计展示的数据列名（Y轴/数值）"]
   },
@@ -219,7 +222,16 @@ ${contextPrompt}
         });
 
         const rawContent = response.choices[0].message.content || "{}";
-        return JSON.parse(cleanCodeBlock(rawContent)) as WorkflowBlueprint;
+
+        let resultStr = cleanCodeBlock(rawContent);
+        
+        // 只在 Planner 节点尝试提取 JSON
+        if (!resultStr.startsWith('{')) {
+            const jsonMatch = resultStr.match(/\{[\s\S]*\}/);
+            if (jsonMatch) resultStr = jsonMatch[0];
+        }
+
+        return JSON.parse(resultStr) as WorkflowBlueprint;
     } catch (error) {
         console.error("拆解节点解析失败:", error);
         throw new Error("规划失败，请检查需求描述。");
@@ -227,7 +239,10 @@ ${contextPrompt}
 };
 
 export const generatePivotCode = async (blueprint: WorkflowBlueprint): Promise<string> => {
-    const PIVOT_CODER_PROMPT = `
+    // 1. 提取引擎路由
+    const engine = blueprint.visualization_spec?.engine || 'echarts';
+    // 2. 基础 Prompt (SDK与5+1原则)
+    const BASE_PROMPT = `
 你是一位高级 GeoAI 空间调度工程师。
 系统底层已经为你内置了绝对安全的领域特定算子库 (GeoPivot SDK)。
 你的任务是：根据用户的【执行蓝图】，严格进行【5+1 意图映射】，并组合调用 SDK 完成计算。
@@ -246,12 +261,9 @@ ${JSON.stringify(blueprint, null, 2)}
            或者直接用 safe_intersects(target_gdf, join_gdf)！绝对不许把 join_gdf 写在前面！
 
 2. 智能数据聚合：safe_aggregate(joined_gdf, agg_method, value_col=None, col_dim=None)
-
-【前端数据流规范 (极度重要)】：
-你返回的 DataFrame 必须严格符合 React 前端的数据格式，否则前端图表无法渲染！
-1. 提取合并：绝对不要把 target_gdf 的所有列都 join 进来！必须只提取【行维度列】与 agg_result 进行 join！
-2. 规范命名：必须将【行维度列】重命名为 'rowKey'！
-3. 纯净输出：返回值绝对不能包含 'geometry'、'id' 等无关属性！
+3. 坐标提取算子：
+   - safe_get_centroid_coords(gdf, x_col='lon', y_col='lat') -> 返回增加了坐标列的 GeoDataFrame
+   注意：专门用于为前端绘图提供精确的 X/Y 经纬度。它会自动计算多边形/线的质心并转换为 WGS84 经纬度。
 
 【大模型红线：5+1 空间数据透视核心范式 (The 5+1 Spatial Pivot Paradigm)】
 不要盲目应用普通的 Pandas 数据透视知识。空间数据透视必须基于『空间拓扑约束』，且基于6个标准要素：
@@ -270,6 +282,15 @@ ${JSON.stringify(blueprint, null, 2)}
 # 列维度(Col): ...
 # 透视方法: ...
 # 透视字段: ...
+
+    `;
+    // 3. ECharts 专用的数据契约 
+    const ECHARTS_CONTRACT = `
+【前端数据流规范 (极度重要)】：
+你返回的 DataFrame 必须严格符合 React 前端的数据格式，否则前端图表无法渲染！
+1. 提取合并：绝对不要把 target_gdf 的所有列都 join 进来！必须只提取【行维度列】与 agg_result 进行 join！
+2. 规范命名：必须将【行维度列】重命名为 'rowKey'！
+3. 纯净输出：返回值绝对不能包含 'geometry'、'id' 等无关属性！
 
 【执行与代码规范】：
 1. 第一步写出 #【5+1 意图映射】 注释。
@@ -305,7 +326,47 @@ def execute_pivot(gdf_dict, parameters):
     
     return pd.DataFrame(final_gdf)
 `;
+    // 4. HTML/Iframe 专用的数据契约 (保留层级)
+    const IFRAME_CONTRACT = `
+【数据流规范 (Python 复杂交互制图专用)】：
+因为后续节点需要使用 Plotly/Folium 绘制复杂层级图表或地图，必须保留真实的维度名称和空间坐标。你必须：
+1. 绝对不要重命名任何列为 'rowKey'！请保留原始字段名。
+2. 【极其重要】：如果使用了 \`safe_aggregate\` 进行了二维聚合（传入了 col_dim），你**必须**先将其与 \`target_gdf\` 的【行维度列】关联，然后调用 \`.melt()\` 将其还原为扁平化的明细表。
+3. 【坐标提取红线】：如果后续绘图需要用到空间坐标，你必须在去除 geometry 之前，调用 \`target_gdf = safe_get_centroid_coords(target_gdf, 'lon', 'lat')\` 从底层几何中安全提取真实的经纬度！
+4. 【终极清洗】：最后必须去除底层的几何列（可能名为 'geom' 或 'geometry'），返回纯 DataFrame。
 
+# 示例代码：
+def execute_pivot(gdf_dict, parameters):
+    target_gdf = gdf_dict['target_id'].copy().replace(['', 0], np.nan)
+    join_gdf = gdf_dict['join_id'].copy().replace(['', 0], np.nan)
+    
+    # 提取真实的经纬度坐标用于绘图
+    target_gdf = safe_get_centroid_coords(target_gdf, x_col='lon', y_col='lat')
+    
+    # 空间拓扑与聚合
+    joined = safe_within_contains(target_gdf, join_gdf, relation='contains')
+    agg_result = safe_aggregate(joined, agg_method='size', col_dim=parameters.get('col_dim'))
+    
+    # 关联并扁平化
+    row_dim_col = '推断的行维度列名' 
+    merged_df = target_gdf[[row_dim_col, 'lon', 'lat']].join(agg_result).fillna(0)
+    flat_df = merged_df.melt(id_vars=[row_dim_col, 'lon', 'lat'], var_name='列维度名', value_name='count')
+    
+    # 🚨 必须同时 Drop 掉 geom 和 geometry
+    return pd.DataFrame(flat_df).drop(columns=['geom', 'geometry'], errors='ignore')
+`;
+    
+    const FINAL_INSTRUCTION = `
+【执行与代码输出规范】(极其重要)：
+1. 你必须首先使用多行注释写出 #【5+1 意图映射】。
+2. 你必须包含并实现主函数 \`def execute_pivot(gdf_dict, parameters):\`。
+3. 严格遵守上面的数据流规范（重命名降维 或 扁平化）。
+4. 你的输出必须是纯粹的 Python 代码，绝对不要使用 \`\`\`python ... \`\`\` 这种 Markdown 标签包裹！只输出代码本身！不要输出任何多余的解释！
+`;
+
+    // 5. 动态路由组装 Prompt
+    const PIVOT_CODER_PROMPT = BASE_PROMPT + (engine === 'html_iframe' ? IFRAME_CONTRACT : ECHARTS_CONTRACT) + FINAL_INSTRUCTION;
+    
     try {
         const response = await openai.chat.completions.create({
             model: "deepseek-v3", // 统一修改为 deepseek-v3
@@ -370,23 +431,73 @@ ${errorTraceback}
 };
 
 export const generateChartCode = async (blueprint: WorkflowBlueprint, dataSample: any[]): Promise<string> => {
+    // 1. 获取前面 Planner 决定的图表库（默认降级为 plotly）
+    const library = blueprint.visualization_spec?.chart_library || 'plotly';
+
+// 2. 在代码里硬编码两个纯粹的代码片段
+    const PLOTLY_SNIPPET = `
+【📚 Plotly 绘图规范 (强制要求)】：
+1. 导入库：\`import plotly.express as px\` 或 \`import plotly.graph_objects as go\`。
+2. 数据格式：如果之前提取过坐标，数据中会有 'lon' 和 'lat' 列，请直接使用它们作为坐标。
+3. 【极其重要】：你必须调用系统预置的 \`apply_system_theme_plotly(fig, title)\` 来统一图表主题！不要自己写 update_layout 改颜色！
+4. 必须设置 \`include_plotlyjs='cdn'\`。
+
+3. 示例架构：
+\`\`\`python
+def execute_chart(df, parameters):
+    import plotly.express as px
+    # 自由发挥 px 的制图逻辑
+    fig = px.sunburst(df, path=['区县名称', '中类'], values='count')
+    
+    # 强制应用系统暗黑主题
+    fig = apply_system_theme_plotly(fig, title="图表标题")
+    
+    html_str = fig.to_html(full_html=False, include_plotlyjs='cdn')
+    return {"html_string": html_str}
+\`\`\`
+`;
+
+    const FOLIUM_SNIPPET = `
+【📚 Folium 制图规范 (强制要求)】：
+1. 底图生成：你必须调用预置算子 \`m = create_system_base_map(lat, lon)\` 来初始化地图，绝对不要自己用 folium.Map！
+2. 坐标使用：传入的 df 中如果包含空间点，必定已有 'lon' 和 'lat' 两列，直接使用，无需再做投影转换。
+3. 渲染导出：必须调用预置算子 \`safe_render_folium(m)\` 导出 HTML 字符串！
+
+示例架构：
+\`\`\`python
+def execute_chart(df, parameters):
+    import folium
+    # 计算地图中心点
+    center_lat, center_lon = df['lat'].mean(), df['lon'].mean()
+    
+    # 1. 强制使用系统底图算子
+    m = create_system_base_map(center_lat, center_lon)
+    
+    # 2. 自由发挥添加交互元素
+    for idx, row in df.iterrows():
+        folium.CircleMarker([row['lat'], row['lon']], popup=row.get('区县名称', '点'), color='#22d3ee', radius=5).add_to(m)
+        
+    # 3. 强制使用系统渲染算子
+    return {"html_string": safe_render_folium(m)}
+\`\`\`
+`;
+
+    // 3. 按需只注入一个 Snippet
+    const activeSnippet = library.toLowerCase() === 'folium' ? FOLIUM_SNIPPET : PLOTLY_SNIPPET;
     const CHART_CODER_PROMPT = `
-你是一位顶级的 BI 可视化数据映射专家。请根据提供的【执行蓝图】及【数据样本】，决定前端表现层的配置。
+你是一位顶级的 Python 数据可视化极客 (Visual Artist Agent)。
 【执行蓝图】：${JSON.stringify(blueprint, null, 2)}
-【数据样本】：${JSON.stringify(dataSample, null, 2)}
+【真实数据样本 (前 5 行)】：${JSON.stringify(dataSample, null, 2)}
 
-【核心架构分支指令】：检查蓝图中的 \`visualization_spec.engine\`：
+你需要编写一个名为 \`execute_chart(df, parameters)\` 的主函数。
+【数据契约】：
+1. 必须根据传入的 DataFrame (df) 的【真实列名】（见数据样本）进行维度映射！绝对不能臆造列名！
+2. 函数必须返回字典：\`{"html_string": 你的html内容字符串}\`。
+3. 只输出纯 Python 代码，无 markdown 标签。
 
-分支 A：
-系统前端已自带完美的可视化组件，你无需生成任何 Python 代码和配置！
-请直接输出一段极简 JSON，不要包含其他废话：
-{
-  "chart_metadata": "success"
-}
+${activeSnippet}
 
-分支 B：如果是 \`'html_iframe'\` (复杂图表)：
-你需要编写使用 plotly 等库的 Python 代码（包含 \`def execute_chart(df, parameters):\`）。
-强制要求：如果生成 HTML，必须将依赖替换为国内稳定的 CDN (如 bootcdn)。返回 \`{"html_string": html_content}\`。只输出纯代码，无 markdown 标签。
+请利用上述规范，发挥创造力，生成最适合当前数据的可视化代码。
 `;
 
     try {
@@ -396,8 +507,8 @@ export const generateChartCode = async (blueprint: WorkflowBlueprint, dataSample
                 { role: "system", content: CHART_CODER_PROMPT },
                 { role: "user", content: "请根据蓝图中的 engine（渲染引擎策略）以及真实数据样本，编写完美且极具审美的绘图代码。请注意不要遗漏必要的 import 语句。" }
             ],
-            temperature: 0.1,
-            max_tokens: 3500
+            temperature: 0.2,
+            max_tokens: 6000
         });
 
         return cleanCodeBlock(response.choices[0].message.content || "");
