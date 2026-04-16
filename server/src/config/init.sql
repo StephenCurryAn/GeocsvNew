@@ -42,3 +42,15 @@ CREATE TABLE IF NOT EXISTS models_registry (
     parameters_schema JSONB,                 -- 算子所需的参数配置(前端渲染面板用)
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+
+-- 6. 创建智能体外部工具/微服务注册表 (Agent Tools)
+CREATE TABLE IF NOT EXISTS agent_tools (
+    id SERIAL PRIMARY KEY,
+    tool_name VARCHAR(100) UNIQUE NOT NULL,   -- 模型唯一标识，如 'geodetector'
+    display_name VARCHAR(100) NOT NULL,       -- 前端展示名称，如 '地理探测器'
+    description TEXT NOT NULL,                -- 给大模型看的工具说明
+    api_endpoint VARCHAR(255) NOT NULL,       -- 独立微服务的 HTTP 地址
+    input_schema JSONB,                       -- 强类型参数定义
+    status VARCHAR(20) DEFAULT 'active',      -- 'active' 或 'offline'
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);

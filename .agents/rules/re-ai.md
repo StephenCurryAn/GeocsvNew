@@ -2,58 +2,39 @@
 trigger: always_on
 ---
 
-我现在的系统代码有一些问题需要重构，现在的阶段是在“模型函数”这一块需要重构，具体的我发现的问题和给出的方案如下：
+“
+我们当前正在开发一个面向 GeoAI 领域的空间分析与透视系统。为了支撑即将进行的“滑坡易发性分析与地理探测器”顶刊级复现案例，我们需要对当前单体架构进行一次“最小可行性的多智能体（Multi-Agent）重构”。
 
-### 现有问题
-请你仔细阅读我现在的整个系统的代码（特别是llmService中 ），我感觉是不是在“ai生成模型函数”这一块还有很大的局限性，因为测试的时候有一些问题：
-1.我上个月的时候输入的自然指令，可以生成完美的代码并运行，但是这个月同样的就不行了。
-2.并且我就算生成了python代码，调用的时候，有时候的计算时间太长了，并且还会报错。 
-3.我怀疑是不是这种“1.输入自然指令；2.使用单个PROMPT来解析；3.生成python代码”的方式的局限性太大了，随机性太大了，每次要是需要满足不同要求的自然语言，需要把整个PROMPT搞的很长。
+本次重构的核心思想是：**状态机主循环 (State Machine) + 强类型 JSON 契约 (Structured Outputs) + Python 沙盒算子化 (Operator SDK)**。请不要引入微服务、Redis 或复杂的向量数据库，保持架构轻量级但逻辑绝对严密。
 
-### 拟解决重构方案
-为了让毕设从“一个能写代码的工具”真正蜕变为**“AI驱动的地理模型与数据透视服务平台”，你的系统应当基于多智能体（Multi-Agent）与状态驱动**来重构。
+请按照以下 4 个阶段，帮我阅读并修改相关代码：
 
-## 第一层：任务规划与上下文提取层
-1.意图拆解（Task Planning）： 用户输入一段复杂的话（如：“计算缓冲区，并用热力图展示”），系统首先拦截，将任务拆分为“数据透视算子生成”和“地图可视化配置”两个独立任务。
-2.动态 Schema 注入（Schema Mapper）： 在让大模型写代码前，后端引擎先快速扫描当前文件，生成数据摘要（包含：字段名列表、数据类型、坐标系EPSG、是否存在空几何），将其作为上下文（Context）动态拼接进 Prompt。这样大模型就不会瞎猜字段名
+#### 阶段一：定义全局状态与强类型契约 (TypeScript 层)
+请在项目中（如新建 `types/agent.ts` 或在 `llmService.ts` 中）定义以下核心接口：
+1. `WorkflowState`: 包含原始文件路径、当前文件路径、用户问题、表结构元数据 (Schema)、执行日志 (Execution Log)，以及 `currentAgent` 状态（"planner" | "feature" | "pivot" | "expert" | "visualization" | "end"）。
+2. `PlannerContract`: 包含 `thought_process` (思维链) 和 `next_agent` (下一个路由目标)。
+3. `FeatureContract`: 用于规定空间特征计算的参数（如调用的算子名称、目标列、距离等）。
+4. `PivotContract`: 严格遵循我们的 "5+1" 空间透视范式（[S]约束, [T]对象, [R]行, [C]列, [M]方法, [V]字段）。
 
-## 第二层：Human-in-the-Loop 的算子开发与注册层
-1.沙盒试运行与代码对齐： 将大模型生成的 Python 代码发送到前端。前端使用 Monaco Editor 展示这段代码。并在后台使用少量数据（Dry Run）验证逻辑。
-2.组内模型 API 注入： 在大模型生成算子的系统 Prompt 中，不仅教它用 GeoPandas（矢量化运算），还要告诉它课题组有哪些可用的外部模型 API（预留接口就行）
-3.一键注册： 用户在前端确认代码无误后，点击“发布为平台算子”。系统利用你目前 main.py 里的 MODEL_REGISTRY 动态热加载机制，把代码永久存入 models/，变成平台自带的功能。
+#### 阶段二：重构 LLM 服务 (Agentic 接口层)
+请重构 `llmService.ts`：
+- 废弃以前那种“让 LLM 一口气写完所有 Python 代码”的 Prompt。
+- 利用大模型的 Function Calling 或 JSON 结构化输出能力，将 LLM 服务拆分为几个独立的函数：`runPlannerAgent`, `runFeatureAgent`, `runPivotAgent`。它们各自拥有独立的 System Prompt，并严格返回阶段一中定义的强类型 JSON。
 
-## 第三层：状态驱动的“呈现全配置”层 (Map Design State Layer)
-1.废弃 html_string： 彻底放弃让大模型生成 HTML 字符串或直接使用 folium 画图。
-2.生成标准 JSON 配置： 要求大模型输出标准化的可视化配置状态。
-3.前端引擎原生渲染： 前端 React 拿到这个 JSON 配置文件后，使用专业的 WebGIS 渲染引擎（如 Mapbox GL JS、Deck.gl，图表用 ECharts）进行渲染。这种“数据与表现分离”的架构，使得每一个颜色、透明度都是全配置的，用户甚至可以通过面板二次拖拽修改。
+#### 阶段三：搭建状态机主循环 (Node.js 控制层)
+请重构 `analysisController.ts`（或新建工作流文件）：
+- 构建一个基于 `while` 循环的异步状态机（带最大循环次数限制防止死循环）。
+- 循环根据 `state.currentAgent` 的值使用 `switch-case` 派发任务：
+  - Planner 负责决策下一步。
+  - Feature/Pivot/Expert Agent 生成 JSON 契约，并将其转化为特定的 Python 调用语句，发送给底层的 Python 沙盒执行。执行完毕后更新 `state.currentDataPath` 和 `state.schemaInfo`，然后把控制权交还给 Planner。
 
-### 拟使用技术架构
-基于你现有的 Node.js + Python 基础，梳理了4层技术架构：
+#### 阶段四：扩容并整合 Python SDK (物理沙盒层)
+请在后端的 Python 目录中，将原有的代码片段整合并新建一个 `geo_core_sdk.py`，其中必须包含三大类静态方法：
+1. **GeoFeature 类**: 包含如 `calculate_area`, `buffer_count`, `extract_raster_value` 等为原始数据新增特征列的算子。
+2. **GeoPivot 类**: 包含基于 DE-9IM 的安全拓扑聚合（`safe_sjoin_aggregate`），实现 5+1 范式的物理执行。
+3. **DomainExpert 类**: 写一个 `run_geodetector(df, target_col, factor_cols)` 的包裹函数，接收宽表，返回 Q 值 JSON。
 
-1. 展示交互层（Frontend: React + Mapbox GL / ECharts）
-定位： 状态驱动的“呈现全配置”终端。
-核心组件：
-Map Design State (地图状态树)： 维护一个全局 JSON，记录所有图层、透视结果的颜色、透明度配置。
-Monaco Editor： 当 AI 生成透视算子 Python 代码时，在网页上展示，供用户（你）审查和“稍加改动”。
-性能优化： 如果数据量极大，前端停止接收完整 GeoJSON，而是接入底层的动态矢量瓦片服务。
-
-2. AI 与业务网关层（BFF: Node.js / Express）
-定位： 轻量级的并发控制中心与 LLM 调度员。
-Node.js 处理网络 IO 和异步请求极快。它负责：
-意图分发 (Task Planner)： 接收用户的一段话，判断是去请求 Python 算力（做透视），还是只修改前端状态（改图表颜色）。
-LLM 通信： 组装复杂的 Prompt（把用户的请求、数据库的 Schema 摘要合并），请求大模型。
-
-3. 空间智能算力基座（AI Sandbox & Execution: Python FastAPI）
-定位： 你的核心创新大本营。
-Schema Mapper (动态数据模式提取器)： 在执行 LLM 前，快速扫一眼数据库，生成当前数据的特征摘要（字段名、坐标系等），返回给 Node.js 拼进 Prompt。
-矢量化执行沙盒 (Vectorized Sandbox)： 接收 Node.js 传来的 Python 字符串，注入 gpd.sjoin 等高效算子，在沙盒中利用底层 C 库极速执行空间计算。
-Operator Registry (算子热加载注册中心)： 也就是你现在 main.py 里的 auto_discover_models()。将跑通的算子固化为本地 .py 文件。
-
-4. 空间数据与索引层（Database）
-定位： 解决你“慢”的根本。
-重构建议：
-放弃纯粹把数据当普通 JSON 存在 MongoDB。确保你的 MongoDB 建立了 2dsphere 空间索引。可以引用PostGIS等。
-
-
-以上只是我这个阶段的拟解决方案，在具体实施过程中，还是根据你的推荐，来实现最合适最完美的重构方案和技术栈。
-如果有条件，强烈建议引入 PostGIS (PostgreSQL 的空间扩展)。 PostGIS 可以直接返回矢量瓦片（ST_AsMVT），这会让你的前端加载数十万条空间数据时，依然丝滑如飞。
+**【行动要求】**
+请先阅读我现在的 `llmService.ts` 和 `analysisController.ts`，然后告诉我你是否理解了上述架构思想。
+”
+上面是我的现在阶段的重构，并且我刚才已经完成了这些重构，现在阶段是想要对我的系统进行测试，并且对测试时候所暴露的一些问题进行修复，主要目的是为了能够完整跑通两个权威并且专业的案例来支撑我的论文写作。

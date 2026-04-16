@@ -87,39 +87,53 @@ def safe_nearest(target_gdf, join_gdf, max_distance=None):
         return gpd.sjoin_nearest(target_gdf, join_gdf, how='inner', max_distance=float(max_distance))
     return gpd.sjoin_nearest(target_gdf, join_gdf, how='inner')
 
+def safe_get_centroid_coords(gdf, x_col='lon', y_col='lat'):
+    """
+    【坐标提取算子】: 专门用于为前端绘图提供精确的 X/Y 经纬度坐标。
+    """
+    # 不可硬编码判断 'geometry' 字符串，因为底层列名可能是 'geom'
+    # 使用 getattr 和 isinstance 动态判断是否具备空间属性
+    if gdf.empty or not isinstance(gdf, gpd.GeoDataFrame) or getattr(gdf, 'geometry', None) is None:
+        return gdf
+        
+    # 1. 先用米制投影算质心，保证几何中心绝对准确且不报 Warning
+    metric_gdf = ensure_metric_crs(gdf)
+    
+    # 2. 将质心转回 Web 通用的 WGS84 经纬度
+    # metric_gdf.geometry.centroid 直接返回 GeoSeries，调用 to_crs 即可
+    centroids_wgs84 = metric_gdf.geometry.centroid.to_crs(epsg=4326)
+    
+    # 3. 将坐标赋给原表
+    result_gdf = gdf.copy()
+    result_gdf[x_col] = centroids_wgs84.x
+    result_gdf[y_col] = centroids_wgs84.y
+    
+    return result_gdf
+
 # ==========================================
 # 模块三：空间数据透视聚合算子 (OLAP Aggregation - The "M" & "V")
 # ==========================================
 
-def safe_aggregate(joined_gdf, agg_method='size', value_col=None):
-    """
-    【安全透视聚合算子】: 彻底封装 level=0 索引对齐逻辑。
-    支持 size(计数), sum(求和), mean(平均), max, min。
-    """
-    if joined_gdf.empty:
-        return pd.Series(dtype=float)
-        
-    # 基于主表索引 (level=0) 进行安全分组
-    grouped = joined_gdf.groupby(level=0)
-    
+def safe_aggregate(joined_gdf, agg_method='size', value_col=None, col_dim=None):
+    if joined_gdf.empty: return pd.DataFrame() if col_dim else pd.Series(name='value', dtype=float)
     agg_method = str(agg_method).lower()
     
-    if agg_method in ['size', 'count']:
-        return grouped.size()
+    # ==== 二维透视逻辑 ====
+    if col_dim and col_dim in joined_gdf.columns:
+        if agg_method in ['size', 'count']: return joined_gdf.groupby([joined_gdf.index, col_dim]).size().unstack(fill_value=0)
+        joined_gdf[value_col] = pd.to_numeric(joined_gdf[value_col], errors='coerce')
+        if agg_method == 'sum': return joined_gdf.groupby([joined_gdf.index, col_dim])[value_col].sum().unstack(fill_value=0)
+        elif agg_method == 'mean': return joined_gdf.groupby([joined_gdf.index, col_dim])[value_col].mean().unstack(fill_value=0)
+        return pd.DataFrame()
         
-    if not value_col or value_col not in joined_gdf.columns:
-        raise ValueError(f"聚合方法 {agg_method} 必须指定有效的透视数值列 (value_col)")
-        
-    # 强制数值类型转换，防止因为字符串 '123' 导致 sum 变成字符串拼接
-    joined_gdf[value_col] = pd.to_numeric(joined_gdf[value_col], errors='coerce')
-    
-    if agg_method == 'sum':
-        return grouped[value_col].sum()
-    elif agg_method == 'mean':
-        return grouped[value_col].mean()
-    elif agg_method == 'max':
-        return grouped[value_col].max()
-    elif agg_method == 'min':
-        return grouped[value_col].min()
+    # ==== 一维透视逻辑 (强制命名为 value，对接前端规范) ====
     else:
-        raise ValueError(f"不支持的空间聚合方法: {agg_method}")
+        grouped = joined_gdf.groupby(level=0)
+        if agg_method in ['size', 'count']: return grouped.size().rename('value')
+        if value_col:
+            joined_gdf[value_col] = pd.to_numeric(joined_gdf[value_col], errors='coerce')
+            if agg_method == 'sum': return grouped[value_col].sum().rename('value')
+            if agg_method == 'mean': return grouped[value_col].mean().rename('value')
+            if agg_method == 'max': return grouped[value_col].max().rename('value')
+            if agg_method == 'min':  return grouped[value_col].min().rename('value')
+        return grouped.size().rename('value')

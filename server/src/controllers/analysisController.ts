@@ -1,217 +1,23 @@
 import { Request, Response } from 'express';
 import * as Feature from '../models/Feature';
 import * as ModelRegistry from '../models/ModelRegistry';
-import { generateModelCodeFromAI, planWorkflow, generatePivotCode, generateChartCode, fixPivotCode, fixChartCode } from '../utils/llmService';
+import { generateModelCodeFromAI } from '../utils/llmService';
 import * as turf from '@turf/turf';
 import axios from 'axios';
 import fs from 'fs';
 import path from 'path';
+import { executeGeoAIWorkflow } from '../engine/workflowEngine';
+import { WorkflowState } from '../types/agent';
 
 // WSL2 中 FastAPI 运行的地址
-const PYTHON_API_URL = 'http://127.0.0.1:8000/api';
+const PYTHON_API_URL = '[http://127.0.0.1:8000/api](http://127.0.0.1:8000/api)';
 // 更新后的 Python API 返回结构 (API 契约)
 interface PythonApiResponse {
   status: string;
   result_col_names: string[];
-  result_data: Array<any>; // 明确告诉 TS 这是一个包含 id 和 score 的对象数组
+  result_data: Array<any>; 
   execution_time_ms: number;
 }
-
-// [Phase 5] Python SDK 物理直注字符串
-// 直接拼接在执行代码前方，彻底解决沙盒 import 找不到路径的问题
-// ==========================================
-const PYTHON_SDK_INJECTION = `
-import geopandas as gpd
-import pandas as pd
-import numpy as np
-import warnings
-from shapely.errors import ShapelyDeprecationWarning
-warnings.filterwarnings("ignore", category=ShapelyDeprecationWarning)
-
-# ==========================================
-# 模块一：空间基底与投影安全模块 (Spatial Foundation)
-# ==========================================
-
-def ensure_metric_crs(gdf):
-    """
-    【安全投影算子】
-    确保 GeoDataFrame 处于投影坐标系 (以米为单位，通常为 EPSG:3857)。
-    这是执行 Buffer 和 距离计算 的绝对前提，防止经纬度直接 Buffer 导致极度变形。
-    """
-    if gdf.empty or gdf.geometry.isnull().all():
-        return gdf
-    
-    # 如果没有坐标系，假定为 WGS84 (EPSG:4326)
-    if gdf.crs is None:
-        gdf = gdf.set_crs(epsg=4326)
-        
-    # 如果是地理坐标系 (经纬度，度为单位)，强制转为 Web Mercator (米为单位)
-    if gdf.crs.is_geographic:
-        return gdf.to_crs(epsg=3857)
-    return gdf
-
-# ==========================================
-# 模块二：空间拓扑连接算子 (Spatial Topology Layer - The "S")
-# ==========================================
-
-def safe_buffer_intersects(target_gdf, join_gdf, radius=0):
-    """
-    【缓冲相交算子】: 解决 点-线、点-点 无法精确相交的问题。
-    包含活跃几何陷阱的彻底修复。
-    """
-    if target_gdf.empty or join_gdf.empty:
-        return gpd.GeoDataFrame()
-        
-    target_gdf = ensure_metric_crs(target_gdf)
-    join_gdf = join_gdf.to_crs(target_gdf.crs) if join_gdf.crs != target_gdf.crs else join_gdf
-    
-    radius = float(radius)
-    if radius > 0:
-        # 强制使用 set_geometry 更新活跃几何列，防止全 0 Bug
-        buffer_geom = target_gdf.geometry.buffer(radius)
-        safe_target = target_gdf.set_geometry(buffer_geom)
-    else:
-        safe_target = target_gdf.copy()
-        
-    return gpd.sjoin(safe_target, join_gdf, how='inner', predicate='intersects')
-
-def safe_intersects(target_gdf, join_gdf):
-    """
-    【精准相交算子】: 适用于 面-面、线-面 等原生具有面积交叉的要素。
-    """
-    if target_gdf.empty or join_gdf.empty:
-        return gpd.GeoDataFrame()
-    
-    join_gdf = join_gdf.to_crs(target_gdf.crs) if join_gdf.crs else join_gdf
-    return gpd.sjoin(target_gdf, join_gdf, how='inner', predicate='intersects')
-
-def safe_within_contains(target_gdf, join_gdf, relation='within'):
-    """
-    【包含关系算子】: 适用于 统计行政区内的 POI (contains) 或 POI 属于哪个区 (within)。
-    relation 可选: 'within' (被包含), 'contains' (包含)
-    """
-    if target_gdf.empty or join_gdf.empty:
-        return gpd.GeoDataFrame()
-        
-    join_gdf = join_gdf.to_crs(target_gdf.crs) if join_gdf.crs else join_gdf
-    return gpd.sjoin(target_gdf, join_gdf, how='inner', predicate=relation)
-
-def safe_nearest(target_gdf, join_gdf, max_distance=None):
-    """
-    【最近邻算子】: 适用于 寻找最近的地铁站、医院等。
-    """
-    if target_gdf.empty or join_gdf.empty:
-        return gpd.GeoDataFrame()
-
-    target_gdf = ensure_metric_crs(target_gdf)
-    join_gdf = join_gdf.to_crs(target_gdf.crs) if join_gdf.crs != target_gdf.crs else join_gdf
-    
-    if max_distance:
-        return gpd.sjoin_nearest(target_gdf, join_gdf, how='inner', max_distance=float(max_distance))
-    return gpd.sjoin_nearest(target_gdf, join_gdf, how='inner')
-
-def safe_get_centroid_coords(gdf, x_col='lon', y_col='lat'):
-    """
-    【坐标提取算子】: 专门用于为前端绘图提供精确的 X/Y 经纬度坐标。
-    """
-    # 不可硬编码判断 'geometry' 字符串，因为底层列名可能是 'geom'
-    # 使用 getattr 和 isinstance 动态判断是否具备空间属性
-    if gdf.empty or not isinstance(gdf, gpd.GeoDataFrame) or getattr(gdf, 'geometry', None) is None:
-        return gdf
-        
-    # 1. 先用米制投影算质心，保证几何中心绝对准确且不报 Warning
-    metric_gdf = ensure_metric_crs(gdf)
-    
-    # 2. 将质心转回 Web 通用的 WGS84 经纬度
-    # metric_gdf.geometry.centroid 直接返回 GeoSeries，调用 to_crs 即可
-    centroids_wgs84 = metric_gdf.geometry.centroid.to_crs(epsg=4326)
-    
-    # 3. 将坐标赋给原表
-    result_gdf = gdf.copy()
-    result_gdf[x_col] = centroids_wgs84.x
-    result_gdf[y_col] = centroids_wgs84.y
-    
-    return result_gdf
-
-# ==========================================
-# 模块三：空间数据透视聚合算子 (OLAP Aggregation - The "M" & "V")
-# ==========================================
-
-def safe_aggregate(joined_gdf, agg_method='size', value_col=None, col_dim=None):
-    if joined_gdf.empty: return pd.DataFrame() if col_dim else pd.Series(name='value', dtype=float)
-    agg_method = str(agg_method).lower()
-    
-    # ==== 二维透视逻辑 ====
-    if col_dim and col_dim in joined_gdf.columns:
-        if agg_method in ['size', 'count']: return joined_gdf.groupby([joined_gdf.index, col_dim]).size().unstack(fill_value=0)
-        joined_gdf[value_col] = pd.to_numeric(joined_gdf[value_col], errors='coerce')
-        if agg_method == 'sum': return joined_gdf.groupby([joined_gdf.index, col_dim])[value_col].sum().unstack(fill_value=0)
-        elif agg_method == 'mean': return joined_gdf.groupby([joined_gdf.index, col_dim])[value_col].mean().unstack(fill_value=0)
-        return pd.DataFrame()
-        
-    # ==== 一维透视逻辑 (强制命名为 value，对接前端规范) ====
-    else:
-        grouped = joined_gdf.groupby(level=0)
-        if agg_method in ['size', 'count']: return grouped.size().rename('value')
-        if value_col:
-            joined_gdf[value_col] = pd.to_numeric(joined_gdf[value_col], errors='coerce')
-            if agg_method == 'sum': return grouped[value_col].sum().rename('value')
-            if agg_method == 'mean': return grouped[value_col].mean().rename('value')
-            if agg_method == 'max': return grouped[value_col].max().rename('value')
-            if agg_method == 'min':  return grouped[value_col].min().rename('value')
-        return grouped.size().rename('value')
-`
-
-// ==========================================
-// [Phase 5] 绘图沙盒专属 SDK (Chart SDK)
-// 包含所有制图相关的标准化辅助函数，统一暗黑科技主题 UI
-// ==========================================
-const CHART_SDK_INJECTION = `
-import pandas as pd
-import numpy as np
-import json
-
-# ==========================================
-# 绘图标准化辅助模块 (Visualization Utilities)
-# ==========================================
-
-def apply_system_theme_plotly(fig, title=""):
-    """
-    【Plotly 统一样式算子】: 保证所有生成的 Plotly 图表符合系统极客深色 UI 规范。
-    强行覆盖大模型可能生成的丑陋默认白底样式。
-    """
-    fig.update_layout(
-        title=dict(text=title, font=dict(color='#22d3ee', size=16)),
-        template="plotly_dark",
-        paper_bgcolor='rgba(11, 17, 33, 0)',  # 完全透明，适配前端玻璃拟态
-        plot_bgcolor='rgba(11, 17, 33, 0)',
-        font=dict(color='#e5e7eb', family='sans-serif'),
-        margin=dict(t=50, l=10, r=10, b=10),
-        coloraxis_colorbar=dict(title=dict(font=dict(color='#9ca3af')), tickfont=dict(color='#9ca3af'))
-    )
-    return fig
-
-def create_system_base_map(center_lat, center_lon, zoom=11):
-    """
-    【Folium 底图算子】: 统一生成极客风格的暗色态街道底图。
-    """
-    import folium
-    # 使用 CartoDB dark_matter 作为默认赛博风底图
-    m = folium.Map(location=[center_lat, center_lon], zoom_start=zoom, tiles='CartoDB dark_matter')
-    return m
-
-def safe_render_folium(m):
-    """
-    【Folium 渲染算子】: 安全提取 HTML 并注入响应式 CSS，确保地图充满前端 Iframe。
-    """
-    html_str = m.get_root().render()
-    # 强制 iframe 内部地图 100% 充满容器，消除滚动条
-    html_str = html_str.replace(
-        '<style>html, body {width: 100%;height: 100%;margin: 0;padding: 0;}</style>', 
-        '<style>html, body {width: 100vw;height: 100vh;margin: 0;padding: 0;overflow:hidden;}</style>'
-    )
-    return html_str
-`;
 
 // 简易空间索引
 class SimpleGridIndex {
@@ -675,13 +481,6 @@ export const generateGrid = async (req: Request, res: Response): Promise<void> =
     }
 };
 
-// 辅助函数：确保 Key 生成逻辑在“初始化阶段”和“聚合阶段”完全一致
-const getSafeKey = (field: string, val: any) => {
-    const strVal = String(val); // 强制转字符串
-    const safeVal = strVal.replace(/[^a-zA-Z0-9_\u4e00-\u9fa5]/g, '_');
-    return `${field}_${safeVal}`;
-};
-
 export const exportGrid = async (req: Request, res: Response): Promise<void> => {
     try {
         const { fileId, shape, size, method, categoryFields } = req.body;
@@ -935,7 +734,6 @@ export const exportGrid = async (req: Request, res: Response): Promise<void> => 
 export const getRegisteredModels = async (req: Request, res: Response) => {
   try {
     const allModels = await ModelRegistry.getAllModels();
-    // 过滤 active 状态并在返回时展平 JSONB
     const models = allModels
         .filter(m => m.parameters_schema?.status !== 'inactive')
         .map(m => ({
@@ -947,7 +745,6 @@ export const getRegisteredModels = async (req: Request, res: Response) => {
         }));
     res.json({ code: 200, data: models });
   } catch (error) {
-    console.error("获取模型列表失败:", error);
     res.status(500).json({ error: '获取模型列表失败' });
   }
 };
@@ -957,44 +754,24 @@ export const getRegisteredModels = async (req: Request, res: Response) => {
 // ==========================================
 export const registerModelByAI = async (req: Request, res: Response) => {
   try {
-    // 接收 LLM 生成的模型名称、描述、参数规范，以及最关键的：Python 源代码字符串
     const { modelName, displayName, description, parameters, pythonCode } = req.body;
+    if (!pythonCode) return res.status(400).json({ error: '智能体未能提供有效的 Python 代码' });
 
-    if (!pythonCode) {
-      return res.status(400).json({ error: '智能体未能提供有效的 Python 代码' });
-    }
-
-    // 步骤 A：物理隔离写入（绝对不碰 main.py，只向 models 文件夹注入“零件”）
-    // 解析出 python_engine/models 的绝对路径 (根据你的目录结构可能需要微调 ../ 的数量)
     const modelsDir = path.join(process.cwd(), '../python_engine/models');
-    
-    // 确保 models 文件夹存在
-    if (!fs.existsSync(modelsDir)) {
-      fs.mkdirSync(modelsDir, { recursive: true });
-    }
+    if (!fs.existsSync(modelsDir)) fs.mkdirSync(modelsDir, { recursive: true });
 
-    // 将 AI 写的代码保存为 .py 文件（例如 lsi_ahp.py）
     const fileName = `${modelName.toLowerCase()}.py`;
     const filePath = path.join(modelsDir, fileName);
     fs.writeFileSync(filePath, pythonCode, 'utf8');
 
-    // 步骤 B：元数据落库（记录在案，供前端动态读取公式列表）
     const newModelData = {
       model_name: modelName.toUpperCase(),
       description: description,
-      parameters_schema: {
-        displayName,
-        parameters,
-        status: 'active'
-      }
+      parameters_schema: { displayName, parameters, status: 'active' }
     };
     const newModel = await ModelRegistry.registerOrUpdateModel(newModelData);
 
-    res.json({ 
-      code: 200, 
-      message: `智能体已成功将模型 ${modelName} 注入系统并注册完毕！`, 
-      data: newModel 
-    });
+    res.json({ code: 200, message: `智能体已成功将模型 ${modelName} 注入系统并注册完毕！`, data: newModel });
   } catch (error: any) {
     res.status(500).json({ error: '模型代理注册失败: ' + error.message });
   }
@@ -1006,83 +783,41 @@ export const registerModelByAI = async (req: Request, res: Response) => {
 export const executeTableFormula = async (req: Request, res: Response) => {
   try {
     const { fileId, modelName, rawArgs } = req.body;
-    
-    // 兼容老代码接口
     let reqColumns: string[] = req.body.columns || [];
     let reqParams: Record<string, any> = req.body.params || {};
 
     let modelDefRaw = await ModelRegistry.findModelByName(modelName.toUpperCase());
     let modelDef: any;
-    if (!modelDefRaw) {
-        console.warn(`[BFF 警告] DB 未找到模型元数据: ${modelName}，将尝试直接穿透调度到底层引擎...`);
-        // 构造一个虚拟的 modelDef，防止后面映射参数时报错
-        modelDef = { parameters: [] } as any; 
-    } else {
-        modelDef = {
-            parameters: modelDefRaw.parameters_schema?.parameters || [],
-            requiredColumns: modelDefRaw.parameters_schema?.requiredColumns || []
-        };
-    }
+    if (!modelDefRaw) modelDef = { parameters: [] } as any; 
+    else modelDef = { parameters: modelDefRaw.parameters_schema?.parameters || [], requiredColumns: modelDefRaw.parameters_schema?.requiredColumns || [] };
 
-    //    ：动态参数分类与路由 (保持原有优秀逻辑)
     if (rawArgs && Array.isArray(rawArgs)) {
         reqColumns = [];
         reqParams = {};
-        
         rawArgs.forEach((arg: string, index: number) => {
             const numVal = Number(arg);
             const paramName = modelDef?.parameters?.[index]?.name || `param_${index}`;
-
-            if (!isNaN(numVal) && arg.trim() !== '') {
-                reqParams[paramName] = numVal;
-            } else if ((arg.startsWith('"') && arg.endsWith('"')) || (arg.startsWith("'") && arg.endsWith("'"))) {
-                reqParams[paramName] = arg.slice(1, -1);
-            } else {
+            if (!isNaN(numVal) && arg.trim() !== '') reqParams[paramName] = numVal;
+            else if ((arg.startsWith('"') && arg.endsWith('"')) || (arg.startsWith("'") && arg.endsWith("'"))) reqParams[paramName] = arg.slice(1, -1);
+            else {
                 reqColumns.push(arg);
-                reqParams[paramName] = arg;       //   2. 【新增这一行】：绑定参数键值对！
+                reqParams[paramName] = arg;       
             }
         });
     }
 
-    console.log(`[BFF调度层] 向底层空间引擎下发计算指令... 文件: ${fileId}, 模型: ${modelName}`);
+    const finalColumns = Array.from(new Set([...reqColumns, ...(modelDef?.requiredColumns || [])]));
 
-    // ==========================================
-    //   终极瘦身：彻底斩断 Node.js 的数据搬运！
-    // ==========================================
-
-    //   新增：合并前端传来的列（reqColumns）与模型注册时 AI 提取的必填列（requiredColumns）
-    // 用 Set 去重，防止同一个列名传两遍
-    const finalColumns = Array.from(new Set([
-        ...reqColumns, 
-        ...(modelDef?.requiredColumns || []) // 👈 从 MongoDB 里读出 AI 存下的列名
-    ]));
-
-    // 发送给 Python
     const response = await axios.post<PythonApiResponse>(`${PYTHON_API_URL}/models/execute`, {
       model_name: modelName,
       file_id: fileId,         
-      columns: finalColumns,   //   将合并后的终极列名数组发给 Python 引擎
+      columns: finalColumns,   
       parameters: reqParams    
     });
 
-    // ==========================================
-    //   接收轻量级结果与协同渲染
-    // ==========================================
-    // 此时 Python 已经在底层完成了“拉取 -> 计算 -> MongoDB 回写”的闭环！
-    // Node.js 只需要拿到轻量级的绘图数据返回给前端即可。
     const { result_col_names, result_data, execution_time_ms } = response.data;
-
-    console.log(`[BFF调度层] 底层引擎计算并落盘完毕，新增 ${result_col_names.length} 列，总耗时 ${execution_time_ms.toFixed(2)}ms`);
-
-    // 直接返回给前端更新 UI
-    res.json({ 
-        code: 200, 
-        resultColName: result_col_names, 
-        resultData: result_data 
-    });
-
+    res.json({ code: 200, resultColName: result_col_names, resultData: result_data });
   } catch (error: any) {
-    console.error("模型执行错误:", error.response?.data || error.message);
     res.status(500).json({ error: '模型执行异常', details: error.response?.data?.detail || error.message });
   }
 };
@@ -1143,23 +878,8 @@ export const createModelViaNaturalLanguage = async (req: Request, res: Response)
     }
 };
 
-
-// 数据透视API期望的返回类型
-interface PivotApiResponse {
-    status: string;
-    data: any[]; // 一个包含字典的数组
-}
-
-// 绘图API期望的返回类型
-interface ChartApiResponse {
-    status: string;
-    engine?: 'echarts' | 'html_iframe';
-    html_string?: string;
-    chart_option?: any;
-}
-
 // ==========================================
-// 沙盒重跑：用户编辑代码后跳过 LLM 直接执行
+// 适配 Multi-Agent 工作流体系的沙盒重跑方法
 // ==========================================
 export const rerunPivotCode = async (req: Request, res: Response): Promise<void> => {
     try {
@@ -1170,44 +890,27 @@ export const rerunPivotCode = async (req: Request, res: Response): Promise<void>
             return;
         }
 
-        console.log(`\n[Rerun] 收到用户手动修改后的代码，文件数: ${fileIds.length}，跳过 LLM 直接执行...`);
+        console.log(`\n[Rerun] 收到用户手动修改后的代码，文件数: ${fileIds.length}，跳过 LLM 直接向底层沙盒发起重跑...`);
 
-        // 直接调用 Python 执行透视（沙盒重跑）
-        const pivotResponse = await axios.post<PivotApiResponse>(`${PYTHON_API_URL}/models/pivot_only`, {
+        // 直接调用 Python 执行透视代码
+        const pivotResponse = await axios.post<any>(`${PYTHON_API_URL}/models/pivot_only`, {
             python_code: pythonCode,
             file_ids: fileIds
         });
 
         const aggregatedData = pivotResponse.data.data;
         if (!aggregatedData || aggregatedData.length === 0) {
-            throw new Error("透视结果为空，请检查代码逻辑或数据是否匹配");
+            throw new Error("沙盒重跑透视结果为空，请检查逻辑或数据匹配度。");
         }
-        console.log(`[Rerun] 透视成功！共 ${aggregatedData.length} 条记录，正在生成图表...`);
+        console.log(`[Rerun] 重跑透视成功！获取 ${aggregatedData.length} 条有效记录。`);
 
-        // 如果传入了 blueprint，继续走绘图流程；否则只返回数据
-        let engine: string | undefined;
-        let html_string: string | undefined;
-        let chart_option: any;
-
-        if (blueprint) {
-            const chartCode = await generateChartCode(blueprint, aggregatedData.slice(0, 3));
-            const chartResponse = await axios.post<ChartApiResponse>(`${PYTHON_API_URL}/models/chart_only`, {
-                python_code: chartCode,
-                data: aggregatedData
-            });
-            engine = chartResponse.data.engine;
-            html_string = chartResponse.data.html_string;
-            chart_option = chartResponse.data.chart_option;
-            console.log(`[Rerun] 图表渲染完成，引擎: ${engine}`);
-        }
-
+        // 新的 Agentic 架构下，不需要让 LLM 现写 Echarts 代码，我们直接通知前端渲染！
         res.json({
             code: 200,
             tableData: aggregatedData,
-            engine,
-            chartHtml: html_string,
-            chartOption: chart_option,
-            pythonCode // 回穿修改后的代码
+            engine: 'echarts',
+            aiChartType: blueprint?.visualization_spec?.chart_type || 'bar',
+            pythonCode // 将用户自己修改的代码回穿，方便继续修改
         });
 
     } catch (error: any) {
@@ -1217,12 +920,9 @@ export const rerunPivotCode = async (req: Request, res: Response): Promise<void>
     }
 };
 
-// 多节点进行可扩展的透视和绘图
-export const executeDynamicPipeline = async (req: Request, res: Response): Promise<void> => {
-    // ⚠️ 关键：将 blueprint / pivotCode 提升到 try/catch 之外，使 catch 块可以访问
-    let blueprint: any = null;
-    let pivotCode: string = "";
 
+// 基于状态机引擎的动态分析大网关
+export const executeDynamicPipeline = async (req: Request, res: Response): Promise<void> => {
     try {
         const { userPrompt, fileIds, context } = req.body;
 
@@ -1231,188 +931,55 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
             return;
         }
 
-        console.log(`\n======================================================`);
-        console.log(`[Pipeline] 分析文件数: ${fileIds.length}`);
-        console.log(`[Pipeline] 用户意图: "${userPrompt}"`);
+        console.log(`\n🌟======================================================🌟`);
+        console.log(`[Agentic Gateway] 启动多智能体 GeoAI 工作流...`);
+        console.log(`[Agentic Gateway] 目标文件 IDs: [${fileIds.join(', ')}]`);
+        console.log(`[Agentic Gateway] 用户意图: "${userPrompt}"`);
 
-        // 提取工作区文件元数据 (给 Planner 当上下文)
+        // 1. 提取当前工作区文件的元数据 Schema（给 Planner 的前置上下文）
         const availableFiles = [];
         for (const fId of fileIds) {
             const schema = await Feature.getFileSchemaSummary(fId);
             availableFiles.push(schema);
         }
 
-        // 1 意图拆解节点
-        console.log(`[Pipeline] 节点1正在拆解意图...`);
-        blueprint = await planWorkflow(userPrompt, availableFiles, context);
-        console.log(`[Pipeline] 拆解意图完成:`, blueprint.explanation);
+        // 2. 组装初始状态机 (State)
+        const initialState: WorkflowState = {
+            // 使用自定义协议 db:// 来表示这是来自 PostGIS 的文件
+            originalDataRef: `db://spatial_features?fileIds=${fileIds.join(',')}`, 
+            userQuery: userPrompt,
+            chatHistory: context?.history || [],
+            schemaInfo: availableFiles,
+            currentAgent: "planner", // 入口强制设置为大总管 Planner
+            executionLog: []
+        };
 
-        // 2 数据透视代码生成节点 / 或复用历史代码
-        let rawPivotCode = "";
-        let pivotCode = "";
-        if (blueprint.reuse_code && context?.lastPythonCode) {
-            console.log(`[Pipeline] 检测到意图为图表切换/追问，直接复用上一轮数据抽取代码。`);
-            rawPivotCode = context.lastPythonCode;
-            pivotCode = PYTHON_SDK_INJECTION + "\n\n" + rawPivotCode;
-        } else {
-            console.log(`[Pipeline] 节点2正在编写透视代码...`);
-            rawPivotCode = await generatePivotCode(blueprint);
-            pivotCode = PYTHON_SDK_INJECTION + "\n\n" + rawPivotCode;
-        }
+        // 3. 🚀 轰鸣吧！启动状态机引擎
+        const finalState = await executeGeoAIWorkflow(initialState);
 
-        // 3 Python执行透视 (带自愈修复环)
-        let aggregatedData: any = null;
-        let lastErrorDetails = "";
-        const MAX_RETRIES = 2;
-        let retries = 0;
-
-        console.log(`\n======================python代码================================`);
-        console.log(pivotCode);
-        console.log(`\n======================python代码================================`);
-
-        while (retries <= MAX_RETRIES) {
-            try {
-                console.log(`[Pipeline] 节点3正在执行空间透视... (尝试 ${retries + 1}/${MAX_RETRIES + 1})`);
-                const pivotResponse = await axios.post<any>(`${PYTHON_API_URL}/models/pivot_only`, {
-                    python_code: pivotCode, // 发送带 SDK 的完整代码
-                    file_ids: fileIds
-                });
-                
-                aggregatedData = pivotResponse.data.data; 
-                if (!aggregatedData || aggregatedData.length === 0) {
-                    throw new Error("透视结果为空，请检查需求或数据是否匹配");
-                }
-                console.log(`[Pipeline] 透视计算成功，共有 ${aggregatedData.length} 条统计记录`);
-                break; 
-            } catch (err: any) {
-                lastErrorDetails = err.response?.data?.detail || err.message;
-                console.error(`\n[Pipeline 容错捕捉] 沙盒执行引发异常: ${lastErrorDetails}`);
-
-                if (retries >= MAX_RETRIES) break;
-                
-                retries++;
-                console.log(`[Pipeline] 节点发觉错误，启动自愈修复环 (第 ${retries} 次重试)...`);
-                try {
-                    // 核心修复：只把业务代码给 AI 修，修完后再次拼上 SDK！
-                    rawPivotCode = await fixPivotCode(blueprint, rawPivotCode, lastErrorDetails);
-                    pivotCode = PYTHON_SDK_INJECTION + "\n\n" + rawPivotCode;
-                    console.log(`[Pipeline] FixerAgent 自愈重写完成，准备再次向沙盒投入代码...`);
-                } catch (fixErr) { break; }
-            }
-        }
-        
-
-
-        // 终局判定：如果重试已耗尽且依旧没有数据，走优雅降级方案，提前返回 200 让前端处理重入
-        if (!aggregatedData) {
-            console.log(`======================================================\n`);
-            res.status(200).json({
+        // 4. 终局判定与异常拦截
+        if (finalState.currentAgent === "error" || !finalState.uiResponse) {
+            console.error(`[Agentic Gateway] 工作流异常终止。`);
+            res.status(500).json({
                 status: "failed",
-                error_message: "AI 多次尝试修复代码失败，已切换至人工接管模式。",
-                traceback: lastErrorDetails,
-                pythonCode: pivotCode // 携带最后挣扎生成的代码
+                error_message: "多智能体协作流程中发生致命异常，已终止。",
+                traceback: finalState.executionLog.join('\n')
             });
             return;
         }
 
-        // 4 绘图代码/元数据生成节点
-        console.log(`[Pipeline] 节点4正在构建图表配置/代码...`);
-        let chartCodeOrMetadata = "";
-
-        // 5 渲染流分发：这是 Phase 5 的灵魂！
-        let chartResponseData: any = null;
-        let chartErrorDetails = "";
-
-        if (blueprint.visualization_spec.engine === 'echarts') {
-            console.log(`[Pipeline] 命中 ECharts 路由，【跳过】绘图代码生成，直接触发前端 TS 引擎接管渲染...`);
-            try {
-                // 提取大模型建议的图表类型（默认 bar）
-                const aiChartType = blueprint.visualization_spec.chart_type?.toLowerCase() || 'bar';
-                
-                chartResponseData = {
-                    engine: 'echarts',
-                    ai_chart_type: aiChartType, // 将图表类型传给前端！
-                    chart_option: null,         // 绝对不传配置，强制前端使用原生组件！
-                    html_string: ""
-                };
-                console.log(`[Pipeline] TS 模板引擎渲染 ECharts 成功！`);
-            } catch (err: any) {
-                console.error("[Pipeline] ECharts 元数据解析失败，可能是 AI 输出了非 JSON 格式:", err.message);
-                chartErrorDetails = "AI 未能生成正确的图表配置元数据 (JSON 解析失败)。";
-            }
-        } 
-        else {
-            // 原有的 html_iframe 复杂渲染流，依然走 Python 沙盒
-            console.log(`[Pipeline] 命中 html_iframe 路由，进入 Node 4 呼叫 AI 编写 Plotly/Folium 制图代码...`);
-            // 只有走 Python 制图时，才消耗 Token 去生成代码
-            chartCodeOrMetadata = await generateChartCode(blueprint, aggregatedData.slice(0, 5));
-            // 在这里把绘图专属 SDK 拼接上去！
-            const finalChartCode = CHART_SDK_INJECTION + "\n\n" + chartCodeOrMetadata;
-
-            const MAX_RETRIES = 2;
-            let chartRetries = 0;
-
-            while (chartRetries <= MAX_RETRIES) {
-                try {
-                    const chartResponse = await axios.post(`${PYTHON_API_URL}/models/chart_only`, {
-                        python_code: finalChartCode,
-                        data: aggregatedData
-                    });
-                    chartResponseData = chartResponse.data;
-                    console.log(`[Pipeline] 图表渲染成功，渲染引擎: ${chartResponseData.engine}。`);
-                    break;
-                } catch (err: any) {
-                    chartErrorDetails = err.response?.data?.detail || err.response?.data?.details || err.message;
-                    chartRetries++;
-                    if (chartRetries > MAX_RETRIES) break;
-                    
-                    try {
-                        console.log(`[Pipeline] 呼叫 FixerAgent 进行图表代码自愈 (第 ${chartRetries} 次重试)...`);
-                        chartCodeOrMetadata = await fixChartCode(blueprint, chartCodeOrMetadata, chartErrorDetails);
-                    } catch (fixErr) { break; }
-                }
-            }
-        }
-
-        // 终局判定
-        if (!chartResponseData) {
-            console.log(`======================================================\n`);
-            res.status(200).json({
-                status: "failed",
-                error_message: "图表渲染模块崩溃，已降级至人工接管模式。",
-                traceback: chartErrorDetails,
-                pythonCode: chartCodeOrMetadata
-            });
-            return;
-        }
-
-        // 解构并返回给前端
-        const { engine, html_string, chart_option } = chartResponseData;
-        console.log(`[Pipeline] 全部执行成功，最终渲染引擎: ${engine}。`);
-        console.log(`======================================================\n`);
+        // 5. 完美解构，返回给前端 React (完全兼容前端现有的字段规范)
+        console.log(`[Agentic Gateway] 智能体全链路执行成功，正在下发渲染契约！`);
+        console.log(`🌟======================================================🌟\n`);
 
         res.json({
             code: 200,
-            blueprint: blueprint,
-            tableData: aggregatedData,
-            engine: engine,
-            aiChartType: chartResponseData?.ai_chart_type,
-            chartHtml: html_string,
-            chartOption: chart_option,
-            pythonCode: pivotCode // 依然返回 pivot 代码供用户检查修改
+            executionLog: finalState.executionLog, 
+            ...finalState.uiResponse
         });
 
     } catch (error: any) {
-        // 提取执行上下文，方便前端展示错误原因及出错的代码
-        const details = error.response?.data?.detail || error.response?.data?.details || error.message;
-        console.error("\n[Pipeline错误]", details);
-        
-        res.status(500).json({ 
-            error: '执行失败', 
-            details: details,
-            // blueprint / pivotCode 已提升到外层作用域，可直接安全访问
-            blueprint: blueprint,
-            pythonCode: pivotCode || null
-        });
+        console.error("\n[Agentic Gateway 致命错误]", error.message);
+        res.status(500).json({ error: '系统内部状态机执行失败', details: error.message });
     }
 };

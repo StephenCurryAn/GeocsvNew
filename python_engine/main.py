@@ -12,6 +12,9 @@ import pandas as pd
 import geopandas as gpd
 from sqlalchemy import create_engine, text
 from psycopg2.extras import execute_batch
+import urllib.parse
+import pickle
+import uuid
 
 # 绘图库
 import plotly.express as px
@@ -238,6 +241,10 @@ async def execute_pivot_only(payload: PivotInput):
         print(f"[Pivot Sandbox] 数据装载完毕，已加载 {len(gdf_dict)} 个图层。正在执行 AI 动态算子...")
         print(f"[Pivot Sandbox] 图层列表: {list(gdf_dict.keys())}")
 
+        import geo_feature_sdk
+        import geo_pivot_sdk
+        import geo_expert_sdk
+
         # 扩展执行沙盒，注入空间分析所需的全部工具
         # 【核心修复】：合并为一个唯一的执行环境 (exec_env)
         exec_env = {
@@ -249,6 +256,9 @@ async def execute_pivot_only(payload: PivotInput):
             "sjoin_nearest": gpd.sjoin_nearest,
             "gdf_dict": gdf_dict,
             "file_ids": payload.file_ids,
+            "geo_feature_sdk": geo_feature_sdk,
+            "geo_pivot_sdk": geo_pivot_sdk,
+            "geo_expert_sdk": geo_expert_sdk
         }
         
         # 核心修改：只传入一个字典！这样注入的 SDK 算子和 AI 写的主函数都会在同一个全局作用域中
@@ -364,6 +374,172 @@ async def execute_chart_only(payload: ChartInput):
         print(f"{'='*50}\n")
         raise HTTPException(status_code=500, detail=str(e))
 
+# =====================================================================
+# 🌟 [Phase 4 & 5] 多智能体工作流 (Agentic Workflow) 专属路由与底座
+# =====================================================================
+
+# 中间态数据沙盒目录（用于存放 Agent 之间流转的临时特征文件）
+TMP_DIR = os.path.join(os.path.dirname(__file__), "tmp_workspace")
+os.makedirs(TMP_DIR, exist_ok=True)
+
+class FeatureRequest(BaseModel):
+    data_ref: str
+    tool_name: str
+    parameters: Dict[str, Any]
+    output_column_name: str
+
+class PivotRequest(BaseModel):
+    data_ref: str
+    python_code: str # 接收 AI 现写的代码
+
+def load_data_by_ref(data_ref: str) -> Dict[str, gpd.GeoDataFrame]:
+    """万能数据加载器：兼容 PostGIS 实时查询 与 本地临时沙盒接力"""
+    gdf_dict = {}
+    
+    if data_ref.startswith("db://"):
+        # 解析 Node.js 传来的如: db://spatial_features?fileIds=1,2
+        parsed = urllib.parse.urlparse(data_ref)
+        query_params = urllib.parse.parse_qs(parsed.query)
+        file_ids_str = query_params.get("fileIds", [""])[0]
+        file_ids = [fid for fid in file_ids_str.split(",") if fid]
+
+        for fid in file_ids:
+            sql = text("SELECT id, geom, properties FROM spatial_features WHERE file_id = :file_id")
+            with engine.connect() as conn:
+                df = gpd.read_postgis(sql, con=conn, geom_col='geom', params={"file_id": fid})
+            
+            if not df.empty:
+                if df.crs is None:
+                    df = df.set_crs(epsg=4326)
+                if df.crs.to_epsg() != 3857:
+                    df = df.to_crs(epsg=3857) # 强制转米制，为特征计算打底
+                # 展开 properties 到外层
+                df_props = pd.json_normalize(df['properties'])
+                df = pd.concat([df[['id', 'geom']], df_props], axis=1)
+                gdf_dict[fid] = df
+                
+    elif data_ref.startswith("file://"):
+        # 如果是上一个 Agent 处理完的中间态数据，直接从 Pickle 沙盒极速反序列化加载
+        file_path = data_ref.replace("file://", "")
+        if file_path.endswith('.pkl'):
+            with open(file_path, "rb") as f:
+                gdf_dict = pickle.load(f)
+        elif file_path.endswith('.json'):
+            # 如果是透视后的纯净 JSON 表格
+            gdf_dict = {"pivot_result": pd.read_json(file_path)}
+            
+    return gdf_dict
+
+def save_data_by_ref(gdf_dict: Dict[str, gpd.GeoDataFrame], prefix="step") -> str:
+    """保存 Agent 的中间处理结果，返回 file:// 指针交给 Node.js"""
+    file_path = os.path.join(TMP_DIR, f"{prefix}_{uuid.uuid4().hex}.pkl")
+    with open(file_path, "wb") as f:
+        pickle.dump(gdf_dict, f)
+    return f"file://{file_path}"
+
+# ==========================================
+# 🚀 路由 1：响应 Feature Agent 的特征衍生
+# ==========================================
+@app.post("/api/agent/feature")
+async def execute_feature_agent(req: FeatureRequest):
+    start_time = time.time()
+    try:
+        print(f"\n[Feature Agent Sandbox] 收到算子任务: {req.tool_name}, 准备生成列: {req.output_column_name}")
+        gdf_dict = load_data_by_ref(req.data_ref)
+        if not gdf_dict: raise ValueError("未加载到任何有效数据")
+
+        # 取主操作图层（通常是传过来的第一个文件）
+        main_fid = list(gdf_dict.keys())[0] 
+        main_gdf = gdf_dict[main_fid]
+
+        # 动态算子分发 (Feature SDK 物理执行)
+        if req.tool_name == "calculate_area":
+            main_gdf[req.output_column_name] = main_gdf.geometry.area
+            
+        elif req.tool_name == "calculate_distance":
+            target_layer_id = req.parameters.get("target_layer")
+            if target_layer_id and target_layer_id in gdf_dict:
+                target_gdf = gdf_dict[target_layer_id]
+                main_gdf[req.output_column_name] = main_gdf.geometry.apply(
+                    lambda geom: target_gdf.distance(geom).min()
+                )
+            else:
+                main_gdf[req.output_column_name] = 0 # 降级容错
+        else:
+            print(f"[Feature Agent Sandbox] 警告: 未知算子 {req.tool_name}，已略过。")
+
+        # 更新字典并存入沙盒
+        gdf_dict[main_fid] = main_gdf
+        new_ref = save_data_by_ref(gdf_dict, prefix="feature")
+        
+        # 提取新表结构 (剔除几何字段) 给大模型看
+        new_schema = [{"column": col, "type": str(dtype)} for col, dtype in main_gdf.dtypes.items() if col not in ['geom', 'geometry']]
+        
+        print(f"[Feature Agent Sandbox] 计算完成！指针已更新至: {new_ref}")
+        return {
+            "status": "success",
+            "new_data_ref": new_ref,
+            "new_schema_info": {"columns": new_schema},
+            "execution_time_ms": round((time.time() - start_time) * 1000, 2)
+        }
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ==========================================
+# 🚀 路由 2：响应 Pivot Agent 的 5+1 空间透视
+# ==========================================
+@app.post("/api/agent/pivot")
+async def execute_pivot_agent(req: PivotRequest):
+    start_time = time.time()
+    try:
+        print(f"\n[Pivot Agent Sandbox] 收到带代码生成的透视任务")
+        gdf_dict = load_data_by_ref(req.data_ref)
+        if not gdf_dict: raise ValueError("未加载到任何有效数据")
+
+        # 1. 组装安全的执行环境，必须注入那两个核心 SDK！
+        import geo_feature_sdk
+        import geo_pivot_sdk
+        import geo_expert_sdk
+        import math
+
+        exec_env = {
+            "pd": pd,
+            "gpd": gpd,
+            "np": np,
+            "math": math,
+            "gdf_dict": gdf_dict,
+            "geo_feature_sdk": geo_feature_sdk,
+            "geo_pivot_sdk": geo_pivot_sdk,
+            "geo_expert_sdk": geo_expert_sdk  # <=== 注入沙盒全局变量！
+        }
+        
+        # 2. 动态执行 AI 生成的胶水代码
+        exec(req.python_code, exec_env)
+        
+        if 'execute' not in exec_env:
+            raise ValueError("AI 生成的代码中未找到主函数 'execute'！")
+            
+        # 3. 调用主函数获取结果
+        result_data = exec_env['execute'](gdf_dict, {})
+        
+        # 4. 把 list of dicts 存为 JSON 文件
+        import uuid
+        file_path = os.path.join(TMP_DIR, f"pivot_result_{uuid.uuid4().hex}.json")
+        pd.DataFrame(result_data).to_json(file_path, orient="records")
+        
+        return {
+            "status": "success",
+            "new_data_ref": f"file://{file_path}",
+            "execution_time_ms": round((time.time() - start_time) * 1000, 2)
+        }
+
+    except Exception as e:
+        import traceback
+        error_msg = traceback.format_exc()
+        # 必须把完整的 traceback 返回给 Node.js，方便 Fixer 读取并自愈
+        raise HTTPException(status_code=500, detail=error_msg)
+    
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
