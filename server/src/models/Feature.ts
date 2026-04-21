@@ -207,11 +207,20 @@ export const deleteColumnFromFeatures = async (fileId: string, fieldName: string
  * 提取指定文件的轻量级 Schema 摘要 (供大模型作为上下文)
  */
 export const getFileSchemaSummary = async (fileId: string) => {
-    // 1. 获取文件名
-    const fileNodeSql = `SELECT name FROM file_nodes WHERE id = $1`;
+    const fileNodeSql = `SELECT name, extension FROM file_nodes WHERE id = $1`;
     const fnResult = await pool.query(fileNodeSql, [fileId]);
     const fileName = fnResult.rows[0]?.name || 'Unknown';
+    const fileExt = fnResult.rows[0]?.extension?.toLowerCase() || '';
 
+    if (fileExt === '.tif' || fileExt === '.tiff') {
+        return { 
+            fileId, 
+            name: fileName, 
+            geomType: 'Raster (.tif)', 
+            columns: ['Pixel_Value (Continuous Elevation/Data)'] // 告诉大模型这里面存的是像素值
+        };
+    }
+    
     // 2. 获取一次空间数据的几何类型与属性 JSONB 键
     const featureSql = `
         SELECT ST_GeometryType(geom) as geom_type, properties

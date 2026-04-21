@@ -72,7 +72,7 @@ const fileFilter = (req: Express.Request, file: Express.Multer.File, cb: multer.
     const fileExtension = path.extname(file.originalname).toLowerCase();
     
     // 定义允许的文件类型
-    const allowedExtensions = ['.json', '.geojson', '.csv', '.shp', '.shx', '.dbf', '.prj', '.cpg'];
+    const allowedExtensions = ['.json', '.geojson', '.csv', '.shp', '.shx', '.dbf', '.prj', '.cpg', '.tif', '.tiff'];
     
     // 检查文件扩展名是否在允许列表中
     if (allowedExtensions.includes(fileExtension)) {

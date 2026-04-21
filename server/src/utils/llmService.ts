@@ -161,9 +161,19 @@ const cleanCodeBlock = (rawContent: string): string => {
     return rawContent.trim();
 };
 
-export const planWorkflow = async (userPrompt: string, availableFiles: any[], context?: any): Promise<WorkflowBlueprint> => {
+export const planWorkflow = async (userPrompt: string, availableFiles: any[], context?: any, agentMode: string = 'pivot'): Promise<WorkflowBlueprint> => {
     const filesInfo = availableFiles.map(f => `- 文件ID: ${f.fileId}, 名称: ${f.name}, 几何类型: ${f.geomType}, 字段包含: [${f.columns?.join(', ')}]`).join('\n');
     
+    // 动态根据模式调整规划器的 Prompt
+    let modeInstruction = ``;
+    if (agentMode === 'feature_calc') {
+        modeInstruction = `【特征计算模式】：你的目标是规划一个“特征计算”任务，将结果作为新列追加到 target_gdf 中。`;
+    } else if (agentMode === 'pro_model') {
+        modeInstruction = `【专业模型模式】：你的目标是调用高级空间统计模型（如地理探测器）。必须返回一个独立的分析结果表格（List of Dict），不需要保留原始的几何或 id 列。`;
+    } else {
+        modeInstruction = `【数据透视模式】：你的目标是规划一个“聚合透视”任务。`;
+    }
+
     const contextPrompt = context 
     ? `\n\n【注意：历史执行上下文 (Context Memory)】:\n用户之前执行了以下操作：\n${JSON.stringify(context, null, 2)}\n\n用户的当前对话很可能是针对上述上下文的补充修改，例如“请再次生成雷达图”、“将结果换成热力图”。如果判定用户的意图不需要改变底层数据透视逻辑，请在你的返回 JSON 中加入 "reuse_code": true，并调整对应图表的 \`visualization_spec\` 即可。`
     : "";
@@ -171,6 +181,8 @@ export const planWorkflow = async (userPrompt: string, availableFiles: any[], co
     const PLANNER_PROMPT = `
 你是一位顶尖的 WebGIS 数据分析架构师（Planner Agent）。
 你的任务是将用户的自然语言需求，基于当前工作区可用的图层 Schema，严格拆解为标准化的执行蓝图 (Blueprint)。
+
+${modeInstruction}
 
 【当前可用的图层数据集】：
 ${filesInfo || '暂无详细表结构，请根据用户描述推断'}
@@ -556,4 +568,107 @@ ${errorTraceback}
         console.error("图表自愈修复节点执行失败:", error);
         throw new Error("图表自愈修复请求失败");
     }
+};
+
+export const generateFeatureCalcCode = async (blueprint: WorkflowBlueprint): Promise<string> => {
+    const PROMPT = `
+你是一位高级 GeoAI 空间特征计算工程师。系统底层已经内置了强大的特征计算 SDK。
+你的任务是：根据用户的【执行蓝图】，编写 Python 代码计算新特征。
+
+【内置 SDK API】（已隐式 import，可直接调用）：
+1. safe_zonal_stats(vector_gdf, raster_file_path, stat='mean', col_name='raster_val')
+   - 作用：计算矢量面要素在栅格影像上的统计值（如平均高程 DEM）。
+   - 参数 stat 支持：'mean', 'max', 'min', 'sum'。返回已新增 col_name 列的 GeoDataFrame。
+2. safe_shortest_distance(target_gdf, ref_gdf, col_name='min_dist')
+   - 作用：计算 target_gdf 每个要素距离 ref_gdf (如河流、道路) 的最短距离(单位:米)。返回已新增 col_name 列的 GeoDataFrame。
+3. safe_intersects_count(target_gdf, join_gdf, col_name='count_val')
+   - 作用：计算 target_gdf 每个要素内包含或相交的 join_gdf 要素数量。
+4. safe_calc_geometry(gdf, calc_type='area', col_name='geom_val')
+   - calc_type支持 'area'(平方米), 'length'(米)。
+5. safe_spatial_join_attribute(target_gdf, ref_gdf, extract_col, join_type='nearest', col_name='ref_val')
+   - 从参考图层提取属性，join_type 支持 'nearest', 'intersects'。
+6. safe_buffer_count(target_gdf, join_gdf, buffer_dist=500, col_name='buf_count')
+   - 计算目标要素外扩 buffer_dist 米内包含的其他要素数量。
+7. safe_categorical_zonal_stats(vector_gdf, raster_file_path, col_name='majority_class')
+   - 用于提取分类栅格(如土地利用)在网格中的众数(占比最大的类)。
+8. safe_natural_breaks(gdf, target_col, k=5, col_name='jenks_class')
+   - 作用：使用 Jenks 自然断点法将连续数值列离散化。
+   - 参数要求：请务必根据用户的自然语言需求，动态提取并传入真实的 k 值（例如用户说“分3类”，你必须显式传入 k=3）。
+9. safe_rule_reclassify(gdf, target_col, bins, labels, col_name='reclass_val', default_val='其他')
+   - 作用：根据规则列表将数值离散化。支持重复的 label（如两个'北'）。
+   - 【绝对禁令】：千万不要试图从 \`parameters\` 字典中读取 target_col、bins 或 labels！你必须在代码中**直接写死（Hardcode）**这些变量。
+   - 正确示范（必须照做）：
+     如果需求是“0-22.5是北，22.5-67.5是东北，其他是平面”，你必须直接在代码中写：
+     \`bins = [0, 22.5, 67.5]\`
+     \`labels = ['北', '东北']\`
+     \`safe_rule_reclassify(gdf, target_col='Aspect', bins=bins, labels=labels, col_name='Aspect_Class', default_val='平面')\`
+
+【蓝图】：
+${JSON.stringify(blueprint, null, 2)}
+
+【严格要求】：
+1. 必须写一个 \`def execute_feature_calc(gdf_dict, file_paths_dict, parameters):\` 函数。
+2. gdf_dict 是包含已加载矢量的字典，file_paths_dict 是包含所有文件物理绝对路径的字典（用于读取栅格 .tif）。
+3. 必须将目标图层 (Target) 新增计算出的特征列，并**务必保留原始的 'id' 列**。
+4. 返回值必须是将带有 'id' 和新特征列的结果转为 List of Dict。例如：\`return target_gdf[['id', '新列名']].to_dict(orient='records')\`。
+5. 只输出纯 Python 代码，绝对不要包含 \`\`\`python 标签！
+`;
+    const response = await openai.chat.completions.create({
+        model: "deepseek-v3",
+        messages: [{ role: "system", content: PROMPT }, { role: "user", content: "请开始编写特征计算Python代码" }],
+        temperature: 0.1
+    });
+    return cleanCodeBlock(response.choices[0].message.content || "");
+};
+
+export const fixFeatureCalcCode = async (blueprint: any, buggyCode: string, errorTraceback: string): Promise<string> => {
+    // 逻辑与 fixPivotCode 类似，只是提示词改为修复 execute_feature_calc 函数
+    const FIXER_PROMPT = `代码运行崩溃：\n${errorTraceback}\n请修复以下代码并返回纯Python：\n${buggyCode}`;
+    const response = await openai.chat.completions.create({
+        model: "deepseek-v3",
+        messages: [{ role: "system", content: FIXER_PROMPT }],
+        temperature: 0.1
+    });
+    return cleanCodeBlock(response.choices[0].message.content || "");
+};
+
+export const generateProModelCode = async (blueprint: any): Promise<string> => {
+    const PROMPT = `
+你是一位顶级 GeoAI 空间数据科学家。系统已内置专业模型 SDK。
+任务：根据用户的【执行蓝图】，编写 Python 代码调用专业模型。
+
+【内置 SDK API】：
+1. safe_geodetector_factor(gdf, y_col, x_cols)
+   - 作用：执行地理探测器（因子探测）。
+2. safe_geodetector_interaction(gdf, y_col, x_cols)
+   - 作用：执行地理探测器（交互探测），计算自变量叠加后的 q(A∩B)，自动输出适合热力图的对称矩阵数据。
+   - 返回列包含：'因子A', '因子B', '交互q值', '交互类型'。
+
+【蓝图】：
+${JSON.stringify(blueprint, null, 2)}
+
+【严格要求】：
+1. 必须写一个 \`def execute_pro_model(gdf_dict, file_paths_dict, parameters):\` 主函数。
+2. 【绝对禁令】：千万不要试图从 \`parameters\` 字典中读取变量！你必须直接在代码中写死真实的列名字符串。
+3. 【正确示范】：
+   如果用户要求分析交互探测，只需这样写：
+   \`return safe_geodetector_interaction(target_gdf, y_col='Landslide_Count', x_cols=['Elev_Class', 'Rain_Class'])\`
+4. 只输出纯 Python 代码，绝对不要包含 \`\`\`python 标签！
+`;
+    const response = await openai.chat.completions.create({
+        model: "deepseek-v3", // 或你使用的模型
+        messages: [{ role: "system", content: PROMPT }, { role: "user", content: "请编写专业模型执行代码" }],
+        temperature: 0.1
+    });
+    return cleanCodeBlock(response.choices[0].message.content || "");
+};
+
+export const fixProModelCode = async (blueprint: any, buggyCode: string, errorTraceback: string): Promise<string> => {
+    const FIXER_PROMPT = `代码运行崩溃：\n${errorTraceback}\n请修复以下 execute_pro_model 代码并返回纯Python：\n${buggyCode}`;
+    const response = await openai.chat.completions.create({
+        model: "deepseek-v3",
+        messages: [{ role: "system", content: FIXER_PROMPT }],
+        temperature: 0.1
+    });
+    return cleanCodeBlock(response.choices[0].message.content || "");
 };

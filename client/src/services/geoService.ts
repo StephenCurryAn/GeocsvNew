@@ -415,7 +415,7 @@ class GeoService {
   // ==========================================
   // 🤖 GeoAI 智能体接口
   // ==========================================
-  async generateModelByAI(data: { userPrompt: string; fileIds: string[]; context?: any }) {
+  async generateModelByAI(data: { userPrompt: string; fileIds: string[]; context?: any, agentMode?: string}) {
     const response = await apiClient.post('/analysis/agent/generate-model', data);
     return response.data;
   };

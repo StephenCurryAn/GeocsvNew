@@ -537,6 +537,13 @@ const readAndParseFile = async (filePath: string, dbExtension?: string) => {
             throw new Error('JSON 文件内容格式错误，解析失败');
         }
     }
+
+    // 🌟 新增：栅格数据直接返回类型，跳过矢量解析
+    if (ext === '.tif' || ext === '.tiff') {
+        console.log(`[Parser] 识别为栅格文件，跳过矢量解析: ${path.basename(filePath)}`);
+        return { type: 'raster', data: null };
+    }
+
     // 默认当做文本返回
     return { type: 'text', data: content };
 };
@@ -619,7 +626,7 @@ export const uploadFile = async (req: Request, res: Response) => {
                 renamedFilesMap['mime'] = file.mimetype;
             }
             // 如果是单文件 (json/csv)，也记录
-            else if (['.json', '.geojson', '.csv'].includes(ext)) {
+            else if (['.json', '.geojson', '.csv', '.tif', '.tiff'].includes(ext)) {
                 renamedFilesMap['main'] = newPath;
                 renamedFilesMap['originalName'] = originalName;
                 renamedFilesMap['size'] = file.size.toString();
@@ -638,14 +645,18 @@ export const uploadFile = async (req: Request, res: Response) => {
         const mainFilePath = renamedFilesMap['main'];
         const mainOriginalName = renamedFilesMap['originalName'];
         const mainExt = path.extname(mainFilePath).toLowerCase();
-
+        
         // 3. 解析预览
         let parsedData: any = null;
+        let isRaster = false;
         try {
             // 如果是 .shp，readAndParseFile 内部会自动去找同名的 .dbf
             const result = await readAndParseFile(mainFilePath, mainExt);
             if (result.type === 'json') {
                 parsedData = result.data;
+            }
+            else if (result.type === 'raster') {
+                isRaster = true;
             }
         } catch (e: any) {
             console.warn('预览解析警告:', e.message);
@@ -762,7 +773,8 @@ export const uploadFile = async (req: Request, res: Response) => {
                 // geoJson: parsedData,            // 返回解析后的 GeoJSON 数据
                 fileSize: savedFileNode.size,        // 文件大小
                 fileType: mainExt,         // 文件类型
-                totalFeatures: parsedData?.features?.length || 0 // 告知前端有多少数据
+                // 如果是栅格，要素数量返回 1（代表一张图）否则按原样
+                totalFeatures: isRaster ? 1 : (parsedData?.features?.length || 0)
             }
         });
 

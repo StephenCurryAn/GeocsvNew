@@ -114,7 +114,32 @@ const COLOR_SCHEMES = {
         name: '离散型（高饱和）',
         // 配合你的暗色底图，极高饱和度、发光质感的霓虹色
         colors: ['#ff00ff', '#00ffff', '#00ff00', '#ffff00', '#ff0000', '#0000ff', '#ff8800', '#ff0088', '#88ff00', '#8800ff']
-    }
+    },
+    viridi: {
+        name: '翠绿-明黄',
+        // 配合你的暗色底图，极高饱和度、发光质感的霓虹色
+        colors: ['#440154', '#414487', '#2a788e', '#22a884', '#7ad151', '#fde725']
+    },
+    magm: {
+        name: '黑紫-亮橘',
+        // 配合你的暗色底图，极高饱和度、发光质感的霓虹色
+        colors: ['#000004', '#3b0f70', '#8c2981', '#de4968', '#fe9f6d', '#fcfdbf']
+    },
+    morandi_earth: {
+        name: '大地色',
+        // 配合你的暗色底图，极高饱和度、发光质感的霓虹色
+        colors: ['#f4f1e1', '#e2d3b6', '#c6b497', '#9e8d71', '#72634d', '#493d2c']
+    },
+    morandi_aqua: {
+        name: '青水色',
+        // 配合你的暗色底图，极高饱和度、发光质感的霓虹色
+        colors: ['#f1f6f7', '#d4e0e5', '#aebec5', '#829aa3', '#5a7681', '#38525d']
+    },
+    Spectral: {
+        name: '冷暖双向渐变',
+        // 配合你的暗色底图，极高饱和度、发光质感的霓虹色
+        colors: ['#5e4fa2', '#3288bd', '#66c2a5', '#abdda4', '#e6f598', '#fee08b', '#fdae61', '#f46d43', '#d53e4f', '#9e0142']
+    },
 };
 
 //   [新增] 颜色插值辅助函数 (Hex -> RGB -> Interpolate -> Hex)
@@ -507,10 +532,13 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
         
     }, [displayData, data, allData, showAll, isGridMode]); // 依赖项加上 data 等
 
-    //   [新增] Effect 3: 提取当前渲染字段的唯一值，作为下拉列表的选项
+    //   [修改] Effect 3: 提取当前渲染字段的唯一值，作为下拉列表的选项
     useEffect(() => {
-        // 如果没选字段、或者处于网格模式、或者没数据，清空过滤选项
-        if (!activeField || activeField === 'none' || isGridMode || !displayData) {
+        // 👇 判断是否为文本字段
+        const isStringField = activeField ? stringFields.includes(activeField) : false;
+
+        // 如果没选字段、处于网格模式、没数据，或者【当前选中是数值字段】，清空过滤选项！
+        if (!activeField || activeField === 'none' || isGridMode || !displayData || !isStringField) {
             setUniqueFieldValues([]);
             setActiveFilterValues([]);
             return;
@@ -519,30 +547,27 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
         const valSet = new Set<string | number>();
         displayData.features.forEach((f: any) => {
             const val = f.properties[activeField];
-            // 排除 null 和 undefined，但放行 0 和 空字符串
             if (val !== undefined && val !== null) {
                 valSet.add(val);
             }
         });
 
-        // 排序：如果是数字就按大小排，如果是文字就按字母排
-        const uniqueVals = Array.from(valSet).sort((a, b) => {
-            if (typeof a === 'number' && typeof b === 'number') return a - b;
-            return String(a).localeCompare(String(b));
-        });
-
+        const uniqueVals = Array.from(valSet).sort((a, b) => String(a).localeCompare(String(b)));
         setUniqueFieldValues(uniqueVals);
-        setActiveFilterValues(uniqueVals); // 默认全部勾选
-    }, [activeField, displayData, isGridMode]);
+        setActiveFilterValues(uniqueVals); 
+    }, [activeField, displayData, isGridMode, stringFields]);
 
-    //   [新增] Effect 4: 将用户的过滤选项应用到地图图层 (Filter 属性)
+    //   [修改] Effect 4: 将用户的过滤选项应用到地图图层 (Filter 属性)
     useEffect(() => {
         const map = mapInstance.current;
         if (!map || !isMapLoaded) return;
 
         const applyFilter = () => {
-            // 当没有开启过滤或处于网格模式时，恢复默认显示所有
-            if (isGridMode || !activeField || activeField === 'none') {
+            // 👇 判断是否为文本字段
+            const isStringField = activeField ? stringFields.includes(activeField) : false;
+
+            // 当没有开启过滤、处于网格模式，或者是【连续数值字段】时，恢复默认显示所有，防止数组越界！
+            if (isGridMode || !activeField || activeField === 'none' || !isStringField) {
                 if (map.getLayer('geo-fill-layer')) map.setFilter('geo-fill-layer', ['==', '$type', 'Polygon']);
                 if (map.getLayer('geo-polygon-border')) map.setFilter('geo-polygon-border', ['==', '$type', 'Polygon']);
                 if (map.getLayer('geo-linestring-main')) map.setFilter('geo-linestring-main', ['==', '$type', 'LineString']);
@@ -550,9 +575,9 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                 return;
             }
 
-            // 如果用户取消了所有的勾选，什么都不渲染
             if (activeFilterValues.length === 0) {
                 const hideExp: any = ['==', 'id', 'nothing_selected'];
+                // ... 省略（保留你原有的 hideExp 应用逻辑）
                 if (map.getLayer('geo-fill-layer')) map.setFilter('geo-fill-layer', hideExp);
                 if (map.getLayer('geo-polygon-border')) map.setFilter('geo-polygon-border', hideExp);
                 if (map.getLayer('geo-linestring-main')) map.setFilter('geo-linestring-main', hideExp);
@@ -560,26 +585,16 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                 return;
             }
 
-            // 👇  修复：构建传统过滤语法 ['in', '字段名', '值1', '值2', ...]
             const filterExp: any = ['in', activeField, ...activeFilterValues];
 
-            // 应用到所有图层，同时保留原有基础的 Geometry 类型过滤
-            if (map.getLayer('geo-fill-layer')) {
-                map.setFilter('geo-fill-layer', ['all', ['==', '$type', 'Polygon'], filterExp] as any);
-            }
-            if (map.getLayer('geo-polygon-border')) {
-                map.setFilter('geo-polygon-border', ['all', ['==', '$type', 'Polygon'], filterExp] as any);
-            }
-            if (map.getLayer('geo-linestring-main')) {
-                map.setFilter('geo-linestring-main', ['all', ['==', '$type', 'LineString'], filterExp] as any);
-            }
-            if (map.getLayer('geo-point-layer')) {
-                map.setFilter('geo-point-layer', ['all', ['==', '$type', 'Point'], filterExp] as any);
-            }
+            if (map.getLayer('geo-fill-layer')) map.setFilter('geo-fill-layer', ['all', ['==', '$type', 'Polygon'], filterExp] as any);
+            if (map.getLayer('geo-polygon-border')) map.setFilter('geo-polygon-border', ['all', ['==', '$type', 'Polygon'], filterExp] as any);
+            if (map.getLayer('geo-linestring-main')) map.setFilter('geo-linestring-main', ['all', ['==', '$type', 'LineString'], filterExp] as any);
+            if (map.getLayer('geo-point-layer')) map.setFilter('geo-point-layer', ['all', ['==', '$type', 'Point'], filterExp] as any);
         };
 
         applyFilter();
-    }, [activeFilterValues, activeField, isGridMode, isMapLoaded]);
+    }, [activeFilterValues, activeField, isGridMode, isMapLoaded, stringFields]);
 
 
     //   [新增] 全选/清空处理函数
@@ -669,12 +684,12 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
             console.log(`[MapView] 启用 MVT 极速矢量瓦片渲染模式: ${fileId}`);
             map.addSource(sourceId, {
                 type: 'vector',
-                // 由于新写了 tileController，瓦片接口在这里
-                tiles: [`http://localhost:3000/api/tiles/${fileId}/{z}/{x}/{y}`],
+                // 👇👇👇 核心修复：在 URL 尾部加上 ?t=${Date.now()} 作为缓存爆破器 👇👇👇
+                tiles: [`http://localhost:3000/api/tiles/${fileId}/{z}/{x}/{y}?t=${Date.now()}`],
+                // 👆👆👆 修复结束 👆👆👆
                 minzoom: 0,
                 maxzoom: 22
             });
-
             // 当使用 MVT 瓦片源时，必须在每一个图层配置中指定 'source-layer' (对应 ST_AsMVT 中设定的图层名 'default_layer')
             map.addLayer({
                 id: 'geo-fill-layer', type: 'fill', source: sourceId, 'source-layer': 'default_layer',
@@ -1164,19 +1179,22 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                 }
         }
         //    5. [  ] 构建“是否勾选”的判断逻辑   
-        // 如果用户把下拉框清空了，为了防止底层引擎报错，给一个绝对匹配不到的值
-        const safeFilterValues = activeFilterValues.length > 0 ? activeFilterValues : ['__NOTHING_SELECTED__'];
-        
         // isMatched 是一个布尔运算：当前要素的值，是否在安全数组内
-        const isMatched: any = ['in', ['get', activeField], ['literal', safeFilterValues]];
+        //   [修改] 5. 构建“是否勾选”的判断逻辑   
+        let isMatched: any;
+        if (isStringField) {
+            // 文本字段：走离散值比对
+            const safeFilterValues = activeFilterValues.length > 0 ? activeFilterValues : ['__NOTHING_SELECTED__'];
+            isMatched = ['in', ['get', activeField], ['literal', safeFilterValues]];
+        } else {
+            // 👇 数值字段：构造一个永远为 True 的表达式（只要值不为空），彻底抛弃庞大的 In 数组判断！
+            isMatched = ['!=', ['get', activeField], null];
+        }
 
         // 利用 ['case', 条件, 满足时的值, 不满足时的值] 动态分配属性
-        
-        // 🚀  点：Color 统一直接使用 baseColorExpression，保留原色
-        
-        // 面 (Polygon) 属性
-        const finalFillColor = baseColorExpression;                                 // 无论是否勾选，都保留原色
-        const finalFillOpacity = ['case', isMatched, 0.85, 0.15];                   // 未勾选透明度降到 15%
+        const finalFillColor = baseColorExpression;                                 
+        const finalFillOpacity = ['case', isMatched, 0.85, 0.15];
+
         const outlineColor = isGridMode ? 'rgba(0,0,0,0)' : 'rgba(0,0,0,0.05)';
         const finalFillOutline = ['case', isMatched, outlineColor, 'rgba(0,0,0,0)'];// 未勾选去边框
 
@@ -1751,7 +1769,8 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                         )}
 
                         {/* 👇 👇 👇 [新增] 值过滤模块 👇 👇 👇 */}
-                        {activeField && activeField !== 'none' && !isGridMode && (
+                        {/* 👇 👇 👇 [修改] 值过滤模块：仅在文本字段下才渲染下拉过滤组件 👇 👇 👇 */}
+                        {activeField && activeField !== 'none' && !isGridMode && stringFields.includes(activeField) && (
                             <>
                                 <div className="w-px h-5 bg-gray-600 mx-1" />
                                 <Tooltip title="值过滤 (取消勾选可隐藏对应数据)">
@@ -1764,7 +1783,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                                             value={activeFilterValues}
                                             onChange={(val) => setActiveFilterValues(val)}
                                             allowClear
-                                            maxTagCount={1} // 限制标签显示数量，防止选项过多撑爆工具栏
+                                            maxTagCount={1}
                                             className="min-w-28 max-w-44 text-gray-200 custom-multi-select"
                                             options={uniqueFieldValues.map(v => ({ label: String(v), value: v }))}
                                             styles={{ popup: { root: { border: '1px solid #334155', borderRadius: '8px' } } }}

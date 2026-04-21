@@ -1,11 +1,17 @@
 import { Request, Response } from 'express';
 import * as Feature from '../models/Feature';
 import * as ModelRegistry from '../models/ModelRegistry';
-import { generateModelCodeFromAI, planWorkflow, generatePivotCode, generateChartCode, fixPivotCode, fixChartCode } from '../utils/llmService';
+import { generateModelCodeFromAI, planWorkflow, generatePivotCode, 
+        generateChartCode, fixPivotCode, fixChartCode,
+        generateFeatureCalcCode, fixFeatureCalcCode,
+        generateProModelCode, fixProModelCode
+         /* ... */  } from '../utils/llmService';
 import * as turf from '@turf/turf';
 import axios from 'axios';
 import fs from 'fs';
 import path from 'path';
+import Papa from 'papaparse';
+import * as FileNode from '../models/FileNode'; // 用于写库
 
 // WSL2 中 FastAPI 运行的地址
 const PYTHON_API_URL = 'http://127.0.0.1:8000/api';
@@ -161,6 +167,286 @@ def safe_aggregate(joined_gdf, agg_method='size', value_col=None, col_dim=None):
             if agg_method == 'min':  return grouped[value_col].min().rename('value')
         return grouped.size().rename('value')
 `
+
+// 2. 注入特征计算专属的 Python SDK 字符串
+const FEATURE_CALC_SDK_INJECTION = `
+import geopandas as gpd
+import pandas as pd
+import numpy as np
+import warnings
+from shapely.errors import ShapelyDeprecationWarning
+warnings.filterwarnings("ignore")
+from rasterstats import zonal_stats
+import rasterio
+import mapclassify as mc
+
+def ensure_metric_crs(gdf):
+    if gdf.crs is None: gdf = gdf.set_crs(epsg=4326)
+    if gdf.crs.is_geographic: return gdf.to_crs(epsg=3857)
+    return gdf
+
+def safe_zonal_stats(vector_gdf, raster_file_path, stat='mean', col_name='raster_val'):
+    if vector_gdf.empty: return vector_gdf
+    
+    # 修复 1：读取栅格物理文件的真实 CRS，并强制将矢量对齐过去，杜绝空间错位
+    try:
+        with rasterio.open(raster_file_path) as src:
+            raster_crs = src.crs
+            if raster_crs and vector_gdf.crs != raster_crs:
+                vector_gdf = vector_gdf.to_crs(raster_crs)
+    except Exception as e:
+        pass # 如果读取失败，降级依赖 rasterstats 的默认行为
+
+    # 修复 2：加入 all_touched=True，只要多边形触碰到像素边缘就纳入统计，彻底消灭规律性 0 值空洞！
+    stats = zonal_stats(vector_gdf, raster_file_path, stats=[stat], all_touched=True, geojson_out=False)
+    vector_gdf[col_name] = [s[stat] if s[stat] is not None else 0 for s in stats]
+    return vector_gdf
+
+def safe_shortest_distance(target_gdf, ref_gdf, col_name='min_dist'):
+    if target_gdf.empty or ref_gdf.empty: 
+        target_gdf[col_name] = np.nan
+        return target_gdf
+    t_gdf = ensure_metric_crs(target_gdf)
+    r_gdf = ensure_metric_crs(ref_gdf).to_crs(t_gdf.crs)
+    joined = gpd.sjoin_nearest(t_gdf, r_gdf, how='left', distance_col=col_name)
+    joined = joined[~joined.index.duplicated(keep='first')]
+    target_gdf[col_name] = joined[col_name]
+    return target_gdf
+
+def safe_intersects_count(target_gdf, join_gdf, col_name='count_val'):
+    t_gdf = ensure_metric_crs(target_gdf)
+    j_gdf = ensure_metric_crs(join_gdf).to_crs(t_gdf.crs)
+    joined = gpd.sjoin(t_gdf, j_gdf, how='inner', predicate='intersects')
+    counts = joined.groupby(level=0).size()
+    target_gdf[col_name] = counts
+    target_gdf[col_name] = target_gdf[col_name].fillna(0)
+    return target_gdf
+
+def safe_calc_geometry(gdf, calc_type='area', col_name='geom_val'):
+    if gdf.empty: 
+        gdf[col_name] = np.nan
+        return gdf
+    t_gdf = ensure_metric_crs(gdf)
+    if calc_type == 'area':
+        gdf[col_name] = t_gdf.geometry.area
+    elif calc_type == 'length':
+        gdf[col_name] = t_gdf.geometry.length
+    return gdf
+
+def safe_spatial_join_attribute(target_gdf, ref_gdf, extract_col, join_type='nearest', col_name='ref_val'):
+    if target_gdf.empty or ref_gdf.empty or extract_col not in ref_gdf.columns:
+        target_gdf[col_name] = np.nan
+        return target_gdf
+    t_gdf = ensure_metric_crs(target_gdf)
+    r_gdf = ensure_metric_crs(ref_gdf).to_crs(t_gdf.crs)
+    r_gdf_sub = r_gdf[['geometry', extract_col]]
+    if join_type == 'nearest':
+        joined = gpd.sjoin_nearest(t_gdf, r_gdf_sub, how='left')
+    else:
+        joined = gpd.sjoin(t_gdf, r_gdf_sub, how='left', predicate='intersects')
+    joined = joined[~joined.index.duplicated(keep='first')]
+    target_gdf[col_name] = joined[extract_col]
+    return target_gdf
+
+def safe_buffer_count(target_gdf, join_gdf, buffer_dist=500, col_name='buf_count'):
+    if target_gdf.empty or join_gdf.empty:
+        target_gdf[col_name] = 0
+        return target_gdf
+    t_gdf = ensure_metric_crs(target_gdf)
+    j_gdf = ensure_metric_crs(join_gdf).to_crs(t_gdf.crs)
+    t_buffered = t_gdf.copy()
+    t_buffered['geometry'] = t_buffered.geometry.buffer(buffer_dist)
+    joined = gpd.sjoin(t_buffered, j_gdf, how='inner', predicate='intersects')
+    counts = joined.groupby(level=0).size()
+    target_gdf[col_name] = counts
+    target_gdf[col_name] = target_gdf[col_name].fillna(0)
+    return target_gdf
+
+def safe_categorical_zonal_stats(vector_gdf, raster_file_path, col_name='majority_class'):
+    if vector_gdf.empty: return vector_gdf
+    
+    try:
+        with rasterio.open(raster_file_path) as src:
+            raster_crs = src.crs
+            if raster_crs and vector_gdf.crs != raster_crs:
+                vector_gdf = vector_gdf.to_crs(raster_crs)
+    except:
+        pass
+
+    # 同样开启 all_touched=True 防止分类栅格提取遗漏
+    stats = zonal_stats(vector_gdf, raster_file_path, stats=['majority'], all_touched=True, categorical=False, geojson_out=False)
+    vector_gdf[col_name] = [s['majority'] if s['majority'] is not None else np.nan for s in stats]
+    return vector_gdf
+
+def safe_natural_breaks(gdf, target_col, k=5, col_name='jenks_class'):
+    """
+    Jenks 自然断点法分级 (Feature Binning)
+    """
+    if gdf.empty or target_col not in gdf.columns:
+        gdf[col_name] = np.nan
+        return gdf
+    
+    # 过滤掉空值参与计算
+    valid_data = gdf[target_col].dropna()
+    if len(valid_data) < k:
+        gdf[col_name] = 0 # 数据量太少无法分级
+        return gdf
+        
+    try:
+        # 使用 mapclassify 计算断点
+        classifier = mc.NaturalBreaks(valid_data, k=k)
+        # 将分类结果映射回原数据 (类别通常为 0, 1, 2... k-1)
+        # 我们让类别从 1 开始，即 1, 2, 3...
+        mapping = dict(zip(valid_data.index, classifier.yb + 1))
+        gdf[col_name] = gdf.index.map(mapping)
+    except Exception as e:
+        print(f"Jenks分级失败: {e}")
+        gdf[col_name] = np.nan
+        
+    return gdf
+
+def safe_rule_reclassify(gdf, target_col, bins, labels, col_name='reclass_val', default_val='其他'):
+    """
+    规则重分类 (支持同名标签和兜底值)
+    """
+    if gdf.empty or target_col not in gdf.columns:
+        print(f"[Warning] 未找到目标列: {target_col}")
+        gdf[col_name] = None
+        return gdf
+    
+    # 核心修复：设置 labels=False，让 pd.cut 只返回数字索引 (0, 1, 2...)
+    # 这样就完美绕过了 Pandas 严禁 labels 出现重复名称（如两个'北'）的底层限制！
+    codes = pd.cut(gdf[target_col], bins=bins, labels=False, right=False)
+    
+    # 手动建立索引到真实标签的映射字典
+    label_map = {i: lbl for i, lbl in enumerate(labels)}
+    gdf[col_name] = codes.map(label_map)
+    
+    # 把不包含在区间内的值（比如 <0 或 >360 的值），统一填充为用户要求的 default_val（如“平面”）
+    if default_val:
+        gdf[col_name] = gdf[col_name].fillna(default_val)
+        
+    # 转为字符串防止前端 JSON 解析问题
+    gdf[col_name] = gdf[col_name].astype(str)
+    return gdf
+`;
+
+
+// 3. 注入专业模型专属的 Python SDK 字符串
+const PRO_MODEL_SDK_INJECTION = `
+import geopandas as gpd
+import pandas as pd
+import numpy as np
+import warnings
+warnings.filterwarnings("ignore")
+
+def safe_geodetector_factor(gdf, y_col, x_cols):
+    """
+    地理探测器 - 因子探测 (Factor Detector)
+    计算自变量 X 们对 因变量 Y 的空间分异解释力 q 值。
+    """
+    if gdf.empty or y_col not in gdf.columns:
+        return [{"Error": "数据为空或因变量不存在"}]
+        
+    results = []
+    # 确保因变量是纯数字
+    gdf[y_col] = pd.to_numeric(gdf[y_col], errors='coerce')
+    
+    # 循环计算每个 X 的解释力 q
+    for x_col in x_cols:
+        if x_col not in gdf.columns: continue
+        
+        # 提取有效数据（剔除缺失值）
+        valid_df = gdf[[y_col, x_col]].dropna()
+        if valid_df.empty: continue
+        
+        N = len(valid_df)
+        if N < 2: continue
+        
+        # 全局总方差 (SST)
+        sst = valid_df[y_col].var(ddof=0) * N
+        if sst == 0:
+            results.append({'因变量 (Y)': y_col, '自变量 (X)': x_col, 'q值 (解释力)': 0.0})
+            continue
+            
+        # 层内方差之和 (SSW)
+        ssw = 0
+        grouped = valid_df.groupby(x_col)[y_col]
+        for name, group in grouped:
+            nh = len(group)
+            if nh > 1:
+                ssw += group.var(ddof=0) * nh
+                
+        # 计算 q 值
+        q = 1 - (ssw / sst)
+        results.append({
+            '因变量 (Y)': y_col, 
+            '自变量 (X)': x_col, 
+            'q值 (解释力)': round(max(0.0, q), 4) # 限制最低为0，保留4位小数
+        })
+        
+    # 按解释力大小降序排列
+    results.sort(key=lambda item: item.get('q值 (解释力)', 0), reverse=True)
+    return results
+
+def safe_geodetector_interaction(gdf, y_col, x_cols):
+    """
+    地理探测器 - 交互探测 (Interaction Detector)
+    计算两两因子叠加后的解释力 q(A∩B)，并判断交互类型。
+    为完美适配前端二维热力图，输出对称矩阵格式的 List of Dict。
+    """
+    import itertools
+    if gdf.empty or y_col not in gdf.columns or len(x_cols) < 2:
+        return [{"Error": "数据为空，或因变量不存在，或自变量不足2个"}]
+        
+    results = []
+    gdf[y_col] = pd.to_numeric(gdf[y_col], errors='coerce')
+    
+    # 闭包辅助函数：计算单因子的 q 值
+    def calc_q(df, x_c, y_c):
+        valid = df[[y_c, x_c]].dropna()
+        N = len(valid)
+        if N < 2: return 0.0
+        sst = valid[y_c].var(ddof=0) * N
+        if sst == 0: return 0.0
+        ssw = sum(g.var(ddof=0) * len(g) for _, g in valid.groupby(x_c)[y_c] if len(g) > 1)
+        return max(0.0, 1 - (ssw / sst))
+
+    # 1. 计算对角线（自身 q 值）
+    for x in x_cols:
+        if x not in gdf.columns: continue
+        q_self = calc_q(gdf, x, y_col)
+        results.append({'因子A': x, '因子B': x, '交互q值': round(q_self, 4), '交互类型': '单因子自身'})
+
+    # 2. 计算两两交互
+    for x1, x2 in itertools.combinations(x_cols, 2):
+        if x1 not in gdf.columns or x2 not in gdf.columns: continue
+        
+        temp_df = gdf[[y_col, x1, x2]].dropna().copy()
+        if temp_df.empty: continue
+        
+        # 生成叠加后的大类
+        temp_df['interact'] = temp_df[x1].astype(str) + "_" + temp_df[x2].astype(str)
+        
+        q1 = calc_q(temp_df, x1, y_col)
+        q2 = calc_q(temp_df, x2, y_col)
+        q12 = calc_q(temp_df, 'interact', y_col)
+        
+        # 判断交互类型
+        if q12 < min(q1, q2): int_type = "非线性减弱"
+        elif min(q1, q2) <= q12 <= max(q1, q2): int_type = "单因子非线性减弱"
+        elif q12 > max(q1, q2) and q12 < (q1 + q2): int_type = "双因子增强"
+        elif q12 == (q1 + q2): int_type = "独立"
+        else: int_type = "非线性增强"
+            
+        q12_round = round(q12, 4)
+        # 补齐对称面（A-B 和 B-A 都压入，热力图才能形成正方形）
+        results.append({'因子A': x1, '因子B': x2, '交互q值': q12_round, '交互类型': int_type})
+        results.append({'因子A': x2, '因子B': x1, '交互q值': q12_round, '交互类型': int_type})
+        
+    return results
+`
+;
 
 // ==========================================
 // [Phase 5] 绘图沙盒专属 SDK (Chart SDK)
@@ -1218,13 +1504,16 @@ export const rerunPivotCode = async (req: Request, res: Response): Promise<void>
 };
 
 // 多节点进行可扩展的透视和绘图
+// 多节点进行可扩展的透视和绘图
 export const executeDynamicPipeline = async (req: Request, res: Response): Promise<void> => {
-    // ⚠️ 关键：将 blueprint / pivotCode 提升到 try/catch 之外，使 catch 块可以访问
+    // ⚠️ 关键：将 blueprint / pythonCode 提升到 try/catch 之外，使 catch 块可以访问
     let blueprint: any = null;
-    let pivotCode: string = "";
+    // 👇👇👇 修改：将 pivotCode 改为通用的 pythonCode，以适应双管线 👇👇👇
+    let pythonCode: string = ""; 
+    // 👆👆👆 修改结束 👆👆👆
 
     try {
-        const { userPrompt, fileIds, context } = req.body;
+        const { userPrompt, fileIds, context, agentMode = 'pivot' } = req.body;
 
         if (!userPrompt || !fileIds || fileIds.length === 0) {
             res.status(400).json({ error: "缺少用户需求或未选择任何文件" });
@@ -1234,6 +1523,7 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
         console.log(`\n======================================================`);
         console.log(`[Pipeline] 分析文件数: ${fileIds.length}`);
         console.log(`[Pipeline] 用户意图: "${userPrompt}"`);
+        console.log(`[Pipeline] 当前工作模式: [${agentMode}]`); // 补充打印一下模式
 
         // 提取工作区文件元数据 (给 Planner 当上下文)
         const availableFiles = [];
@@ -1244,45 +1534,68 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
 
         // 1 意图拆解节点
         console.log(`[Pipeline] 节点1正在拆解意图...`);
-        blueprint = await planWorkflow(userPrompt, availableFiles, context);
+        blueprint = await planWorkflow(userPrompt, availableFiles, context, agentMode);
         console.log(`[Pipeline] 拆解意图完成:`, blueprint.explanation);
 
-        // 2 数据透视代码生成节点 / 或复用历史代码
-        let rawPivotCode = "";
-        let pivotCode = "";
-        if (blueprint.reuse_code && context?.lastPythonCode) {
-            console.log(`[Pipeline] 检测到意图为图表切换/追问，直接复用上一轮数据抽取代码。`);
-            rawPivotCode = context.lastPythonCode;
-            pivotCode = PYTHON_SDK_INJECTION + "\n\n" + rawPivotCode;
-        } else {
-            console.log(`[Pipeline] 节点2正在编写透视代码...`);
-            rawPivotCode = await generatePivotCode(blueprint);
-            pivotCode = PYTHON_SDK_INJECTION + "\n\n" + rawPivotCode;
-        }
+        // 👇👇👇 新增/修改：节点2 引入双管线代码生成逻辑 👇👇👇
+        let rawCode = "";
+        let endpointUrl = "";
 
-        // 3 Python执行透视 (带自愈修复环)
+        if (agentMode === 'feature_calc') {
+            console.log(`[Pipeline] 命中【特征计算】专属管线，节点2正在编写特征计算代码...`);
+            rawCode = await generateFeatureCalcCode(blueprint);
+            // 拼接特征计算专属的 SDK
+            pythonCode = FEATURE_CALC_SDK_INJECTION + "\n\n" + rawCode;
+            endpointUrl = `${PYTHON_API_URL}/models/feature_calc_only`;
+        }
+        else if (agentMode === 'pro_model') {
+            console.log(`[Pipeline] 命中【专业模型】专属管线，正在构建底层模型调用代码...`);
+            rawCode = await generateProModelCode(blueprint);
+            pythonCode = PRO_MODEL_SDK_INJECTION + "\n\n" + rawCode;
+            endpointUrl = `${PYTHON_API_URL}/models/feature_calc_only`; // 引擎端可以复用这个万能沙盒入口
+        } 
+        else {
+            console.log(`[Pipeline] 命中【数据透视】原有管线...`);
+            // 🚨 原封不动保留你的追问与图表切换逻辑 🚨
+            if (blueprint.reuse_code && context?.lastPythonCode) {
+                console.log(`[Pipeline] 检测到意图为图表切换/追问，直接复用上一轮数据抽取代码。`);
+                rawCode = context.lastPythonCode;
+                pythonCode = PYTHON_SDK_INJECTION + "\n\n" + rawCode;
+            } else {
+                console.log(`[Pipeline] 节点2正在编写透视代码...`);
+                rawCode = await generatePivotCode(blueprint);
+                pythonCode = PYTHON_SDK_INJECTION + "\n\n" + rawCode;
+            }
+            endpointUrl = `${PYTHON_API_URL}/models/pivot_only`;
+        }
+        // 👆👆👆 新增/修改结束 👆👆👆
+
+        // 3 Python执行 (带自愈修复环)
         let aggregatedData: any = null;
         let lastErrorDetails = "";
         const MAX_RETRIES = 2;
         let retries = 0;
 
         console.log(`\n======================python代码================================`);
-        console.log(pivotCode);
+        console.log(pythonCode);
         console.log(`\n======================python代码================================`);
 
         while (retries <= MAX_RETRIES) {
             try {
-                console.log(`[Pipeline] 节点3正在执行空间透视... (尝试 ${retries + 1}/${MAX_RETRIES + 1})`);
-                const pivotResponse = await axios.post<any>(`${PYTHON_API_URL}/models/pivot_only`, {
-                    python_code: pivotCode, // 发送带 SDK 的完整代码
+                console.log(`[Pipeline] 节点3正在执行沙盒运算... (尝试 ${retries + 1}/${MAX_RETRIES + 1})`);
+                // 👇👇👇 修改：动态请求 endpointUrl 👇👇👇
+                const sandboxResponse = await axios.post<any>(endpointUrl, {
+                    python_code: pythonCode, // 发送带 SDK 的完整代码
                     file_ids: fileIds
                 });
                 
-                aggregatedData = pivotResponse.data.data; 
+                aggregatedData = sandboxResponse.data.data; 
+                // 👆👆👆 修改结束 👆👆👆
+
                 if (!aggregatedData || aggregatedData.length === 0) {
-                    throw new Error("透视结果为空，请检查需求或数据是否匹配");
+                    throw new Error("计算结果为空，请检查需求或数据是否匹配");
                 }
-                console.log(`[Pipeline] 透视计算成功，共有 ${aggregatedData.length} 条统计记录`);
+                console.log(`[Pipeline] 沙盒计算成功，返回 ${aggregatedData.length} 条记录`);
                 break; 
             } catch (err: any) {
                 lastErrorDetails = err.response?.data?.detail || err.message;
@@ -1293,27 +1606,149 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
                 retries++;
                 console.log(`[Pipeline] 节点发觉错误，启动自愈修复环 (第 ${retries} 次重试)...`);
                 try {
-                    // 核心修复：只把业务代码给 AI 修，修完后再次拼上 SDK！
-                    rawPivotCode = await fixPivotCode(blueprint, rawPivotCode, lastErrorDetails);
-                    pivotCode = PYTHON_SDK_INJECTION + "\n\n" + rawPivotCode;
+                    // 👇👇👇 新增/修改：双管线各自调用对应的自愈 Agent 👇👇👇
+                    if (agentMode === 'feature_calc') {
+                        rawCode = await fixFeatureCalcCode(blueprint, rawCode, lastErrorDetails);
+                        pythonCode = FEATURE_CALC_SDK_INJECTION + "\n\n" + rawCode;
+                    } else if (agentMode === 'pro_model') {
+                        rawCode = await fixProModelCode(blueprint, rawCode, lastErrorDetails);
+                        pythonCode = PRO_MODEL_SDK_INJECTION + "\n\n" + rawCode;
+                    }
+                    else {
+                        // 原有数据透视自愈逻辑
+                        rawCode = await fixPivotCode(blueprint, rawCode, lastErrorDetails);
+                        pythonCode = PYTHON_SDK_INJECTION + "\n\n" + rawCode;
+                    }
+                    // 👆👆👆 新增/修改结束 👆👆👆
                     console.log(`[Pipeline] FixerAgent 自愈重写完成，准备再次向沙盒投入代码...`);
                 } catch (fixErr) { break; }
             }
         }
-        
 
-
-        // 终局判定：如果重试已耗尽且依旧没有数据，走优雅降级方案，提前返回 200 让前端处理重入
+        // 终局判定：如果重试已耗尽且依旧没有数据，走优雅降级方案
         if (!aggregatedData) {
             console.log(`======================================================\n`);
             res.status(200).json({
                 status: "failed",
                 error_message: "AI 多次尝试修复代码失败，已切换至人工接管模式。",
                 traceback: lastErrorDetails,
-                pythonCode: pivotCode // 携带最后挣扎生成的代码
+                pythonCode: pythonCode // 携带最后挣扎生成的代码
             });
             return;
         }
+
+        // 👇👇👇 新增：特征计算的「回写数据库」与「提前返回」逻辑 👇👇👇
+        if (agentMode === 'feature_calc') {
+            console.log(`[Pipeline] 特征计算完成，正在将结果同步更新回原始数据层...`);
+            const targetFileId = blueprint.data_dependencies?.find((d: any) => d.role.includes('Target'))?.file_id || fileIds[0];
+            
+            // 提取第一行中的所有新列名（排除固定字段 id）
+            const newCols = Object.keys(aggregatedData[0] || {}).filter(k => k !== 'id' && k !== 'rowKey');
+
+            // 🌟 核心修改：将串行更新改为“分批并发更新” 🌟
+            console.log(`[Pipeline] 准备同步 ${aggregatedData.length} 条记录，采用分批并发策略...`);
+            
+            // 设置并发块大小（推荐 50-100，兼顾速度且不会撑爆 DB 连接池）
+            const CHUNK_SIZE = 100; 
+            
+            for (let i = 0; i < aggregatedData.length; i += CHUNK_SIZE) {
+                const chunk = aggregatedData.slice(i, i + CHUNK_SIZE);
+                
+                // 使用 Promise.all 让这一批次的 100 条数据并发更新
+                await Promise.all(chunk.map(async (row: any) => {
+                    if (row.id) {
+                        const { id, rowKey, ...newProps } = row; 
+                        await Feature.updateFeatureProperty(targetFileId, id, newProps);
+                    }
+                }));
+
+                // 每处理完一定数量打印一下进度，让你在后端能看到在动
+                if ((i + CHUNK_SIZE) % 5000 === 0 || (i + CHUNK_SIZE) >= aggregatedData.length) {
+                    console.log(`[Pipeline] 数据库同步进度: ${Math.min(i + CHUNK_SIZE, aggregatedData.length)} / ${aggregatedData.length}`);
+                }
+            }
+            
+            console.log(`======================================================\n`);
+            // 特征计算无需渲染图表，直接返回属性表数据并结束！
+            res.json({
+                code: 200,
+                blueprint: blueprint,
+                tableData: aggregatedData, 
+                engine: null, // 无引擎
+                message: `✅ 计算成功！已将新特征 [${newCols.join(', ')}] 同步至要素。`,
+                pythonCode: pythonCode // 返回代码方便用户在前端人工修正
+            });
+            return; 
+        }
+        // 👆👆👆 新增结束：特征计算管线到此终止 👆👆👆
+
+        // 👇👇👇 新增：专业模型的【衍生落盘】逻辑 👇👇👇
+        if (agentMode === 'pro_model') {
+            console.log(`[Pipeline] 专业模型计算完成，正在将结果导出为物理文件并挂载到文件树...`);
+            
+            // 1. 将 List of Dict 转为 CSV 字符串 (添加 UTF-8 BOM 防止 Excel 乱码)
+            const csvString = '\uFEFF' + Papa.unparse(aggregatedData);
+            
+            // 2. 生成物理文件并存入硬盘
+            const modelName = blueprint.task_type || 'Model_Result';
+            const timestamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+            const newFileName = `${modelName}_${timestamp}.csv`;
+            const uploadDir = path.join(process.cwd(), 'uploads');
+            const newFilePath = path.join(uploadDir, newFileName);
+            
+            await fs.promises.writeFile(newFilePath, csvString, 'utf8');
+            
+            // 3. 注册到数据库 (FileNodes 表)
+            const fileNodeObj = FileNode.createFileNodeObject({
+                name: newFileName,
+                type: 'file',
+                parent_id: null,
+                path: newFilePath,
+                size: Buffer.byteLength(csvString, 'utf8'),
+                extension: '.csv',
+                mime_type: 'text/csv'
+            });
+            const savedNode = await FileNode.insertFileNode(fileNodeObj);
+            
+            // 🌟 🌟 🌟 核心修复：将结果数据写入 spatial_features 要素表 🌟 🌟 🌟
+            if (aggregatedData && aggregatedData.length > 0) {
+                console.log(`[Pipeline] 正在将模型结果行写入 spatial_features 表，以供前端表格渲染...`);
+                const featuresToInsert = aggregatedData.map((row: any, index: number) => {
+                    return {
+                        fileId: savedNode.id, // 绑定刚刚生成的新文件 ID
+                        type: 'Feature',
+                        geometry: null,       // CSV 纯属性表，无几何数据
+                        properties: {
+                            id: `model_res_${Date.now()}_${index}`, // 生成唯一行 ID
+                            ...row
+                        }
+                    };
+                });
+                // 批量插入数据库（确保文件头部引了 import * as Feature from '../models/Feature';）
+                await Feature.insertFeaturesBatch(savedNode.id, featuresToInsert);
+            }
+            // 🌟 🌟 🌟 修复结束 🌟 🌟 🌟
+            // 获取 AI 蓝图中规划的图表类型（如果 AI 觉得该画热力图，就会在这里体现）
+            const aiChartType = blueprint.visualization_spec?.chart_type?.toLowerCase() || null;
+
+            console.log(`======================================================\n`);
+            
+            // 返回特殊结构，告诉前端去刷新文件树
+            res.json({
+                code: 200,
+                blueprint: blueprint,
+                tableData: aggregatedData, 
+                // 👇👇👇 核心修复：如果 AI 规划了图表，就触发前端 ECharts 接管渲染 👇👇👇
+                engine: aiChartType ? 'echarts' : null,
+                aiChartType: aiChartType,
+                // 👆👆👆 修复结束 👆👆👆
+                message: `✅ 模型执行成功！分析结果已自动保存为文件：[${newFileName}]`,
+                newFileId: savedNode.id,   
+                pythonCode: pythonCode
+            });
+            return;
+        }
+        // 👆👆👆 专业模型落盘逻辑结束 👆👆👆
 
         // 4 绘图代码/元数据生成节点
         console.log(`[Pipeline] 节点4正在构建图表配置/代码...`);
@@ -1399,7 +1834,8 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
             aiChartType: chartResponseData?.ai_chart_type,
             chartHtml: html_string,
             chartOption: chart_option,
-            pythonCode: pivotCode // 依然返回 pivot 代码供用户检查修改
+            // 👇👇👇 修改：变量名同步为了 pythonCode 👇👇👇
+            pythonCode: pythonCode // 依然返回 pivot 代码供用户检查修改
         });
 
     } catch (error: any) {
@@ -1410,9 +1846,10 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
         res.status(500).json({ 
             error: '执行失败', 
             details: details,
-            // blueprint / pivotCode 已提升到外层作用域，可直接安全访问
+            // blueprint / pythonCode 已提升到外层作用域，可直接安全访问
             blueprint: blueprint,
-            pythonCode: pivotCode || null
+            // 👇👇👇 修改：捕获异常时也返回当前的 pythonCode 👇👇👇
+            pythonCode: pythonCode || null
         });
     }
 };

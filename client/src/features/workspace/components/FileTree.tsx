@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Tree, Button, Empty, Input, Dropdown, type MenuProps, App as AntdApp } from 'antd'; // 引入 Empty 组件美化空状态
 import { FolderAddOutlined, CloudUploadOutlined, FileTextOutlined, GlobalOutlined,
          FileImageOutlined, TableOutlined, FolderFilled, CheckOutlined,
-         DownOutlined, DeleteOutlined, EditOutlined, ExclamationCircleOutlined} from '@ant-design/icons';
+         DownOutlined, DeleteOutlined, EditOutlined, ExclamationCircleOutlined,
+         PictureOutlined} from '@ant-design/icons';
 import { geoService} from '../../../services/geoService';
 
 // FileTreeProps接口，实现子组件传导数据到父组件的接口
@@ -71,6 +72,23 @@ const FileTree: React.FC<FileTreeProps> = ({ onDataLoaded, onSelectFiles }) => {
     fetchFileTree();
   }, []);
 
+  // 2. 👇 新增：监听全局刷新事件 👇
+  useEffect(() => {
+    const handleRefresh = () => {
+      console.log('[FileTree] 收到全局刷新事件，正在重新拉取文件树...');
+      fetchFileTree();
+    };
+
+    // 绑定监听器
+    window.addEventListener('REFRESH_FILE_TREE', handleRefresh);
+
+    // 组件卸载时解绑，防止内存泄漏
+    return () => {
+      window.removeEventListener('REFRESH_FILE_TREE', handleRefresh);
+    };
+  }, []); 
+  // 👆 新增结束 👆
+
   // 辅助函数：根据文件名获取图标
   // 图标逻辑：根据文件类型返回不同颜色图标
   const getIcon = (props: any) => {
@@ -84,6 +102,9 @@ const FileTree: React.FC<FileTreeProps> = ({ onDataLoaded, onSelectFiles }) => {
       case 'json': return <FileImageOutlined className="text-gray-400!" />;
       case 'geojson': return <FileImageOutlined className="text-gray-400!" />;
       case 'shp': return <GlobalOutlined className="text-blue-400!" />;
+      case 'tif': 
+      case 'tiff': 
+        return <PictureOutlined className="text-purple-400! text-lg" title="栅格数据 (用于空间计算)" />;
       default: return <FileTextOutlined className="text-gray-400!" />;
     }
   };
@@ -443,7 +464,7 @@ const FileTree: React.FC<FileTreeProps> = ({ onDataLoaded, onSelectFiles }) => {
             ref={fileInputRef}
             style={{ display: 'none' }}
             multiple // 允许选多个
-            accept=".json,.geojson,.csv,.shp,.dbf,.shx,.prj,.cpg"
+            accept=".json,.geojson,.csv,.shp,.dbf,.shx,.prj,.cpg,.tif,.tiff" // 限制文件类型
             onChange={handleFileChange}
           />
           {/* 触发 input 点击的按钮 */}

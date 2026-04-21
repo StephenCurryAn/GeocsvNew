@@ -228,7 +228,18 @@ async def execute_pivot_only(payload: PivotInput):
                 
             # 展开 properties 到外层列，方便 AI 代码直接用列名访问
             df_props = pd.json_normalize(df['properties'])
-            df = pd.concat([df[['id', 'geom']], df_props], axis=1)
+            # 防止列名重复 👇👇👇
+            # 默认只保留几何列
+            base_cols = ['geom']
+            # 如果 properties 里面没有 id，我们才去借用数据库的 id
+            if 'id' not in df_props.columns:
+                base_cols.append('id')
+            
+            # 拼接数据
+            df = pd.concat([df[base_cols], df_props], axis=1)
+            
+            # 终极防御：移除任何可能意外重名的列（保留第一个）
+            df = df.loc[:, ~df.columns.duplicated()]
             
             gdf_dict[fid] = df
 
@@ -316,6 +327,91 @@ async def execute_pivot_only(payload: PivotInput):
         print(f"AI 写的代码如下:\n{payload.python_code}")
         traceback.print_exc()
         print(f"{'='*50}\n")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class FeatureCalcInput(BaseModel):
+    python_code: str
+    file_ids: List[str]
+    parameters: Optional[Dict[str, Any]] = {}
+
+@app.post("/api/models/feature_calc_only")
+async def execute_feature_calc_only(payload: FeatureCalcInput):
+    start_time = time.time()
+    try:
+        gdf_dict = {}
+        file_paths_dict = {}
+        
+        for fid in payload.file_ids:
+            # 1. 查出文件的绝对物理路径（专为栅格 .tif 准备）
+            sql_file = text("SELECT path, extension FROM file_nodes WHERE id = :file_id")
+            with engine.connect() as conn:
+                res = conn.execute(sql_file, {"file_id": fid}).fetchone()
+                if res:
+                    file_paths_dict[fid] = res[0] # 物理路径
+                    ext = res[1]
+                    # 如果是栅格数据，跳过 GeoPandas 加载
+                    if ext in ['.tif', '.tiff']:
+                        continue 
+                        
+            # 2. 如果是矢量，常规加载到 gdf_dict
+            sql = text("SELECT id, geom, properties FROM spatial_features WHERE file_id = :file_id")
+            with engine.connect() as conn:
+                df = gpd.read_postgis(sql, con=conn, geom_col='geom', params={"file_id": fid})
+            
+            if not df.empty:
+                if df.crs is None: df = df.set_crs(epsg=4326)
+                df_props = pd.json_normalize(df['properties'])
+                
+                # 防止列名重复
+                # 默认只保留几何列
+                base_cols = ['geom']
+                # 如果 properties 里面没有 id，我们才去借用数据库的 id
+                if 'id' not in df_props.columns:
+                    base_cols.append('id')
+                
+                # 拼接数据
+                df = pd.concat([df[base_cols], df_props], axis=1)
+                
+                # 终极防御：移除任何可能意外重名的列（保留第一个）
+                df = df.loc[:, ~df.columns.duplicated()]
+                gdf_dict[fid] = df
+
+        print(f"[Feature Sandbox] 已加载矢量图层 {len(gdf_dict)} 个，物理文件关联 {len(file_paths_dict)} 个")
+
+        exec_env = {
+            "pd": pd,
+            "gpd": gpd,
+            "np": np,
+            "gdf_dict": gdf_dict,
+            "file_paths_dict": file_paths_dict,
+            "file_ids": payload.file_ids,
+        }
+        
+        exec(payload.python_code, exec_env)
+        
+        # 👇👇👇 核心修复：支持两种不同的管线主函数入口 👇👇👇
+        if 'execute_pro_model' in exec_env:
+            execute_func = exec_env['execute_pro_model']
+        elif 'execute_feature_calc' in exec_env:
+            execute_func = exec_env['execute_feature_calc']
+        else:
+            raise ValueError("未找到主函数 'execute_feature_calc' 或 'execute_pro_model'！")
+            
+        result_data = execute_func(gdf_dict, file_paths_dict, payload.parameters)
+        # 👆👆👆 修复结束 👆👆👆
+        
+        # 结果降维转 JSON
+        if isinstance(result_data, (pd.DataFrame, gpd.GeoDataFrame)):
+            if 'geometry' in result_data.columns:
+                result_data = result_data.drop(columns=['geometry'])
+            result_data = result_data.to_dict(orient='records')
+            
+        return {"status": "success", "data": result_data}
+
+    except Exception as e:
+        print(f"\n❌ 特征计算算子执行崩溃")
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 

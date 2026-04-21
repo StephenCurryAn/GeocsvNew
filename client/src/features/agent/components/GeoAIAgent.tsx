@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Button, Input, Avatar, Spin, Badge } from 'antd';
+import { Button, Input, Avatar, Spin, Badge, Segmented, App } from 'antd';
 import {
     SendOutlined, RobotOutlined, UserOutlined, ClearOutlined,
     CloseOutlined, ThunderboltOutlined, CodeOutlined, SettingOutlined, CheckCircleOutlined
@@ -50,6 +50,8 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
     isOpen = false,
     onClose,
 }) => {
+    const { message } = App.useApp();
+    const [agentMode, setAgentMode] = useState<'pivot' | 'feature_calc' | 'pro_model'>('pivot');
     const [inputValue, setInputValue] = useState('');
     const [loading, setLoading] = useState(false);
     // 每条消息独立的「代码编辑状态」：key = msg.id, value = 当前编辑的代码文本
@@ -186,8 +188,31 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
             const response = await geoService.generateModelByAI({
                 userPrompt: currentInput,
                 fileIds: selectedFileIds,
-                context: context
+                context: context,
+                agentMode: agentMode
             });
+            
+            // 👇 修复后的拦截逻辑
+            if (agentMode === 'pro_model' && response.newFileId) {
+                message.success(response.message || "模型运算完成！");
+                
+                // 抛出全局事件，通知 FileTree 组件刷新
+                window.dispatchEvent(new CustomEvent('REFRESH_FILE_TREE'));
+                
+                // 3. 👇 使用 ChatMessage 类型，并使用 role 和 content 字段
+                const aiMessage: ChatMessage = {
+                    id: Date.now().toString(),
+                    role: 'assistant', // 注意：这里是 role, 不是 sender
+                    content: `我已经完成了模型运算。分析结果已自动为您保存为独立文件并放置在左侧资源树中。您可以在左侧双击预览或导出下载。`, // 注意：这里是 content, 不是 text
+                    timestamp: Date.now(),
+                    pythonCode: response.pythonCode
+                };
+                setMessages(prev => [...prev, aiMessage]);
+                
+                // 4. 👇 使用 setLoading
+                setLoading(false); 
+                return; // 直接结束
+            }
 
             // 如果后端返回状态为 failed（自愈彻底失败降级机制）
             if (response.status === 'failed') {
@@ -487,6 +512,17 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
 
             {/* === 输入区 === */}
             <div className="shrink-0 px-3 pb-3 pt-2 border-t border-geo-border bg-geo-dark/40">
+                {/* 👇 新增：模式切换器 👇 */}
+                <Segmented
+                    options={[
+                        { label: '数据透视', value: 'pivot' },
+                        { label: '特征计算', value: 'feature_calc' },
+                        { label: '专业模型', value: 'pro_model' }
+                    ]}
+                    value={agentMode}
+                    onChange={(val) => setAgentMode(val as 'pivot' | 'feature_calc')}
+                    className="mb-2 bg-[#0f172a] text-gray-400 border border-geo-border"
+                />
                 <div className="flex gap-2 items-end">
                     <Input.TextArea
                         ref={inputRef}
