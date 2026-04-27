@@ -72,7 +72,7 @@ const FileTree: React.FC<FileTreeProps> = ({ onDataLoaded, onSelectFiles }) => {
     fetchFileTree();
   }, []);
 
-  // 2. 👇 新增：监听全局刷新事件 👇
+  // 2.   新增：监听全局刷新事件  
   useEffect(() => {
     const handleRefresh = () => {
       console.log('[FileTree] 收到全局刷新事件，正在重新拉取文件树...');
@@ -87,7 +87,7 @@ const FileTree: React.FC<FileTreeProps> = ({ onDataLoaded, onSelectFiles }) => {
       window.removeEventListener('REFRESH_FILE_TREE', handleRefresh);
     };
   }, []); 
-  // 👆 新增结束 👆
+  //   新增结束  
 
   // 辅助函数：根据文件名获取图标
   // 图标逻辑：根据文件类型返回不同颜色图标

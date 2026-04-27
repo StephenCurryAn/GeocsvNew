@@ -538,7 +538,7 @@ const readAndParseFile = async (filePath: string, dbExtension?: string) => {
         }
     }
 
-    // 🌟 新增：栅格数据直接返回类型，跳过矢量解析
+    //   新增：栅格数据直接返回类型，跳过矢量解析
     if (ext === '.tif' || ext === '.tiff') {
         console.log(`[Parser] 识别为栅格文件，跳过矢量解析: ${path.basename(filePath)}`);
         return { type: 'raster', data: null };

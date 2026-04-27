@@ -184,7 +184,7 @@ async def execute_model(payload: ModelInput):
 
     except Exception as e:
         print(f"\n{'='*50}")
-        print(f"❌ 算子执行崩溃: {payload.model_name}")
+        print(f"  算子执行崩溃: {payload.model_name}")
         traceback.print_exc()
         print(f"{'='*50}\n")
         raise HTTPException(status_code=500, detail=str(e))
@@ -224,11 +224,11 @@ async def execute_pivot_only(payload: PivotInput):
                 df = df.set_crs(epsg=4326)
             if df.crs.to_epsg() != 3857:
                 df = df.to_crs(epsg=3857)
-                print(f"[Pivot Sandbox] ✅ file_id={fid} 坐标系已统一为 EPSG:3857 (Web Mercator)")
+                print(f"[Pivot Sandbox]  file_id={fid} 坐标系已统一为 EPSG:3857 (Web Mercator)")
                 
             # 展开 properties 到外层列，方便 AI 代码直接用列名访问
             df_props = pd.json_normalize(df['properties'])
-            # 防止列名重复 👇👇👇
+            # 防止列名重复    
             # 默认只保留几何列
             base_cols = ['geom']
             # 如果 properties 里面没有 id，我们才去借用数据库的 id
@@ -390,7 +390,7 @@ async def execute_feature_calc_only(payload: FeatureCalcInput):
         
         exec(payload.python_code, exec_env)
         
-        # 👇👇👇 核心修复：支持两种不同的管线主函数入口 👇👇👇
+        #     核心修复：支持两种不同的管线主函数入口    
         if 'execute_pro_model' in exec_env:
             execute_func = exec_env['execute_pro_model']
         elif 'execute_feature_calc' in exec_env:
@@ -399,7 +399,7 @@ async def execute_feature_calc_only(payload: FeatureCalcInput):
             raise ValueError("未找到主函数 'execute_feature_calc' 或 'execute_pro_model'！")
             
         result_data = execute_func(gdf_dict, file_paths_dict, payload.parameters)
-        # 👆👆👆 修复结束 👆👆👆
+        #     修复结束    
         
         # 结果降维转 JSON
         if isinstance(result_data, (pd.DataFrame, gpd.GeoDataFrame)):
@@ -410,7 +410,7 @@ async def execute_feature_calc_only(payload: FeatureCalcInput):
         return {"status": "success", "data": result_data}
 
     except Exception as e:
-        print(f"\n❌ 特征计算算子执行崩溃")
+        print(f"\n  特征计算算子执行崩溃")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 

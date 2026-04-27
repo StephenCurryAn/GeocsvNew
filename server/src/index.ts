@@ -74,7 +74,7 @@ app.listen(PORT, () => {
 
 // 捕获未处理的 Promise 拒绝 (比如数据库连不上)
 process.on('unhandledRejection', (reason, promise) => {
-    console.error('❌ 未处理的 Promise 拒绝:', reason);
+    console.error('  未处理的 Promise 拒绝:', reason);
     // 这里不退出进程，只是记录错误
 });
 

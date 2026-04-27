@@ -534,7 +534,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
 
     //   [修改] Effect 3: 提取当前渲染字段的唯一值，作为下拉列表的选项
     useEffect(() => {
-        // 👇 判断是否为文本字段
+        //   判断是否为文本字段
         const isStringField = activeField ? stringFields.includes(activeField) : false;
 
         // 如果没选字段、处于网格模式、没数据，或者【当前选中是数值字段】，清空过滤选项！
@@ -563,7 +563,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
         if (!map || !isMapLoaded) return;
 
         const applyFilter = () => {
-            // 👇 判断是否为文本字段
+            //   判断是否为文本字段
             const isStringField = activeField ? stringFields.includes(activeField) : false;
 
             // 当没有开启过滤、处于网格模式，或者是【连续数值字段】时，恢复默认显示所有，防止数组越界！
@@ -684,9 +684,9 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
             console.log(`[MapView] 启用 MVT 极速矢量瓦片渲染模式: ${fileId}`);
             map.addSource(sourceId, {
                 type: 'vector',
-                // 👇👇👇 核心修复：在 URL 尾部加上 ?t=${Date.now()} 作为缓存爆破器 👇👇👇
+                //     核心修复：在 URL 尾部加上 ?t=${Date.now()} 作为缓存爆破器    
                 tiles: [`http://localhost:3000/api/tiles/${fileId}/{z}/{x}/{y}?t=${Date.now()}`],
-                // 👆👆👆 修复结束 👆👆👆
+                //     修复结束    
                 minzoom: 0,
                 maxzoom: 22
             });
@@ -992,7 +992,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                 pointStrokeColorMatch.push(matchKey, finalPointStrokeColor);
             });
 
-            // 👇 👇 👇   ：让未参与透视的脏点彻底隐形 👇 👇 👇
+            //         ：让未参与透视的脏点彻底隐形      
             // Defaults (回退默认值)
             // 无论有没有选中柱子，未参与分析的数据一律透明、尺寸为0，保持地图绝对干净
             
@@ -1187,7 +1187,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
             const safeFilterValues = activeFilterValues.length > 0 ? activeFilterValues : ['__NOTHING_SELECTED__'];
             isMatched = ['in', ['get', activeField], ['literal', safeFilterValues]];
         } else {
-            // 👇 数值字段：构造一个永远为 True 的表达式（只要值不为空），彻底抛弃庞大的 In 数组判断！
+            //   数值字段：构造一个永远为 True 的表达式（只要值不为空），彻底抛弃庞大的 In 数组判断！
             isMatched = ['!=', ['get', activeField], null];
         }
 
@@ -1674,7 +1674,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                             content={gridConfigContent} 
                             trigger="hover" 
                             placement="bottom"
-                            // ❌ [删除] styles={{ body: ... }} 或 overlayInnerStyle
+                            //   [删除] styles={{ body: ... }} 或 overlayInnerStyle
                             //   [新增] 使用 CSS 类名
                             overlayClassName="grid-config-popover"
                             arrow={false}
@@ -1768,8 +1768,8 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                             </>
                         )}
 
-                        {/* 👇 👇 👇 [新增] 值过滤模块 👇 👇 👇 */}
-                        {/* 👇 👇 👇 [修改] 值过滤模块：仅在文本字段下才渲染下拉过滤组件 👇 👇 👇 */}
+                        {/*       [新增] 值过滤模块       */}
+                        {/*       [修改] 值过滤模块：仅在文本字段下才渲染下拉过滤组件       */}
                         {activeField && activeField !== 'none' && !isGridMode && stringFields.includes(activeField) && (
                             <>
                                 <div className="w-px h-5 bg-gray-600 mx-1" />

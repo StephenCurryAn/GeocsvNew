@@ -1035,7 +1035,7 @@ export const exportGrid = async (req: Request, res: Response): Promise<void> => 
         });
 
         // 3. 准备网格
-        // ❌ [删除] 原来的 const features = ... 删掉，防止重复声明错误
+        //   [删除] 原来的 const features = ... 删掉，防止重复声明错误
         const featureCollection = turf.featureCollection(features);
         const bbox = turf.bbox(featureCollection);
         
@@ -1506,11 +1506,11 @@ export const rerunPivotCode = async (req: Request, res: Response): Promise<void>
 // 多节点进行可扩展的透视和绘图
 // 多节点进行可扩展的透视和绘图
 export const executeDynamicPipeline = async (req: Request, res: Response): Promise<void> => {
-    // ⚠️ 关键：将 blueprint / pythonCode 提升到 try/catch 之外，使 catch 块可以访问
+    //   关键：将 blueprint / pythonCode 提升到 try/catch 之外，使 catch 块可以访问
     let blueprint: any = null;
-    // 👇👇👇 修改：将 pivotCode 改为通用的 pythonCode，以适应双管线 👇👇👇
+    //     修改：将 pivotCode 改为通用的 pythonCode，以适应双管线    
     let pythonCode: string = ""; 
-    // 👆👆👆 修改结束 👆👆👆
+    //     修改结束    
 
     try {
         const { userPrompt, fileIds, context, agentMode = 'pivot' } = req.body;
@@ -1537,7 +1537,7 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
         blueprint = await planWorkflow(userPrompt, availableFiles, context, agentMode);
         console.log(`[Pipeline] 拆解意图完成:`, blueprint.explanation);
 
-        // 👇👇👇 新增/修改：节点2 引入双管线代码生成逻辑 👇👇👇
+        //     新增/修改：节点2 引入双管线代码生成逻辑    
         let rawCode = "";
         let endpointUrl = "";
 
@@ -1556,7 +1556,7 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
         } 
         else {
             console.log(`[Pipeline] 命中【数据透视】原有管线...`);
-            // 🚨 原封不动保留你的追问与图表切换逻辑 🚨
+            //   原封不动保留你的追问与图表切换逻辑  
             if (blueprint.reuse_code && context?.lastPythonCode) {
                 console.log(`[Pipeline] 检测到意图为图表切换/追问，直接复用上一轮数据抽取代码。`);
                 rawCode = context.lastPythonCode;
@@ -1568,7 +1568,7 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
             }
             endpointUrl = `${PYTHON_API_URL}/models/pivot_only`;
         }
-        // 👆👆👆 新增/修改结束 👆👆👆
+        //     新增/修改结束    
 
         // 3 Python执行 (带自愈修复环)
         let aggregatedData: any = null;
@@ -1583,14 +1583,14 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
         while (retries <= MAX_RETRIES) {
             try {
                 console.log(`[Pipeline] 节点3正在执行沙盒运算... (尝试 ${retries + 1}/${MAX_RETRIES + 1})`);
-                // 👇👇👇 修改：动态请求 endpointUrl 👇👇👇
+                //     修改：动态请求 endpointUrl    
                 const sandboxResponse = await axios.post<any>(endpointUrl, {
                     python_code: pythonCode, // 发送带 SDK 的完整代码
                     file_ids: fileIds
                 });
                 
                 aggregatedData = sandboxResponse.data.data; 
-                // 👆👆👆 修改结束 👆👆👆
+                //     修改结束    
 
                 if (!aggregatedData || aggregatedData.length === 0) {
                     throw new Error("计算结果为空，请检查需求或数据是否匹配");
@@ -1606,7 +1606,7 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
                 retries++;
                 console.log(`[Pipeline] 节点发觉错误，启动自愈修复环 (第 ${retries} 次重试)...`);
                 try {
-                    // 👇👇👇 新增/修改：双管线各自调用对应的自愈 Agent 👇👇👇
+                    //     新增/修改：双管线各自调用对应的自愈 Agent    
                     if (agentMode === 'feature_calc') {
                         rawCode = await fixFeatureCalcCode(blueprint, rawCode, lastErrorDetails);
                         pythonCode = FEATURE_CALC_SDK_INJECTION + "\n\n" + rawCode;
@@ -1619,7 +1619,7 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
                         rawCode = await fixPivotCode(blueprint, rawCode, lastErrorDetails);
                         pythonCode = PYTHON_SDK_INJECTION + "\n\n" + rawCode;
                     }
-                    // 👆👆👆 新增/修改结束 👆👆👆
+                    //     新增/修改结束    
                     console.log(`[Pipeline] FixerAgent 自愈重写完成，准备再次向沙盒投入代码...`);
                 } catch (fixErr) { break; }
             }
@@ -1637,7 +1637,7 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
             return;
         }
 
-        // 👇👇👇 新增：特征计算的「回写数据库」与「提前返回」逻辑 👇👇👇
+        //     新增：特征计算的「回写数据库」与「提前返回」逻辑    
         if (agentMode === 'feature_calc') {
             console.log(`[Pipeline] 特征计算完成，正在将结果同步更新回原始数据层...`);
             const targetFileId = blueprint.data_dependencies?.find((d: any) => d.role.includes('Target'))?.file_id || fileIds[0];
@@ -1645,7 +1645,7 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
             // 提取第一行中的所有新列名（排除固定字段 id）
             const newCols = Object.keys(aggregatedData[0] || {}).filter(k => k !== 'id' && k !== 'rowKey');
 
-            // 🌟 核心修改：将串行更新改为“分批并发更新” 🌟
+            //   核心修改：将串行更新改为“分批并发更新”  
             console.log(`[Pipeline] 准备同步 ${aggregatedData.length} 条记录，采用分批并发策略...`);
             
             // 设置并发块大小（推荐 50-100，兼顾速度且不会撑爆 DB 连接池）
@@ -1675,14 +1675,14 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
                 blueprint: blueprint,
                 tableData: aggregatedData, 
                 engine: null, // 无引擎
-                message: `✅ 计算成功！已将新特征 [${newCols.join(', ')}] 同步至要素。`,
+                message: ` 计算成功！已将新特征 [${newCols.join(', ')}] 同步至要素。`,
                 pythonCode: pythonCode // 返回代码方便用户在前端人工修正
             });
             return; 
         }
-        // 👆👆👆 新增结束：特征计算管线到此终止 👆👆👆
+        //     新增结束：特征计算管线到此终止    
 
-        // 👇👇👇 新增：专业模型的【衍生落盘】逻辑 👇👇👇
+        //     新增：专业模型的【衍生落盘】逻辑    
         if (agentMode === 'pro_model') {
             console.log(`[Pipeline] 专业模型计算完成，正在将结果导出为物理文件并挂载到文件树...`);
             
@@ -1710,7 +1710,7 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
             });
             const savedNode = await FileNode.insertFileNode(fileNodeObj);
             
-            // 🌟 🌟 🌟 核心修复：将结果数据写入 spatial_features 要素表 🌟 🌟 🌟
+            //       核心修复：将结果数据写入 spatial_features 要素表      
             if (aggregatedData && aggregatedData.length > 0) {
                 console.log(`[Pipeline] 正在将模型结果行写入 spatial_features 表，以供前端表格渲染...`);
                 const featuresToInsert = aggregatedData.map((row: any, index: number) => {
@@ -1727,7 +1727,7 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
                 // 批量插入数据库（确保文件头部引了 import * as Feature from '../models/Feature';）
                 await Feature.insertFeaturesBatch(savedNode.id, featuresToInsert);
             }
-            // 🌟 🌟 🌟 修复结束 🌟 🌟 🌟
+            //       修复结束      
             // 获取 AI 蓝图中规划的图表类型（如果 AI 觉得该画热力图，就会在这里体现）
             const aiChartType = blueprint.visualization_spec?.chart_type?.toLowerCase() || null;
 
@@ -1738,17 +1738,17 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
                 code: 200,
                 blueprint: blueprint,
                 tableData: aggregatedData, 
-                // 👇👇👇 核心修复：如果 AI 规划了图表，就触发前端 ECharts 接管渲染 👇👇👇
+                //     核心修复：如果 AI 规划了图表，就触发前端 ECharts 接管渲染    
                 engine: aiChartType ? 'echarts' : null,
                 aiChartType: aiChartType,
-                // 👆👆👆 修复结束 👆👆👆
-                message: `✅ 模型执行成功！分析结果已自动保存为文件：[${newFileName}]`,
+                //     修复结束    
+                message: ` 模型执行成功！分析结果已自动保存为文件：[${newFileName}]`,
                 newFileId: savedNode.id,   
                 pythonCode: pythonCode
             });
             return;
         }
-        // 👆👆👆 专业模型落盘逻辑结束 👆👆👆
+        //     专业模型落盘逻辑结束    
 
         // 4 绘图代码/元数据生成节点
         console.log(`[Pipeline] 节点4正在构建图表配置/代码...`);
@@ -1834,7 +1834,7 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
             aiChartType: chartResponseData?.ai_chart_type,
             chartHtml: html_string,
             chartOption: chart_option,
-            // 👇👇👇 修改：变量名同步为了 pythonCode 👇👇👇
+            //     修改：变量名同步为了 pythonCode    
             pythonCode: pythonCode // 依然返回 pivot 代码供用户检查修改
         });
 
@@ -1848,7 +1848,7 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
             details: details,
             // blueprint / pythonCode 已提升到外层作用域，可直接安全访问
             blueprint: blueprint,
-            // 👇👇👇 修改：捕获异常时也返回当前的 pythonCode 👇👇👇
+            //     修改：捕获异常时也返回当前的 pythonCode    
             pythonCode: pythonCode || null
         });
     }

@@ -44,7 +44,7 @@ const storage = multer.diskStorage({
         // 按照正确的 utf8 编码格式重新读一遍，变回正确的中文字符串。
         const originalName = Buffer.from(file.originalname, 'latin1').toString('utf8');
 
-        // // 2. 🚨【关键修复】分离文件名和后缀
+        // // 2.  【关键修复】分离文件名和后缀
         // // 获取后缀 (例如 .json)
         // const ext = path.extname(originalName).toLowerCase();
         // // 获取不带后缀的文件名 (例如 data)

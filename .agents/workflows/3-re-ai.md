@@ -15,7 +15,7 @@ description:
 - **架构哲学**: "数据与表现完全分离"。禁止由后端生成 HTML DOM 或 Folium 地图；大模型仅输出纯计算逻辑或前端可读的 ECharts Option JSON 状态树；允许 Human-in-the-loop 人机协作闭环。
 
 ## 2. 🧠 空间分析架构核心范式 (The 5+1 Spatial Pivot Paradigm)
-**🚨 绝对红线：在写任何 Python (GeoPandas) 分析代码时强制遵守！**
+**  绝对红线：在写任何 Python (GeoPandas) 分析代码时强制遵守！**
 不要盲目应用普通的 Pandas 数据透视知识。空间数据透视必须基于『空间拓扑约束』，且包含 **6个标准要素**。
 
 - **空间约束 (Spatial Constraint)**: (如 buffer, intersects, nearest)。

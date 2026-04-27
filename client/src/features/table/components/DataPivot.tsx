@@ -307,7 +307,7 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
                     console.log("  成功拉取真实模型列表:", modelNames);
                 }
             } catch (error) {
-                console.error("❌ 获取真实模型列表失败:", error);
+                console.error("  获取真实模型列表失败:", error);
                 // 兜底方案：如果请求失败，留几个默认的防止功能直接瘫痪
                 setModelList(['DBSCAN_SPATIAL_CLUSTERING', 'KMEANS_CLUSTERING']);
             }
@@ -896,11 +896,11 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
 
                         } catch (error: any) {
                             console.error("公式计算失败", error);
-                            node.setDataValue(field!, "❌ 公式错误");
+                            node.setDataValue(field!, "  公式错误");
                             message.error(error.response?.data?.error || error.response?.data?.details || "计算失败，请检查模型名称和参数列");
                         }
                     } else {
-                        node.setDataValue(field!, "❌ 格式错误");
+                        node.setDataValue(field!, "  格式错误");
                         message.warning("公式格式错误，请输入形如 =MODEL(col1, col2)");
                     }
                     

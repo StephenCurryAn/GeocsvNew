@@ -92,7 +92,7 @@ export const generateModelCodeFromAI = async (userPrompt: string): Promise<AIGen
         
         let extractedJsonStr = jsonMatch[0];
 
-        // ⚠️ 删掉之前那个 replace(/\\n/g, "\\\\n")，直接让 JSON 原生解析
+        //   删掉之前那个 replace(/\\n/g, "\\\\n")，直接让 JSON 原生解析
         const parsedData = JSON.parse(extractedJsonStr) as AIGeneratedModel;
         
         if (!parsedData.modelName || !parsedData.pythonCode) {
@@ -364,7 +364,7 @@ def execute_pivot(gdf_dict, parameters):
     merged_df = target_gdf[[row_dim_col, 'lon', 'lat']].join(agg_result).fillna(0)
     flat_df = merged_df.melt(id_vars=[row_dim_col, 'lon', 'lat'], var_name='列维度名', value_name='count')
     
-    # 🚨 必须同时 Drop 掉 geom 和 geometry
+    #   必须同时 Drop 掉 geom 和 geometry
     return pd.DataFrame(flat_df).drop(columns=['geom', 'geometry'], errors='ignore')
 `;
     

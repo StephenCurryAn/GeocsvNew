@@ -192,14 +192,14 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
                 agentMode: agentMode
             });
             
-            // 👇 修复后的拦截逻辑
+            //   修复后的拦截逻辑
             if (agentMode === 'pro_model' && response.newFileId) {
                 message.success(response.message || "模型运算完成！");
                 
                 // 抛出全局事件，通知 FileTree 组件刷新
                 window.dispatchEvent(new CustomEvent('REFRESH_FILE_TREE'));
                 
-                // 3. 👇 使用 ChatMessage 类型，并使用 role 和 content 字段
+                // 3.   使用 ChatMessage 类型，并使用 role 和 content 字段
                 const aiMessage: ChatMessage = {
                     id: Date.now().toString(),
                     role: 'assistant', // 注意：这里是 role, 不是 sender
@@ -209,7 +209,7 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
                 };
                 setMessages(prev => [...prev, aiMessage]);
                 
-                // 4. 👇 使用 setLoading
+                // 4.   使用 setLoading
                 setLoading(false); 
                 return; // 直接结束
             }
@@ -243,7 +243,7 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
                     role: 'assistant',
                     content: response.blueprint?.explanation
                         || response.message
-                        || '✅ 分析完成！请查看分析结果和生成的执行代码。',
+                        || ' 分析完成！请查看分析结果和生成的执行代码。',
                     timestamp: Date.now(),
                     engine: response.engine,
                     chartOption: response.chartOption,
@@ -260,7 +260,7 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
                 return [...filtered, {
                     id: `err-${Date.now()}`,
                     role: 'assistant',
-                    content: `❌ 分析失败：${errData?.details || error.message || '未知错误'}`,
+                    content: `  分析失败：${errData?.details || error.message || '未知错误'}`,
                     timestamp: Date.now(),
                     // 即使失败，也将中间产物传给渲染函数，以便用户审查代码
                     pythonCode: errData?.pythonCode,
@@ -328,7 +328,7 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
                         {msg.content}
                     </div>
                     
-                    {/* 👇 👇 👇 混合渲染容器 👇 👇 👇 */}
+                    {/*       混合渲染容器       */}
                     {!isUser && (msg.pythonCode || msg.engine) && (
                         <div className="w-[320px] bg-geo-dark/95 border border-geo-border rounded-xl overflow-hidden shadow-lg animate-fade-in flex flex-col">
                             
@@ -402,14 +402,14 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
                                                         chartHtml: res.chartHtml,
                                                         pythonCode: codeToRun,
                                                         content: res.engine
-                                                            ? `✅ 重跑成功！图表已更新。`
+                                                            ? ` 重跑成功！图表已更新。`
                                                             : m.content
                                                     }));
                                                 } catch (err: any) {
                                                     const detail = err.response?.data?.details || err.message;
                                                     setMessages(prev => prev.map(m => m.id !== msg.id ? m : {
                                                         ...m,
-                                                        content: `❌ 重跑失败：${detail}`
+                                                        content: `  重跑失败：${detail}`
                                                     }));
                                                 } finally {
                                                     setRerunLoadingMap(prev => ({ ...prev, [msg.id]: false }));
@@ -512,7 +512,7 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
 
             {/* === 输入区 === */}
             <div className="shrink-0 px-3 pb-3 pt-2 border-t border-geo-border bg-geo-dark/40">
-                {/* 👇 新增：模式切换器 👇 */}
+                {/*   新增：模式切换器   */}
                 <Segmented
                     options={[
                         { label: '数据透视', value: 'pivot' },
