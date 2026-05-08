@@ -1,0 +1,31 @@
+// 修复补丁：在 llmService.ts 的 generateFeatureCalcCode 函数中
+// 找到第 631-632 行的 SDK API 文档部分，将：
+
+7. safe_categorical_zonal_stats(vector_gdf, raster_file_path, col_name='majority_class')
+   - 用于提取分类栅格(如土地利用)在网格中的众数(占比最大的类)。
+
+// 替换为：
+
+7. safe_categorical_zonal_stats(vector_gdf, raster_file_path, col_name='majority_class')
+   - 作用：提取分类栅格(如土地利用类型)在网格中的众数(占比最大的类别值)。
+   - ⚠️ 绝对重要：raster_file_path 必须从 file_paths_dict 中获取栅格文件的物理路径！
+   - ⚠️ 正确示例：target_gdf = safe_categorical_zonal_stats(target_gdf, file_paths_dict['栅格UUID'], col_name='LandUse_Type')
+   - ❌ 错误示例：不要尝试从 gdf_dict 中获取栅格数据！栅格文件不会被加载到 gdf_dict 中！
+   - 📌 函数内部必须设置 categorical=True 参数，否则分类栅格的众数统计会失效返回空值！
+   - 📌 正确的函数实现示例：
+     ```python
+     def safe_categorical_zonal_stats(vector_gdf, raster_file_path, col_name='majority_class'):
+         if vector_gdf.empty: return vector_gdf
+         try:
+             with rasterio.open(raster_file_path) as src:
+                 raster_crs = src.crs
+                 if raster_crs and vector_gdf.crs != raster_crs:
+                     vector_gdf = vector_gdf.to_crs(raster_crs)
+         except:
+             pass
+         # ✅ 关键：必须设置 categorical=True！
+         stats = zonal_stats(vector_gdf, raster_file_path, stats=['majority'], 
+                             all_touched=True, categorical=True, geojson_out=False)
+         vector_gdf[col_name] = [s['majority'] if s['majority'] is not None else np.nan for s in stats]
+         return vector_gdf
+     ```

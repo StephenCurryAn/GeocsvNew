@@ -570,7 +570,46 @@ ${errorTraceback}
     }
 };
 
-export const generateFeatureCalcCode = async (blueprint: WorkflowBlueprint): Promise<string> => {
+export const generateFeatureCalcCode = async (blueprint: any, validFileIds: string[]): Promise<string> => {
+    
+    let dataLoadingSkeleton = "";
+    let joinCounter = 0; 
+    
+    if (blueprint.data_dependencies && Array.isArray(blueprint.data_dependencies)) {
+        blueprint.data_dependencies.forEach((dep: any, index: number) => {
+            // 🌟 UUID 幻觉自愈匹配器
+            let realUuid = dep.file_id;
+            if (validFileIds && validFileIds.length > 0) {
+                const cleanDepId = String(dep.file_id).replace(/-/g, '').toLowerCase();
+                const fingerprint = cleanDepId.substring(0, 8);
+                const match = validFileIds.find(id => {
+                    const cleanId = id.replace(/-/g, '').toLowerCase();
+                    return cleanId.includes(fingerprint);
+                });
+                if (match) {
+                    realUuid = match; 
+                } else {
+                    realUuid = validFileIds[index] || dep.file_id; 
+                }
+            }
+
+            let varName = `layer_${index}_gdf`;
+            if (dep.role === 'TargetLayer' || dep.role === 'Target') {
+                varName = 'target_gdf';
+            } else if (dep.role === 'JoinLayer') {
+                joinCounter++;
+                varName = joinCounter === 1 ? 'join_gdf' : `join_gdf_${joinCounter}`;
+            }
+                
+            dataLoadingSkeleton += `    # 角色: ${dep.role} (${dep.description || ''})\n`;
+            dataLoadingSkeleton += `    ${varName} = gdf_dict['${realUuid}'].copy()\n`;
+        });
+    } else {
+        dataLoadingSkeleton = `    # 兜底获取方式\n    target_gdf = list(gdf_dict.values())[0].copy()\n`;
+        if (validFileIds && validFileIds.length > 1) {
+            dataLoadingSkeleton += `    join_gdf = list(gdf_dict.values())[1].copy()\n`;
+        }
+    }
     const PROMPT = `
 你是一位高级 GeoAI 空间特征计算工程师。系统底层已经内置了强大的特征计算 SDK。
 你的任务是：根据用户的【执行蓝图】，编写 Python 代码计算新特征。
@@ -590,7 +629,11 @@ export const generateFeatureCalcCode = async (blueprint: WorkflowBlueprint): Pro
 6. safe_buffer_count(target_gdf, join_gdf, buffer_dist=500, col_name='buf_count')
    - 计算目标要素外扩 buffer_dist 米内包含的其他要素数量。
 7. safe_categorical_zonal_stats(vector_gdf, raster_file_path, col_name='majority_class')
-   - 用于提取分类栅格(如土地利用)在网格中的众数(占比最大的类)。
+   - 作用：提取分类栅格(如土地利用类型)在网格中的众数(占比最大的类别值)。
+   - 绝对重要：raster_file_path 必须从 file_paths_dict 中获取栅格文件的物理路径！
+   - 正确示例：target_gdf = safe_categorical_zonal_stats(target_gdf, file_paths_dict['栅格UUID'], col_name='LandUse_Majority')
+   - 错误示例：不要尝试从 gdf_dict 中获取栅格数据！栅格文件不会被加载到 gdf_dict 中！
+   - 函数内部必须设置 categorical=True 参数，否则分类栅格的众数统计会失效返回空值！
 8. safe_natural_breaks(gdf, target_col, k=5, col_name='jenks_class')
    - 作用：使用 Jenks 自然断点法将连续数值列离散化。
    - 参数要求：请务必根据用户的自然语言需求，动态提取并传入真实的 k 值（例如用户说“分3类”，你必须显式传入 k=3）。
@@ -602,31 +645,116 @@ export const generateFeatureCalcCode = async (blueprint: WorkflowBlueprint): Pro
      \`bins = [0, 22.5, 67.5]\`
      \`labels = ['北', '东北']\`
      \`safe_rule_reclassify(gdf, target_col='Aspect', bins=bins, labels=labels, col_name='Aspect_Class', default_val='平面')\`
+10. safe_sum_intersecting_length(target_gdf, line_gdf, col_name='total_length')
+   - ：当需要计算 面内相交线(如路网、水网)的总长度 时，务必调用此算子！它会返回包含路网总长的新图层。
 
-【蓝图】：
+   【蓝图】：
 ${JSON.stringify(blueprint, null, 2)}
 
 【严格要求】：
 1. 必须写一个 \`def execute_feature_calc(gdf_dict, file_paths_dict, parameters):\` 函数。
-2. gdf_dict 是包含已加载矢量的字典，file_paths_dict 是包含所有文件物理绝对路径的字典（用于读取栅格 .tif）。
+2. gdf_dict 是包含已加载矢量的字典，file_paths_dict 是包含所有文件物理绝对路径的字典。
 3. 必须将目标图层 (Target) 新增计算出的特征列，并**务必保留原始的 'id' 列**。
 4. 返回值必须是将带有 'id' 和新特征列的结果转为 List of Dict。例如：\`return target_gdf[['id', '新列名']].to_dict(orient='records')\`。
 5. 只输出纯 Python 代码，绝对不要包含 \`\`\`python 标签！
+6. 【UUID防呆】：我已经为你自动生成了绝对安全的『数据加载代码骨架』！你必须原封不动地使用我给你的变量（如 target_gdf），绝对禁止你自己手写 gdf_dict['uuid']！
+7. 【列名获取绝对规则 —— 最高优先级，违反必错】：
+   parameters 字典在运行时始终为空 {}，从中读取任何键都会触发 KeyError 导致崩溃！
+   
+   ★ 如果用户需求中已明确列出列名（如 "Count_住宿、Count_医院..."），必须直接在代码中将其硬编码为 Python 列表：
+       ✅ 正确：poi_columns = ['Count_住宿', 'Count_医院', 'Count_购物']
+       ❌ 绝对禁止：poi_columns = parameters['poi_columns']   # 运行时 parameters={} → KeyError!
+       ❌ 绝对禁止：poi_columns = parameters.get('poi_columns', [])  # 返回 [] → 后续计算全错!
+   
+   ★ 如果列名规律明显但未全部列出，使用模式匹配动态提取：
+       poi_columns = [c for c in target_gdf.columns if c.startswith('Count_')]
+   
+   ★ 无论使用哪种方式，绝对禁止从 parameters 中读取任何列名或数值参数！
+
+8. 【原生矩阵运算】：当用户要求计算复杂空间经济学公式时，你必须使用原生 Pandas/Numpy 的 DataFrame 向量化运算来实现，并务必处理除 0 异常（如使用 np.errstate, fillna, 或 np.divide）。
+
+【代码填充】
+请严格按照以下代码骨架填充你的逻辑：
+def execute_feature_calc(gdf_dict, file_paths_dict, parameters):
+${dataLoadingSkeleton}
+    # --- 在下方编写你的空间特征计算逻辑 ---
+    # ⚠️ 警告：parameters 在运行时始终为空 {}，绝对不要用 parameters['任何key'] 或 parameters.get()！
+    # 
+    # 【列名获取示例 - 二选一】：
+    # 方式A (推荐，当用户已明确列出列名时): 直接硬编码！
+    #   poi_columns = ['Count_住宿', 'Count_医院', 'Count_购物', 'Count_休闲娱乐', 'Count_居民小区', 'Count_政府单位', 'Count_科研教育']
+    # 方式B (当需要动态匹配时): 用列名模式过滤
+    #   poi_columns = [c for c in target_gdf.columns if c.startswith('Count_') and c != 'Count_total']
+    
+    
+    # --- 收尾与返回 ---
+    if 'id' not in target_gdf.columns:
+        target_gdf['id'] = target_gdf.index
+        
+    return target_gdf[['id', '此处填入你计算的所有新特征列名']].to_dict(orient='records')
 `;
-    const response = await openai.chat.completions.create({
-        model: "deepseek-v3",
-        messages: [{ role: "system", content: PROMPT }, { role: "user", content: "请开始编写特征计算Python代码" }],
-        temperature: 0.1
-    });
-    return cleanCodeBlock(response.choices[0].message.content || "");
+
+    
+    try {
+        const response = await openai.chat.completions.create({
+            model: "deepseek-v3", // 你用的 deepseek 模型非常适合这种代码填空逻辑！
+            messages: [{ role: "system", content: PROMPT }, { role: "user", content: "请开始编写特征计算Python代码" }],
+            temperature: 0.1 // 保持 0.1 的低温度，让它严格遵守骨架
+        });
+        
+        let rawContent = response.choices[0].message.content || "";
+        
+        // 双重保险清理：先用你的 cleanCodeBlock，再用正则强制剔除可能残留的 ```python
+        let cleanedCode = cleanCodeBlock(rawContent);
+        cleanedCode = cleanedCode.replace(/```python/gi, '').replace(/```/g, '').trim();
+        
+        return cleanedCode;
+        
+    } catch (error) {
+        console.error("[LLM Error] 生成特征计算代码失败:", error);
+        throw error;
+    }
+
 };
 
 export const fixFeatureCalcCode = async (blueprint: any, buggyCode: string, errorTraceback: string): Promise<string> => {
-    // 逻辑与 fixPivotCode 类似，只是提示词改为修复 execute_feature_calc 函数
-    const FIXER_PROMPT = `代码运行崩溃：\n${errorTraceback}\n请修复以下代码并返回纯Python：\n${buggyCode}`;
+    const FIXER_PROMPT = `
+你是一个极度资深的 GeoPandas 特征计算修复专家 (Feature Calc Fixer Agent)。
+刚才生成的特征计算代码在沙盒中运行崩溃了，请你担任专业的审查员，排查报错堆栈并返回修正后的纯 Python 代码。
+
+【1. 架构师意图蓝图 (Blueprint)】:
+${JSON.stringify(blueprint, null, 2)}
+
+【2. 崩溃的异常代码 (Buggy Code)】:
+\`\`\`python
+${buggyCode}
+\`\`\`
+
+【3. Python 沙盒真实报错 (Traceback)】:
+\`\`\`text
+${errorTraceback}
+\`\`\`
+
+【修复绝对红线 —— 违反必再次崩溃】：
+❌ 最常见的错误根因：代码用了 parameters['某个key'] 或 parameters.get('某个key')。
+   parameters 字典在运行时始终为空 {}，从中读取任何键都会触发 KeyError！
+   
+✅ 修复方案：
+   - 如果错误是 KeyError 或 parameters 相关：立即将所有 parameters 读取替换为硬编码的列名列表或动态模式匹配：
+     硬编码示例：poi_columns = ['Count_住宿', 'Count_医院', 'Count_购物', 'Count_休闲娱乐', 'Count_居民小区', 'Count_政府单位', 'Count_科研教育']
+     动态提取示例：poi_columns = [c for c in target_gdf.columns if c.startswith('Count_')]
+   - 其他错误（如 KeyError 在 gdf_dict 上）：检查 UUID 是否正确，使用 list(gdf_dict.values())[0] 兜底
+   - 除零错误：用 np.where(denominator == 0, np.nan, numerator / denominator) 或 .replace(0, np.nan)
+
+请分析报错原因，彻底修复并返回完整的 \`def execute_feature_calc(gdf_dict, file_paths_dict, parameters):\` 函数。
+只输出纯 Python 代码，绝对不要包含 \`\`\`python 标签！
+`;
     const response = await openai.chat.completions.create({
         model: "deepseek-v3",
-        messages: [{ role: "system", content: FIXER_PROMPT }],
+        messages: [
+            { role: "system", content: FIXER_PROMPT },
+            { role: "user", content: "请进行特征计算代码的纠错自愈并仅返回纯代码" }
+        ],
         temperature: 0.1
     });
     return cleanCodeBlock(response.choices[0].message.content || "");

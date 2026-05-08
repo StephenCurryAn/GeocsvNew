@@ -421,7 +421,7 @@ class GeoService {
   };
 
   // 沙盒重跑：跳过 LLM，直接把用户修改的代码发给 Python 引擎重跑
-  async rerunCode(data: { pythonCode: string; fileIds: string[]; blueprint?: any }) {
+  async rerunCode(data: { pythonCode: string; fileIds: string[]; blueprint?: any;agentMode?: string; }) {
     const response = await apiClient.post('/analysis/agent/rerun-code', data);
     return response.data;
   };

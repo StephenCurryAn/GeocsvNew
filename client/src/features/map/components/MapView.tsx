@@ -5,7 +5,7 @@ import { bbox } from '@turf/turf';
 //   [ ] 引入所需的 Ant Design 组件
 import { 
     Button, Tooltip, App, Checkbox, Spin, Select, ConfigProvider, 
-    theme, Popover, Segmented, Slider, Badge 
+    theme, Popover, Segmented, Slider, Badge , ColorPicker
 } from 'antd';
 import ChartOverlay, { THEME_COLORS, CONTRAST_PALETTES } from './ChartOverlay';
 import { geoService } from '../../../services/geoService';
@@ -289,7 +289,8 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
         pivotData, pivotConfig, // 数据
         isMapLinkageEnabled, highlightedCategory, mapColorTheme,// 联动状态
         //   [新增] 获取 activeColumn
-        activeColumn 
+        activeColumn , 
+        layerColors, setLayerColor
     } = useAnalysisStore();
 
     //  切换文件时的自动清理逻辑
@@ -404,7 +405,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
 
         // 3. 为每个额外文件创建图层
         extraFiles.forEach((fileInfo, idx) => {
-            const color = LAYER_PALETTE[(idx + 1) % LAYER_PALETTE.length];
+            const color = layerColors[fileInfo.fileId] || LAYER_PALETTE[(idx + 1) % LAYER_PALETTE.length];
             const srcId = `extra-src-${fileInfo.fileId}`;
             const layerIdBase = fileInfo.fileId;
 
@@ -487,7 +488,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
         });
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [selectedFilesInfo, isMapLoaded, fileId]);
+    }, [selectedFilesInfo, isMapLoaded, fileId, layerColors]);
 
 
 
@@ -678,8 +679,8 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
         if (map.getSource(sourceId)) map.removeSource(sourceId);
 
         // 判断是否应该使用 MVT 矢量瓦片模式
-        const useMVT = fileId && (!geoJSON || !geoJSON.features || geoJSON.features.length >= MVT_THRESHOLD);
-
+        const useMVT = fileId && !isGridMode;
+        const mainLayerColor = layerColors[fileId as string] || LAYER_PALETTE[0];
         if (useMVT) {
             console.log(`[MapView] 启用 MVT 极速矢量瓦片渲染模式: ${fileId}`);
             map.addSource(sourceId, {
@@ -694,7 +695,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
             map.addLayer({
                 id: 'geo-fill-layer', type: 'fill', source: sourceId, 'source-layer': 'default_layer',
                 paint: { 
-                    'fill-color': '#00e5ff', 
+                    'fill-color': mainLayerColor, 
                     'fill-opacity': 0.6,
                     'fill-outline-color': isGridMode ? 'rgba(0,0,0,0)' : 'rgba(0,0,0,0.1)' 
                 },
@@ -712,7 +713,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
             map.addLayer({
                 id: 'geo-linestring-main', type: 'line', source: sourceId, 'source-layer': 'default_layer',
                 paint: { 
-                    'line-color': '#00e5ff', 
+                    'line-color': mainLayerColor, 
                     'line-width': 3, 
                     'line-opacity': 0.8,
                     'line-blur': 1   
@@ -1098,18 +1099,19 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
 
         // 1. 如果没有选字段，恢复默认颜色 (全部全亮显示)
         if (!activeField || activeField === 'none') {
+            const mainLayerColor = fileId ? (layerColors[fileId] || LAYER_PALETTE[0]) : '#00e5ff';
             if (map.getLayer('geo-fill-layer')) {
-                map.setPaintProperty('geo-fill-layer', 'fill-color', '#00e5ff');
+                map.setPaintProperty('geo-fill-layer', 'fill-color', mainLayerColor);
                 map.setPaintProperty('geo-fill-layer', 'fill-outline-color', 'rgba(0,0,0,0)'); 
                 map.setPaintProperty('geo-fill-layer', 'fill-opacity', 0.6);
             }
             if (map.getLayer('geo-linestring-main')) {
-                map.setPaintProperty('geo-linestring-main', 'line-color', '#00e5ff');
+                map.setPaintProperty('geo-linestring-main', 'line-color', mainLayerColor);
                 map.setPaintProperty('geo-linestring-main', 'line-opacity', 0.8);
                 map.setPaintProperty('geo-linestring-main', 'line-width', 3);
             }
             if (map.getLayer('geo-point-layer')) {
-                map.setPaintProperty('geo-point-layer', 'circle-color', '#00e5ff');
+                map.setPaintProperty('geo-point-layer', 'circle-color', mainLayerColor);
                 map.setPaintProperty('geo-point-layer', 'circle-opacity', 1);
                 map.setPaintProperty('geo-point-layer', 'circle-radius', 6);
                 map.setPaintProperty('geo-point-layer', 'circle-stroke-width', 1);
@@ -1895,7 +1897,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
             `}</style>
 
             {/* ===== 多图层图例面板（右上角）===== */}
-            {selectedFilesInfo && selectedFilesInfo.length > 1 && (
+            {selectedFilesInfo && selectedFilesInfo.length > 0 && ( // 改为 > 0，因为主图层现在也应该展示在这里调色
                 <div
                     className="absolute top-4 right-4 z-10 bg-geo-dark/90 backdrop-blur-md border border-geo-border rounded-xl px-3 py-2.5 shadow-2xl"
                     style={{ minWidth: 160 }}
@@ -1903,13 +1905,16 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                     <p className="text-[10px] font-semibold text-geo-text-secondary uppercase tracking-widest mb-2">图层图例</p>
                     <div className="space-y-1.5">
                         {selectedFilesInfo.map((f, idx) => {
-                            const color = LAYER_PALETTE[idx % LAYER_PALETTE.length];
+                            // 读取当前图层颜色
+                            const color = layerColors[f.fileId] || LAYER_PALETTE[idx % LAYER_PALETTE.length];
                             const isMVT = f.totalFeatures > MVT_THRESHOLD;
                             return (
                                 <div key={f.fileId} className="flex items-center gap-2">
-                                    <span
-                                        className="w-3 h-3 rounded-sm shrink-0 shadow-sm"
-                                        style={{ backgroundColor: color, boxShadow: `0 0 6px ${color}80` }}
+                                    {/* 替换为 Ant Design 的颜色拾取器 */}
+                                    <ColorPicker 
+                                        size="small" 
+                                        value={color} 
+                                        onChangeComplete={(c) => setLayerColor(f.fileId, c.toHexString())} 
                                     />
                                     <span className="text-[11px] text-geo-text-secondary truncate max-w-[120px]">{f.fileName}</span>
                                     {isMVT && (
@@ -1919,21 +1924,6 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                             );
                         })}
                     </div>
-                    {/* 图层操作目标选择器（网格聚合/渲染操作的对象） */}
-                    {selectedFilesInfo.length > 1 && (
-                        <div className="mt-3 pt-2.5 border-t border-geo-border">
-                            <p className="text-[10px] text-geo-text-secondary mb-1">操作目标图层</p>
-                            <select
-                                value={activeLayerFileId || fileId}
-                                onChange={(e) => setActiveLayerFileId(e.target.value)}
-                                className="w-full text-[11px] bg-geo-panel border border-geo-border rounded px-2 py-1 text-geo-text-primary outline-none cursor-pointer hover:border-blue-500/50 transition-colors"
-                            >
-                                {selectedFilesInfo.map(f => (
-                                    <option key={f.fileId} value={f.fileId}>{f.fileName}</option>
-                                ))}
-                            </select>
-                        </div>
-                    )}
                 </div>
             )}
         </div>

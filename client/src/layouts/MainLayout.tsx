@@ -146,7 +146,7 @@ const MainLayout: React.FC<MainLayoutProps> = ({
                                             : 'bg-geo-panel/60 border-geo-border text-geo-text-secondary hover:border-blue-500 hover:text-blue-400'
                                     }`}
                                 >
-                                    GeoAI
+                                    GeoPivot
                                 </Button>
                             </Tooltip>
                         </div>

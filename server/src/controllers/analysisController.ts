@@ -329,6 +329,29 @@ def safe_rule_reclassify(gdf, target_col, bins, labels, col_name='reclass_val', 
     # 转为字符串防止前端 JSON 解析问题
     gdf[col_name] = gdf[col_name].astype(str)
     return gdf
+
+def safe_sum_intersecting_length(target_gdf, line_gdf, col_name='total_length'):
+    """
+    【线面相交求长算子】: 安全计算目标图层(面)内相交的线要素(如道路)的总长度(米)。
+    它在底层完美处理了几何继承反转和分组求和逻辑，杜绝幻觉报错。
+    """
+    if target_gdf.empty or line_gdf.empty:
+        target_gdf[col_name] = 0
+        return target_gdf
+        
+    t_gdf = ensure_metric_crs(target_gdf)
+    l_gdf = ensure_metric_crs(line_gdf).to_crs(t_gdf.crs)
+
+    # 核心原理：线在左，面在右，保留线的 Geometry 去算长度
+    joined = gpd.sjoin(l_gdf, t_gdf, how='inner', predicate='intersects')
+    joined['calc_len'] = joined.geometry.length
+    
+    # 按街道面图层的索引进行分组求和
+    length_sum = joined.groupby('index_right')['calc_len'].sum()
+
+    target_gdf[col_name] = length_sum
+    target_gdf[col_name] = target_gdf[col_name].fillna(0)
+    return target_gdf
 `;
 
 
@@ -1449,35 +1472,99 @@ interface ChartApiResponse {
 // ==========================================
 export const rerunPivotCode = async (req: Request, res: Response): Promise<void> => {
     try {
-        const { pythonCode, fileIds, blueprint } = req.body;
+        // 🌟 1. 接收前端传来的 agentMode
+        const { pythonCode, fileIds, blueprint, agentMode } = req.body;
 
         if (!pythonCode || !fileIds || fileIds.length === 0) {
             res.status(400).json({ error: "缺少 pythonCode 或 fileIds" });
             return;
         }
 
-        console.log(`\n[Rerun] 收到用户手动修改后的代码，文件数: ${fileIds.length}，跳过 LLM 直接执行...`);
+        console.log(`\n[Rerun] 收到用户手动修改后的代码，文件数: ${fileIds.length}`);
+        console.log(`[Rerun] 管线模式: [${agentMode || 'pivot'}]，跳过 LLM 直接执行...`);
 
-        // 直接调用 Python 执行透视（沙盒重跑）
-        const pivotResponse = await axios.post<PivotApiResponse>(`${PYTHON_API_URL}/models/pivot_only`, {
+        // 🌟 2. 智能路由：根据 agentMode 决定去哪个沙盒
+        let endpointUrl = (agentMode === 'feature_calc' || agentMode === 'pro_model') 
+            ? `${PYTHON_API_URL}/models/feature_calc_only`
+            : `${PYTHON_API_URL}/models/pivot_only`;
+
+        // 调用 Python 执行（沙盒重跑）
+        const rerunParams: Record<string, any> = {};
+        if (blueprint?.parameters && Array.isArray(blueprint.parameters)) {
+            blueprint.parameters.forEach((p: any) => {
+                if (p.defaultValue !== undefined && p.defaultValue !== null && p.defaultValue !== '') {
+                    rerunParams[p.name] = p.defaultValue;
+                }
+            });
+        }
+        const sandboxResponse = await axios.post<any>(endpointUrl, {
             python_code: pythonCode,
-            file_ids: fileIds
+            file_ids: fileIds,
+            parameters: rerunParams   // ✅ 防御 parameters['key'] 模式
         });
 
-        const aggregatedData = pivotResponse.data.data;
+        const aggregatedData = sandboxResponse.data.data;
         if (!aggregatedData || aggregatedData.length === 0) {
-            throw new Error("透视结果为空，请检查代码逻辑或数据是否匹配");
+            throw new Error("执行结果为空，请检查代码逻辑或数据是否匹配");
         }
-        console.log(`[Rerun] 透视成功！共 ${aggregatedData.length} 条记录，正在生成图表...`);
+        console.log(`[Rerun] 沙盒执行成功！共 ${aggregatedData.length} 条记录。`);
 
-        // 如果传入了 blueprint，继续走绘图流程；否则只返回数据
+        // ========================================================
+        // 🌟 3. 分支 A：如果是【特征计算】，需要回写数据库，不需要画图
+        // ========================================================
+        if (agentMode === 'feature_calc') {
+            console.log(`[Rerun] 正在将重新计算的特征同步回写至数据库...`);
+            
+            // 找到主目标图层ID，如果没有 blueprint 就取第一个 fileId
+            const targetFileId = blueprint?.data_dependencies?.find((d: any) => d.role.includes('Target'))?.file_id || fileIds[0];
+            
+            // 找出新生成的列名（排除掉 id）
+            const newCols = Object.keys(aggregatedData[0] || {}).filter(k => k !== 'id' && k !== 'rowKey');
+
+            // 执行数据库同步
+            const CHUNK_SIZE = 100;
+            for (let i = 0; i < aggregatedData.length; i += CHUNK_SIZE) {
+                const chunk = aggregatedData.slice(i, i + CHUNK_SIZE);
+                await Promise.all(chunk.map(async (row: any) => {
+                    // 🌟 这里的健壮性改进：如果 AI 没返回 id，尝试根据 index 匹配（兜底逻辑）
+                    const featureId = row.id;
+                    if (featureId) {
+                        const { id, rowKey, ...newProps } = row;
+                        await Feature.updateFeatureProperty(targetFileId, featureId, newProps);
+                    }
+                }));
+            }
+
+            // 🌟 3. 返回一个特殊的 'refreshSchema' 标志位，告诉前端去刷新文件属性
+            res.json({
+                code: 200,
+                tableData: aggregatedData,
+                engine: null,
+                refreshSchema: true, // 关键：通知前端
+                targetFileId: targetFileId,
+                message: `特征重算成功！[${newCols.join(', ')}] 已持久化至数据库。`,
+                pythonCode
+            });
+            return; 
+        }
+
+        // ========================================================
+        // 🌟 4. 分支 B：如果是默认的【数据透视】，走你原来的绘图流程
+        // ========================================================
         let engine: string | undefined;
         let html_string: string | undefined;
         let chart_option: any;
 
-        if (blueprint) {
+        // 如果图表引擎是 echarts，其实可以直接复用原有图表类型，跳过 LLM
+        if (blueprint && blueprint.visualization_spec?.engine === 'echarts') {
+             console.log(`[Rerun] 命中 Echarts，将数据返回给前端 TS 引擎渲染`);
+             engine = 'echarts';
+             // AI Chart Type 可以从 blueprint 获取
+        } 
+        else if (blueprint) {
+            console.log(`[Rerun] 正在生成 HTML 渲染图表...`);
             const chartCode = await generateChartCode(blueprint, aggregatedData.slice(0, 3));
-            const chartResponse = await axios.post<ChartApiResponse>(`${PYTHON_API_URL}/models/chart_only`, {
+            const chartResponse = await axios.post<any>(`${PYTHON_API_URL}/models/chart_only`, {
                 python_code: chartCode,
                 data: aggregatedData
             });
@@ -1491,9 +1578,10 @@ export const rerunPivotCode = async (req: Request, res: Response): Promise<void>
             code: 200,
             tableData: aggregatedData,
             engine,
+            aiChartType: blueprint?.visualization_spec?.chart_type?.toLowerCase(),
             chartHtml: html_string,
             chartOption: chart_option,
-            pythonCode // 回穿修改后的代码
+            pythonCode // 回传修改后的代码
         });
 
     } catch (error: any) {
@@ -1504,71 +1592,111 @@ export const rerunPivotCode = async (req: Request, res: Response): Promise<void>
 };
 
 // 多节点进行可扩展的透视和绘图
-// 多节点进行可扩展的透视和绘图
 export const executeDynamicPipeline = async (req: Request, res: Response): Promise<void> => {
-    //   关键：将 blueprint / pythonCode 提升到 try/catch 之外，使 catch 块可以访问
     let blueprint: any = null;
-    //     修改：将 pivotCode 改为通用的 pythonCode，以适应双管线    
     let pythonCode: string = ""; 
-    //     修改结束    
+
+    // 🌟 开启流式传输
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Transfer-Encoding', 'chunked');
+
+    const emitStep = (msg: string) => {
+        res.write(JSON.stringify({ type: 'step', message: msg }) + '\n');
+    };
 
     try {
         const { userPrompt, fileIds, context, agentMode = 'pivot' } = req.body;
 
         if (!userPrompt || !fileIds || fileIds.length === 0) {
-            res.status(400).json({ error: "缺少用户需求或未选择任何文件" });
+            res.write(JSON.stringify({ type: 'error', data: { error: "缺少用户需求或未选择任何文件" } }) + '\n');
+            res.end();
             return;
         }
 
         console.log(`\n======================================================`);
         console.log(`[Pipeline] 分析文件数: ${fileIds.length}`);
         console.log(`[Pipeline] 用户意图: "${userPrompt}"`);
-        console.log(`[Pipeline] 当前工作模式: [${agentMode}]`); // 补充打印一下模式
+        console.log(`[Pipeline] 当前工作模式: [${agentMode}]`);
 
-        // 提取工作区文件元数据 (给 Planner 当上下文)
+        // 1 意图拆解节点
+        console.log(`[Pipeline] 节点1正在拆解意图...`);
+        emitStep('正在调用 LLM 拆解自然语言意图并规划方案...');
+        
         const availableFiles = [];
         for (const fId of fileIds) {
             const schema = await Feature.getFileSchemaSummary(fId);
             availableFiles.push(schema);
         }
 
-        // 1 意图拆解节点
-        console.log(`[Pipeline] 节点1正在拆解意图...`);
         blueprint = await planWorkflow(userPrompt, availableFiles, context, agentMode);
         console.log(`[Pipeline] 拆解意图完成:`, blueprint.explanation);
-
-        //     新增/修改：节点2 引入双管线代码生成逻辑    
+        emitStep('意图拆解分析完成');
+        emitStep(`意图解析\n${blueprint.explanation || '已成功建立空间计算逻辑链'}`);
+        // 2 节点生成代码
         let rawCode = "";
         let endpointUrl = "";
 
         if (agentMode === 'feature_calc') {
             console.log(`[Pipeline] 命中【特征计算】专属管线，节点2正在编写特征计算代码...`);
-            rawCode = await generateFeatureCalcCode(blueprint);
-            // 拼接特征计算专属的 SDK
+            emitStep('命中【特征计算】管线，正在生成空间算子代码...');
+            rawCode = await generateFeatureCalcCode(blueprint, fileIds);
             pythonCode = FEATURE_CALC_SDK_INJECTION + "\n\n" + rawCode;
             endpointUrl = `${PYTHON_API_URL}/models/feature_calc_only`;
         }
         else if (agentMode === 'pro_model') {
             console.log(`[Pipeline] 命中【专业模型】专属管线，正在构建底层模型调用代码...`);
+            emitStep('命中【专业模型】管线，正在构建底层调度逻辑...');
             rawCode = await generateProModelCode(blueprint);
             pythonCode = PRO_MODEL_SDK_INJECTION + "\n\n" + rawCode;
-            endpointUrl = `${PYTHON_API_URL}/models/feature_calc_only`; // 引擎端可以复用这个万能沙盒入口
+            endpointUrl = `${PYTHON_API_URL}/models/feature_calc_only`; 
         } 
         else {
             console.log(`[Pipeline] 命中【数据透视】原有管线...`);
-            //   原封不动保留你的追问与图表切换逻辑  
             if (blueprint.reuse_code && context?.lastPythonCode) {
                 console.log(`[Pipeline] 检测到意图为图表切换/追问，直接复用上一轮数据抽取代码。`);
+                emitStep('识别为连续追问，直接复用上一轮数据抽取代码');
                 rawCode = context.lastPythonCode;
                 pythonCode = PYTHON_SDK_INJECTION + "\n\n" + rawCode;
             } else {
                 console.log(`[Pipeline] 节点2正在编写透视代码...`);
+                emitStep('命中【数据透视】管线，正在分配空间统计算子...');
+
+                // 精准提取大模型输出的 6 大透视参数
+                const targetDesc = blueprint.data_dependencies?.find((d: any) => d.role === 'TargetLayer' || d.role === 'Target')?.description || '主计算图层';
+                const spatialPred = blueprint.spatial_predicate || 'None';
+                const rowDim = blueprint.visualization_spec?.dimensions?.[0] || 'None';
+                const colDim = blueprint.visualization_spec?.dimensions?.[1] || 'None';
+                
+                let pivotMethod = 'size';
+                let pivotField = 'None';
+                const rawMetric = blueprint.visualization_spec?.metrics?.[0]; 
+                if (rawMetric && rawMetric !== 'count') {
+                    // 如果大模型返回了如 sum(area) 这样的格式，拆解它
+                    if (rawMetric.includes('(') && rawMetric.includes(')')) {
+                        pivotMethod = rawMetric.split('(')[0];
+                        pivotField = rawMetric.substring(rawMetric.indexOf('(')+1, rawMetric.indexOf(')'));
+                    } else {
+                        pivotMethod = rawMetric;
+                        pivotField = 'Value'; // 兜底
+                    }
+                }
+
+                // 使用特殊的 ' : ' 分隔符，方便前端切分渲染成精美的表格
+                let pivotDetails = `【数据透视参数映射】\n`;
+                pivotDetails += `• 透视对象(Target) : ${targetDesc}\n`;
+                pivotDetails += `• 空间约束 : ${spatialPred}\n`;
+                pivotDetails += `• 行维度(Row) : ${rowDim}\n`;
+                pivotDetails += `• 列维度(Col) : ${colDim}\n`;
+                pivotDetails += `• 透视方法 : ${pivotMethod}\n`;
+                pivotDetails += `• 透视字段 : ${pivotField}`;
+                
+                emitStep(pivotDetails);
+
                 rawCode = await generatePivotCode(blueprint);
                 pythonCode = PYTHON_SDK_INJECTION + "\n\n" + rawCode;
             }
             endpointUrl = `${PYTHON_API_URL}/models/pivot_only`;
         }
-        //     新增/修改结束    
 
         // 3 Python执行 (带自愈修复环)
         let aggregatedData: any = null;
@@ -1576,26 +1704,51 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
         const MAX_RETRIES = 2;
         let retries = 0;
 
+        // ======================================================
+        // 从 Blueprint 提取 parameters，传入沙盒（防止 LLM 偶尔用 parameters 读值）
+        // ======================================================
+        const sandboxParameters: Record<string, any> = {};
+        if (blueprint?.parameters && Array.isArray(blueprint.parameters)) {
+            blueprint.parameters.forEach((p: any) => {
+                if (p.defaultValue !== undefined && p.defaultValue !== null && p.defaultValue !== '') {
+                    sandboxParameters[p.name] = p.defaultValue;
+                }
+            });
+        }
+        // 从可用文件 Schema 自动注入常见的多列参数（如 POI 列、Count 列等）
+        for (const fileSchema of availableFiles) {
+            if (fileSchema.columns && Array.isArray(fileSchema.columns)) {
+                const poiCols = fileSchema.columns.filter((c: string) =>
+                    /^count_/i.test(c) || /^poi_/i.test(c)
+                );
+                if (poiCols.length > 0 && !sandboxParameters['poi_columns']) {
+                    sandboxParameters['poi_columns'] = poiCols;
+                }
+            }
+        }
+
         console.log(`\n======================python代码================================`);
         console.log(pythonCode);
-        console.log(`\n======================python代码================================`);
+        console.log(`======================python代码================================\n`);
 
         while (retries <= MAX_RETRIES) {
             try {
                 console.log(`[Pipeline] 节点3正在执行沙盒运算... (尝试 ${retries + 1}/${MAX_RETRIES + 1})`);
-                //     修改：动态请求 endpointUrl    
+                emitStep(`开始执行Python计算... (尝试 ${retries + 1}/${MAX_RETRIES + 1})`);
+                
                 const sandboxResponse = await axios.post<any>(endpointUrl, {
-                    python_code: pythonCode, // 发送带 SDK 的完整代码
-                    file_ids: fileIds
+                    python_code: pythonCode,
+                    file_ids: fileIds,
+                    parameters: sandboxParameters   // ✅ 传入参数，防御 parameters['key'] 模式
                 });
                 
                 aggregatedData = sandboxResponse.data.data; 
-                //     修改结束    
 
                 if (!aggregatedData || aggregatedData.length === 0) {
                     throw new Error("计算结果为空，请检查需求或数据是否匹配");
                 }
                 console.log(`[Pipeline] 沙盒计算成功，返回 ${aggregatedData.length} 条记录`);
+                emitStep(`计算成功，返回 ${aggregatedData.length} 条记录`);
                 break; 
             } catch (err: any) {
                 lastErrorDetails = err.response?.data?.detail || err.message;
@@ -1605,21 +1758,18 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
                 
                 retries++;
                 console.log(`[Pipeline] 节点发觉错误，启动自愈修复环 (第 ${retries} 次重试)...`);
+                emitStep(`捕捉到执行异常，启动自动修复 (第 ${retries} 次)...`);
                 try {
-                    //     新增/修改：双管线各自调用对应的自愈 Agent    
                     if (agentMode === 'feature_calc') {
                         rawCode = await fixFeatureCalcCode(blueprint, rawCode, lastErrorDetails);
                         pythonCode = FEATURE_CALC_SDK_INJECTION + "\n\n" + rawCode;
                     } else if (agentMode === 'pro_model') {
                         rawCode = await fixProModelCode(blueprint, rawCode, lastErrorDetails);
                         pythonCode = PRO_MODEL_SDK_INJECTION + "\n\n" + rawCode;
-                    }
-                    else {
-                        // 原有数据透视自愈逻辑
+                    } else {
                         rawCode = await fixPivotCode(blueprint, rawCode, lastErrorDetails);
                         pythonCode = PYTHON_SDK_INJECTION + "\n\n" + rawCode;
                     }
-                    //     新增/修改结束    
                     console.log(`[Pipeline] FixerAgent 自愈重写完成，准备再次向沙盒投入代码...`);
                 } catch (fixErr) { break; }
             }
@@ -1628,33 +1778,29 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
         // 终局判定：如果重试已耗尽且依旧没有数据，走优雅降级方案
         if (!aggregatedData) {
             console.log(`======================================================\n`);
-            res.status(200).json({
-                status: "failed",
-                error_message: "AI 多次尝试修复代码失败，已切换至人工接管模式。",
-                traceback: lastErrorDetails,
-                pythonCode: pythonCode // 携带最后挣扎生成的代码
-            });
+            res.write(JSON.stringify({
+                type: 'result',
+                data: {
+                    status: "failed",
+                    error_message: "AI 多次尝试修复代码失败，已切换至人工接管模式。",
+                    traceback: lastErrorDetails,
+                    pythonCode: pythonCode 
+                }
+            }) + '\n');
+            res.end();
             return;
         }
 
-        //     新增：特征计算的「回写数据库」与「提前返回」逻辑    
         if (agentMode === 'feature_calc') {
             console.log(`[Pipeline] 特征计算完成，正在将结果同步更新回原始数据层...`);
+            emitStep(`特征计算完成，正在将结果同步...`);
             const targetFileId = blueprint.data_dependencies?.find((d: any) => d.role.includes('Target'))?.file_id || fileIds[0];
-            
-            // 提取第一行中的所有新列名（排除固定字段 id）
             const newCols = Object.keys(aggregatedData[0] || {}).filter(k => k !== 'id' && k !== 'rowKey');
 
-            //   核心修改：将串行更新改为“分批并发更新”  
             console.log(`[Pipeline] 准备同步 ${aggregatedData.length} 条记录，采用分批并发策略...`);
-            
-            // 设置并发块大小（推荐 50-100，兼顾速度且不会撑爆 DB 连接池）
             const CHUNK_SIZE = 100; 
-            
             for (let i = 0; i < aggregatedData.length; i += CHUNK_SIZE) {
                 const chunk = aggregatedData.slice(i, i + CHUNK_SIZE);
-                
-                // 使用 Promise.all 让这一批次的 100 条数据并发更新
                 await Promise.all(chunk.map(async (row: any) => {
                     if (row.id) {
                         const { id, rowKey, ...newProps } = row; 
@@ -1662,34 +1808,30 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
                     }
                 }));
 
-                // 每处理完一定数量打印一下进度，让你在后端能看到在动
                 if ((i + CHUNK_SIZE) % 5000 === 0 || (i + CHUNK_SIZE) >= aggregatedData.length) {
                     console.log(`[Pipeline] 数据库同步进度: ${Math.min(i + CHUNK_SIZE, aggregatedData.length)} / ${aggregatedData.length}`);
                 }
             }
             
             console.log(`======================================================\n`);
-            // 特征计算无需渲染图表，直接返回属性表数据并结束！
-            res.json({
-                code: 200,
-                blueprint: blueprint,
-                tableData: aggregatedData, 
-                engine: null, // 无引擎
-                message: ` 计算成功！已将新特征 [${newCols.join(', ')}] 同步至要素。`,
-                pythonCode: pythonCode // 返回代码方便用户在前端人工修正
-            });
+            emitStep(`同步完成`);
+            res.write(JSON.stringify({
+                type: 'result',
+                data: {
+                    code: 200, blueprint: blueprint, tableData: aggregatedData, engine: null,
+                    message: ` 计算成功！已将新特征 [${newCols.join(', ')}] 同步至要素。`,
+                    pythonCode: pythonCode
+                }
+            }) + '\n');
+            res.end();
             return; 
         }
-        //     新增结束：特征计算管线到此终止    
 
-        //     新增：专业模型的【衍生落盘】逻辑    
         if (agentMode === 'pro_model') {
             console.log(`[Pipeline] 专业模型计算完成，正在将结果导出为物理文件并挂载到文件树...`);
+            emitStep(`模型计算完成，正在将结果导出为物理文件...`);
             
-            // 1. 将 List of Dict 转为 CSV 字符串 (添加 UTF-8 BOM 防止 Excel 乱码)
             const csvString = '\uFEFF' + Papa.unparse(aggregatedData);
-            
-            // 2. 生成物理文件并存入硬盘
             const modelName = blueprint.task_type || 'Model_Result';
             const timestamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
             const newFileName = `${modelName}_${timestamp}.csv`;
@@ -1698,77 +1840,54 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
             
             await fs.promises.writeFile(newFilePath, csvString, 'utf8');
             
-            // 3. 注册到数据库 (FileNodes 表)
             const fileNodeObj = FileNode.createFileNodeObject({
-                name: newFileName,
-                type: 'file',
-                parent_id: null,
-                path: newFilePath,
-                size: Buffer.byteLength(csvString, 'utf8'),
-                extension: '.csv',
-                mime_type: 'text/csv'
+                name: newFileName, type: 'file', parent_id: null, path: newFilePath,
+                size: Buffer.byteLength(csvString, 'utf8'), extension: '.csv', mime_type: 'text/csv'
             });
             const savedNode = await FileNode.insertFileNode(fileNodeObj);
             
-            //       核心修复：将结果数据写入 spatial_features 要素表      
             if (aggregatedData && aggregatedData.length > 0) {
                 console.log(`[Pipeline] 正在将模型结果行写入 spatial_features 表，以供前端表格渲染...`);
                 const featuresToInsert = aggregatedData.map((row: any, index: number) => {
                     return {
-                        fileId: savedNode.id, // 绑定刚刚生成的新文件 ID
-                        type: 'Feature',
-                        geometry: null,       // CSV 纯属性表，无几何数据
-                        properties: {
-                            id: `model_res_${Date.now()}_${index}`, // 生成唯一行 ID
-                            ...row
-                        }
+                        fileId: savedNode.id, type: 'Feature', geometry: null,
+                        properties: { id: `model_res_${Date.now()}_${index}`, ...row }
                     };
                 });
-                // 批量插入数据库（确保文件头部引了 import * as Feature from '../models/Feature';）
                 await Feature.insertFeaturesBatch(savedNode.id, featuresToInsert);
             }
-            //       修复结束      
-            // 获取 AI 蓝图中规划的图表类型（如果 AI 觉得该画热力图，就会在这里体现）
+
             const aiChartType = blueprint.visualization_spec?.chart_type?.toLowerCase() || null;
 
             console.log(`======================================================\n`);
-            
-            // 返回特殊结构，告诉前端去刷新文件树
-            res.json({
-                code: 200,
-                blueprint: blueprint,
-                tableData: aggregatedData, 
-                //     核心修复：如果 AI 规划了图表，就触发前端 ECharts 接管渲染    
-                engine: aiChartType ? 'echarts' : null,
-                aiChartType: aiChartType,
-                //     修复结束    
-                message: ` 模型执行成功！分析结果已自动保存为文件：[${newFileName}]`,
-                newFileId: savedNode.id,   
-                pythonCode: pythonCode
-            });
+            emitStep(`文件导出成功，正在渲染图表...`);
+            res.write(JSON.stringify({
+                type: 'result',
+                data: {
+                    code: 200, blueprint: blueprint, tableData: aggregatedData, 
+                    engine: aiChartType ? 'echarts' : null, aiChartType: aiChartType,
+                    message: ` 模型执行成功！分析结果已自动保存为文件：[${newFileName}]`,
+                    newFileId: savedNode.id, pythonCode: pythonCode
+                }
+            }) + '\n');
+            res.end();
             return;
         }
-        //     专业模型落盘逻辑结束    
 
         // 4 绘图代码/元数据生成节点
         console.log(`[Pipeline] 节点4正在构建图表配置/代码...`);
+        emitStep(`开始构建图表渲染配置...`);
         let chartCodeOrMetadata = "";
-
-        // 5 渲染流分发：这是 Phase 5 的灵魂！
         let chartResponseData: any = null;
         let chartErrorDetails = "";
 
         if (blueprint.visualization_spec.engine === 'echarts') {
             console.log(`[Pipeline] 命中 ECharts 路由，【跳过】绘图代码生成，直接触发前端 TS 引擎接管渲染...`);
+            emitStep(`命中原生 ECharts 引擎，直接渲染`);
             try {
-                // 提取大模型建议的图表类型（默认 bar）
                 const aiChartType = blueprint.visualization_spec.chart_type?.toLowerCase() || 'bar';
-                
                 chartResponseData = {
-                    engine: 'echarts',
-                    ai_chart_type: aiChartType, // 将图表类型传给前端！
-                    chart_option: null,         // 绝对不传配置，强制前端使用原生组件！
-                    html_string: ""
+                    engine: 'echarts', ai_chart_type: aiChartType, chart_option: null, html_string: ""
                 };
                 console.log(`[Pipeline] TS 模板引擎渲染 ECharts 成功！`);
             } catch (err: any) {
@@ -1777,11 +1896,9 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
             }
         } 
         else {
-            // 原有的 html_iframe 复杂渲染流，依然走 Python 沙盒
             console.log(`[Pipeline] 命中 html_iframe 路由，进入 Node 4 呼叫 AI 编写 Plotly/Folium 制图代码...`);
-            // 只有走 Python 制图时，才消耗 Token 去生成代码
+            emitStep(`命中 HTML 渲染引擎，正在编写制图代码...`);
             chartCodeOrMetadata = await generateChartCode(blueprint, aggregatedData.slice(0, 5));
-            // 在这里把绘图专属 SDK 拼接上去！
             const finalChartCode = CHART_SDK_INJECTION + "\n\n" + chartCodeOrMetadata;
 
             const MAX_RETRIES = 2;
@@ -1790,8 +1907,7 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
             while (chartRetries <= MAX_RETRIES) {
                 try {
                     const chartResponse = await axios.post(`${PYTHON_API_URL}/models/chart_only`, {
-                        python_code: finalChartCode,
-                        data: aggregatedData
+                        python_code: finalChartCode, data: aggregatedData
                     });
                     chartResponseData = chartResponse.data;
                     console.log(`[Pipeline] 图表渲染成功，渲染引擎: ${chartResponseData.engine}。`);
@@ -1803,6 +1919,7 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
                     
                     try {
                         console.log(`[Pipeline] 呼叫 FixerAgent 进行图表代码自愈 (第 ${chartRetries} 次重试)...`);
+                        emitStep(`绘图失败，启动修复 (第 ${chartRetries} 次)...`);
                         chartCodeOrMetadata = await fixChartCode(blueprint, chartCodeOrMetadata, chartErrorDetails);
                     } catch (fixErr) { break; }
                 }
@@ -1812,44 +1929,39 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
         // 终局判定
         if (!chartResponseData) {
             console.log(`======================================================\n`);
-            res.status(200).json({
-                status: "failed",
-                error_message: "图表渲染模块崩溃，已降级至人工接管模式。",
-                traceback: chartErrorDetails,
-                pythonCode: chartCodeOrMetadata
-            });
+            res.write(JSON.stringify({
+                type: 'result',
+                data: {
+                    status: "failed", error_message: "图表渲染模块崩溃，已至人工模式",
+                    traceback: chartErrorDetails, pythonCode: chartCodeOrMetadata
+                }
+            }) + '\n');
+            res.end();
             return;
         }
 
-        // 解构并返回给前端
         const { engine, html_string, chart_option } = chartResponseData;
         console.log(`[Pipeline] 全部执行成功，最终渲染引擎: ${engine}。`);
         console.log(`======================================================\n`);
+        emitStep(`所有任务执行完毕！`);
 
-        res.json({
-            code: 200,
-            blueprint: blueprint,
-            tableData: aggregatedData,
-            engine: engine,
-            aiChartType: chartResponseData?.ai_chart_type,
-            chartHtml: html_string,
-            chartOption: chart_option,
-            //     修改：变量名同步为了 pythonCode    
-            pythonCode: pythonCode // 依然返回 pivot 代码供用户检查修改
-        });
+        res.write(JSON.stringify({
+            type: 'result',
+            data: {
+                code: 200, blueprint: blueprint, tableData: aggregatedData,
+                engine: engine, aiChartType: chartResponseData?.ai_chart_type,
+                chartHtml: html_string, chartOption: chart_option, pythonCode: pythonCode 
+            }
+        }) + '\n');
+        res.end();
 
     } catch (error: any) {
-        // 提取执行上下文，方便前端展示错误原因及出错的代码
         const details = error.response?.data?.detail || error.response?.data?.details || error.message;
         console.error("\n[Pipeline错误]", details);
-        
-        res.status(500).json({ 
-            error: '执行失败', 
-            details: details,
-            // blueprint / pythonCode 已提升到外层作用域，可直接安全访问
-            blueprint: blueprint,
-            //     修改：捕获异常时也返回当前的 pythonCode    
-            pythonCode: pythonCode || null
-        });
+        res.write(JSON.stringify({ 
+            type: 'error', 
+            data: { error: '执行失败', details: details, blueprint: blueprint, pythonCode: pythonCode || null }
+        }) + '\n');
+        res.end();
     }
 };

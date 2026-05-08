@@ -23,6 +23,12 @@ export type ColorThemeType =
     // 渐变色系 (Gradient Mode)
     | 'fire_ice' | 'magma' | 'viridis' | 'ocean' | 'cyber';
 
+// 1. 定义一组专业、柔和的预设颜色 (柔和的莫兰迪色系)
+export const PROFESSIONAL_COLORS = [
+  '#5470c6', '#91cc75', '#fac858', '#ee6666', '#73c0de', 
+  '#3ba272', '#fc8452', '#9a60b4', '#ea7ccc', '#51689b'
+];
+
 interface AnalysisState {
     // --- 透视相关 ---
     pivotConfig: PivotConfig;
@@ -73,6 +79,11 @@ interface AnalysisState {
     setAiChartHtml: (html: string | null) => void;
     chartMode: 'traditional' | 'ai';
     setChartMode: (mode: 'traditional' | 'ai') => void;
+
+    // 多图层颜色管理（为MVT全量渲染服务）
+    layerColors: Record<string, string>; // 记录每个 fileId 对应的颜色：{ fileId: colorHex }
+    setLayerColor: (fileId: string, color: string) => void;
+
 }
 
 export const useAnalysisStore = create<AnalysisState>((set) => ({
@@ -134,4 +145,9 @@ export const useAnalysisStore = create<AnalysisState>((set) => ({
     chartMode: 'traditional',
     setChartMode: (mode) => set({ chartMode: mode }),
 
+    // 🌟多图层颜色管理初始化
+    layerColors: {},
+    setLayerColor: (fileId, color) => set((state) => ({ 
+        layerColors: { ...state.layerColors, [fileId]: color } 
+    })),
 }));

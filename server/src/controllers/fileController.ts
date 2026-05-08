@@ -466,26 +466,42 @@ const readAndParseFile = async (filePath: string, dbExtension?: string) => {
             const cpgPath = filePath.replace(/\.shp$/i, '.cpg');
             const prjPath = filePath.replace(/\.shp$/i, '.prj');
 
-            let dbfArrayBuffer;
+           let dbfArrayBuffer;
+            let dbfNodeBuffer; // 🌟 声明提取到外部，方便后续做编码检测
             try {
-                const dbfNodeBuffer = await fsPromises.readFile(dbfPath);
+                dbfNodeBuffer = await fsPromises.readFile(dbfPath);
                 dbfArrayBuffer = toArrayBuffer(dbfNodeBuffer); // 关键！
             } catch (e) {
                 throw new Error('缺少同名的 .dbf 文件');
             }
-
+            
             // .cpg 文件里面通常只写了一个字符串，比如 "GBK" 或 "UTF-8"
-            let encoding = 'utf-8'; // 默认兜底
+            let encoding = ''; // 🌟 先不给默认值
             try {
                 const cpgContent = await fsPromises.readFile(cpgPath, 'utf-8');
-                // 必须 trim()，因为文件中可能包含换行符，会导致识别失败
                 if (cpgContent && cpgContent.trim()) {
                     encoding = cpgContent.trim();
                     console.log(`[Parser] 检测到编码文件 (.cpg): ${encoding}`);
                 }
             } catch (e) {
-                // 如果没有 cpg，通常维持默认 utf-8，或者你可以根据业务写死 'gbk'
+                // 没有 cpg 文件，静默忽略
             }
+
+            // 🌟 新增核心逻辑：如果没有 .cpg 文件，使用 jschardet 智能探测 DBF 文件内部二进制编码
+            if (!encoding && dbfNodeBuffer) {
+                const detection = jschardet.detect(dbfNodeBuffer);
+                encoding = detection.encoding || 'utf-8';
+                
+                const upperEnc = encoding.toUpperCase();
+                // 修正 jschardet 对中文的常见误判
+                if (upperEnc === 'GB2312' || upperEnc === 'GBK' || upperEnc === 'GB18030' || upperEnc === 'WINDOWS-1252') {
+                    encoding = 'gbk';
+                }
+                console.log(`[Parser] 缺失 .cpg 文件，自动检测 DBF 编码为: ${encoding} (置信度: ${detection.confidence})`);
+            }
+            
+            // 兜底默认值
+            if (!encoding) encoding = 'utf-8';
 
             // catch { /* 忽略 */ }: 这里非常宽容。如果 .prj 丢失，
             // 通常默认会当作标准的 WGS84 经纬度处理，
@@ -714,6 +730,12 @@ export const uploadFile = async (req: Request, res: Response) => {
                     //  在此处计算中心点
                     if (f.geometry) {
                         try {
+
+                            // 🌟 新增：在存入数据库前，强制剥离 Z 轴（高程）数据，防止 PostGIS 报错
+                            if (f.geometry.coordinates) {
+                                f.geometry.coordinates = stripZDimension(f.geometry.coordinates);
+                            }
+
                             // 确保 properties 存在
                             if (!f.properties) f.properties = {};
 
@@ -1530,6 +1552,23 @@ export const deleteColumn = async (req: Request, res: Response) => {
         res.status(500).json({ code: 500, message: error.message });
     }
 };
+
+/**
+ * 辅助函数：递归去除 GeoJSON 坐标中的 Z/M 维度，强制降维为 2D [lng, lat]
+ * 解决 PostGIS "Geometry has Z dimension but column does not" 错误
+ */
+function stripZDimension(coords: any): any {
+    if (!Array.isArray(coords) || coords.length === 0) return coords;
+    
+    // 如果数组里的元素是数字，说明到达了最底层的坐标点，比如 [118.12, 32.11, 15.5]
+    if (typeof coords[0] === 'number') {
+        // 只保留前两个元素（经度 X, 纬度 Y），丢弃后面的高程或M值
+        return [coords[0], coords[1]]; 
+    }
+    
+    // 如果数组里的元素还是数组，说明是嵌套坐标（如 LineString, Polygon 等），递归处理
+    return coords.map((c: any) => stripZDimension(c));
+}
 
 /**
  * 辅助函数：将 MongoDB 的 Feature 文档转换为扁平对象 (用于 CSV)
