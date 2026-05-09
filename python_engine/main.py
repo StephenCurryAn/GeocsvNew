@@ -272,16 +272,17 @@ async def execute_pivot_only(payload: PivotInput):
 
         result_data = execute_pivot(gdf_dict, payload.parameters)
         
-        # 自动纠错：如果 AI 没按要求返回 dict 列表，而是直接返回了 DataFrame
+        valid_ids = []
+        # 如果 AI 按照我们的新规范返回了包含 chart_data 和 valid_ids 的字典
+        if isinstance(result_data, dict) and "chart_data" in result_data:
+            valid_ids = result_data.get("valid_ids", [])
+            result_data = result_data["chart_data"]
+
         if isinstance(result_data, (pd.DataFrame, gpd.GeoDataFrame)):
-            # 如果包含几何列，转换前最好去掉，否则 JSON 序列化会失败
             if isinstance(result_data, gpd.GeoDataFrame) and 'geometry' in result_data.columns:
                 result_data = result_data.drop(columns=['geometry'])
             result_data = result_data.to_dict(orient='records')
-            
         elif isinstance(result_data, dict):
-            # 极少数情况下 AI 会返回单个字典，或者没做 orient='records'
-            # 尝试直接包装为列表
             result_data = [result_data]
             
         if not isinstance(result_data, list):
@@ -319,7 +320,8 @@ async def execute_pivot_only(payload: PivotInput):
             clean_result_data.append(clean_row)
         
         print(f"[Pivot Sandbox] 透视成功！生成了 {len(clean_result_data)} 条高度聚合数据。耗时: {round((time.time() - start_time)*1000, 2)}ms")
-        return {"status": "success", "data": clean_result_data}
+        # 把 valid_ids 一起返回给前端
+        return {"status": "success", "data": clean_result_data, "valid_ids": valid_ids}
 
     except Exception as e:
         print(f"\n{'='*50}")
@@ -329,6 +331,24 @@ async def execute_pivot_only(payload: PivotInput):
         print(f"{'='*50}\n")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+class SafeGdfDict(dict):
+    """自定义的安全字典，专门用于拦截对栅格数据的错误内存读取行为"""
+    def __init__(self, original_dict, raster_file_paths):
+        super().__init__(original_dict)
+        # 将有物理路径且没在 gdf_dict 里的文件视为栅格
+        self.raster_ids = set(raster_file_paths.keys())
+
+    def __getitem__(self, key):
+        if key not in self and key in self.raster_ids:
+            # 抛出带有“强烈提示性”的异常，Fixer Agent 捕获到这行报错后会瞬间顿悟
+            raise KeyError(
+                f"\n[安全拦截] 致命错误：图层 '{key}' 是栅格数据(Raster)！\n"
+                f"栅格数据并未加载至内存，绝对不能使用 gdf_dict['{key}'] 获取。\n"
+                f"修复方案：请删除针对该图层的 `gdf_dict` 调用，改为直接获取物理路径：\n"
+                f"`raster_path = file_paths_dict['{key}']`，并将其作为参数传递给算子。"
+            )
+        return super().__getitem__(key)
 
 class FeatureCalcInput(BaseModel):
     python_code: str
@@ -379,11 +399,14 @@ async def execute_feature_calc_only(payload: FeatureCalcInput):
 
         print(f"[Feature Sandbox] 已加载矢量图层 {len(gdf_dict)} 个，物理文件关联 {len(file_paths_dict)} 个")
 
+        # 将普通的字典包装为会“说话”的安全字典
+        safe_gdf_dict = SafeGdfDict(gdf_dict, file_paths_dict)
+
         exec_env = {
             "pd": pd,
             "gpd": gpd,
             "np": np,
-            "gdf_dict": gdf_dict,
+            "gdf_dict": safe_gdf_dict,  # <--- 这里替换为 safe_gdf_dict
             "file_paths_dict": file_paths_dict,
             "file_ids": payload.file_ids,
         }
@@ -399,7 +422,7 @@ async def execute_feature_calc_only(payload: FeatureCalcInput):
             raise ValueError("未找到主函数 'execute_feature_calc' 或 'execute_pro_model'！")
             
         result_data = execute_func(gdf_dict, file_paths_dict, payload.parameters)
-        #     修复结束    
+        # ==== 修复结束 ====
         
         # 结果降维转 JSON
         if isinstance(result_data, (pd.DataFrame, gpd.GeoDataFrame)):
@@ -407,7 +430,21 @@ async def execute_feature_calc_only(payload: FeatureCalcInput):
                 result_data = result_data.drop(columns=['geometry'])
             result_data = result_data.to_dict(orient='records')
             
-        return {"status": "success", "data": result_data}
+        # ================= [核心防御：清洗 NaN 避免 500 崩溃] =================
+        clean_result_data = []
+        for row in result_data:
+            clean_row = {}
+            for k, v in row.items():
+                if pd.isna(v):  # 拦截 np.nan, pd.NA 等致命幽灵
+                    clean_row[k] = None
+                elif hasattr(v, 'item'): # 拦截 Numpy 原生类型导致 JSON 报错
+                    clean_row[k] = v.item()
+                else:
+                    clean_row[k] = v
+            clean_result_data.append(clean_row)
+        # ======================================================================
+
+        return {"status": "success", "data": clean_result_data}
 
     except Exception as e:
         print(f"\n  特征计算算子执行崩溃")

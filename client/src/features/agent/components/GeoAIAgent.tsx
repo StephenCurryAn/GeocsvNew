@@ -95,10 +95,18 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
         setPivotResult, setPivotConfig, setPivotPanelOpen,
         setAiChartOption, setAiChartHtml, setChartMode, setChartVisible,
         setChartType,
-        setHighlightedCategory // 🌟 新增：提取高亮设置函数
+        setHighlightedCategory, // 🌟 新增：提取高亮设置函数
+        setValidIds,
     } = useAnalysisStore();
 
     const syncToGlobalStore = (res: any) => {
+        // 🌟 [核心新增]：第一时间保存巴中市网格的有效 ID 列表！
+        if (res.validIds && Array.isArray(res.validIds)) {
+            setValidIds(res.validIds);
+        } else {
+            setValidIds([]); // 如果没有空间约束，清空 ID 列表
+        }
+
         if (!res.tableData || res.tableData.length === 0) return;
         let rawData = res.tableData;
         let displayData = rawData;
@@ -215,12 +223,28 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
                             if (agentMode === 'pro_model' && resData.newFileId) {
                                 message.success(resData.message || "模型运算完成！");
                                 window.dispatchEvent(new CustomEvent('REFRESH_FILE_TREE'));
+                                
+                                // 🌟 【核心修复】：专业模型也需要将结果推给图表引擎！
+                                // 智能探测：如果发现是地理探测器的矩阵数据，强制指令系统使用 Heatmap 渲染
+                                if (resData.tableData && resData.tableData.length > 0 && '因子A' in resData.tableData[0]) {
+                                    resData.aiChartType = 'heatmap'; // 强制激活热力图
+                                    resData.engine = 'echarts';      // 采用 ECharts 本地渲染引擎
+                                }
+                                
+                                // 同步数据到全局 Store，唤醒图表弹窗！
+                                syncToGlobalStore(resData);
+
                                 setMessages(oldMsgs => {
                                     const filtered = oldMsgs.filter(m => m.id !== thinkingId);
                                     return [...filtered, {
                                         id: Date.now().toString(), role: 'assistant',
-                                        content: `运算完成！分析结果已保存为独立文件，可在左侧资源树中预览或下载。`,
-                                        timestamp: Date.now(), pythonCode: resData.pythonCode,
+                                        content: resData.message || `运算完成！分析结果已保存为独立文件，可在左侧资源树中预览或下载。`,
+                                        timestamp: Date.now(), 
+                                        engine: resData.engine,           // 补充缺失的元数据
+                                        chartOption: resData.chartOption, // 补充缺失的元数据
+                                        chartHtml: resData.chartHtml,     // 补充缺失的元数据
+                                        blueprint: resData.blueprint,     // 补充缺失的元数据
+                                        pythonCode: resData.pythonCode,
                                         pipelineSteps: localPipelineSteps,
                                         agentMode: agentMode
                                     }];

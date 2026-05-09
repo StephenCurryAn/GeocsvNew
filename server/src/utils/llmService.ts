@@ -132,6 +132,7 @@ export interface WorkflowBlueprint {
         file_id: string;
         role: string;
         description: string;
+        type: string;
     }>;
     parameters: Array<{
         name: string;
@@ -193,13 +194,16 @@ ${contextPrompt}
 2. 必须且只能输出一个合法的 JSON 对象。绝对不要包含 \`\`\`json 等 Markdown 包裹符。
 3. 请考虑多轮对话的连贯性。如果用户是"追问"或者要求"换个图表/仅改变渲染维度"，你只需修改 visualization_spec，并输出 "reuse_code": true 即可，无需重新定义数据抽取！
 4. 请严格按照以下 JSON Schema 输出：
+5. 【绝对红线】：在生成 parameters 或 visualization_spec 的 metrics/dimensions 时，引用的字段名【必须 100% 照抄原数据集中的真实列名】（如"威胁财"），绝对禁止自作主张将其翻译为英文！
+
 {
   "task_type": "任务类型，例如 spatial_join_pivot, buffer_analysis, chart_modification 等",
   "reuse_code": true, // 若仅判定为图表更换/属性过滤且计算逻辑不变，设为 true。否则省略或 false。
   "data_dependencies": [
     {
       "file_id": "被选中的文件ID",
-      "role": "该文件在计算中的角色, 必须为 TargetLayer (基准层/面图层) 或 JoinLayer (客体关联点/线图层)",
+      "role": "该文件在计算中的角色, 必须为以下三者之一：1. TargetLayer (要进行分组/透视统计的主体图层，如滑坡点)；2. JoinLayer (被关联的客体图层)；3. ConstraintLayer (仅提供空间范围过滤边界的图层，例如用于筛选出'凉山州'的行政边界图层)",
+      "type": "数据类型，如果是栅格数据(如.tif文件、高程DEM、土地利用CLCD等)必须填 Raster，矢量数据填 Vector",
       "description": "简短描述该数据用途"
     }
   ],
@@ -250,7 +254,12 @@ ${contextPrompt}
     }
 };
 
-export const generatePivotCode = async (blueprint: WorkflowBlueprint): Promise<string> => {
+export const generatePivotCode = async (blueprint: WorkflowBlueprint, availableFiles: any[] = []): Promise<string> => {
+    // 组装真实的表结构字典，给大模型开启上帝视角
+    let filesInfoStr = "暂无详细表结构";
+    if (availableFiles && availableFiles.length > 0) {
+        filesInfoStr = availableFiles.map(f => `- 文件ID: ${f.fileId}, 真实可用字段: [${f.columns?.join(', ')}]`).join('\n');
+    }
     // 1. 提取引擎路由
     const engine = blueprint.visualization_spec?.engine || 'echarts';
     // 2. 基础 Prompt (SDK与5+1原则)
@@ -261,7 +270,25 @@ export const generatePivotCode = async (blueprint: WorkflowBlueprint): Promise<s
 【执行蓝图】：
 ${JSON.stringify(blueprint, null, 2)}
 
-【SDK 核心算子 API 文档】（已隐式 import，可直接调用）：
+【当前可用的图层真实数据字典 (极其重要)】：
+${filesInfoStr}
+
+【绝对红线（违反必导致系统崩溃！）】：
+1. 【列名红线】：绝对禁止臆造英文列名（如 'name'、'city'）！你必须且只能从上方的【真实数据字典】中挑选正确的中文列名！
+2. 【参数红线】：在运行时 parameters 字典始终为空 {}！绝对禁止在代码里写 parameters['xxx']！蓝图中的过滤条件（如 '巴中市'），必须直接硬编码为字符串！
+3. 【字符过滤红线】：使用 .str.contains 之前，必须强制类型转换并开启 na=False。标准语法：df['真实列名'].astype(str).str.contains('巴中', na=False)
+4. 【几何合并红线】：求 union 时，必须显式调用 .geometry.unary_union。标准语法：limit_geom = df[mask].geometry.unary_union
+
+【核心决策：属性透视 vs 空间透视（绝对红线）】
+在写代码前，请根据蓝图中的数据依赖数量和意图做出判断：
+情境A【纯属性透视】：如果蓝图仅包含 1 个图层，或者只是对网格已有的分类字段（如坡度等级）和数值字段（如滑坡数量）进行普通统计展示。
+   - 绝对禁止使用 safe_intersects 等任何空间算子！
+   - 绝对禁止使用 safe_aggregate！
+   - 必须直接使用 Pandas 原生的 .groupby() 进行分组聚合！
+情境B【空间跨层透视】：如果蓝图明确包含 2 个不同图层（如面和点），且需要根据空间位置统计。
+   - 必须调用空间连接算子（如 safe_intersects），再调用 safe_aggregate 计算。
+
+【SDK 核心算子 API 文档】（仅在情境B中使用，已隐式 import，可直接调用）：
 1. 空间连接算子：
    - safe_buffer_intersects(target_gdf, join_gdf, radius) -> 返回安全的相交 GeoDataFrame
    - safe_intersects(target_gdf, join_gdf) -> 面与面/线与面的精确相交
@@ -279,7 +306,9 @@ ${JSON.stringify(blueprint, null, 2)}
 
 【大模型红线：5+1 空间数据透视核心范式 (The 5+1 Spatial Pivot Paradigm)】
 不要盲目应用普通的 Pandas 数据透视知识。空间数据透视必须基于『空间拓扑约束』，且基于6个标准要素：
-1. 空间约束 (Spatial Constraint)：如 buffer, intersects, nearest。
+1. 空间约束 (Spatial Constraint)：
+   - 拓扑连接：如 buffer, intersects, nearest (用于 TargetLayer 和 JoinLayer 之间)。
+   - 空间过滤/裁剪 (极其重要)：如果蓝图中存在 ConstraintLayer (如某州市的行政边界)，你必须先使用属性查询找到该边界 (如 "limit_geom = constraint_gdf[constraint_gdf['某列名'].str.contains('凉山')].unary_union")，然后使用 "target_gdf = target_gdf[target_gdf.geometry.intersects(limit_geom)]" 将目标图层过滤出该范围，然后再进行后续透视！
 2. 透视对象 (Target)：作为主体的主表（基准表，即左表）。
 3. 行维度 (Row)：按主表的分类分组（处理时必须依托主表的 Index）。
 4. 列维度 (Col)：是否需要将关联表的某个分类字段展开（无则为空）。
@@ -337,6 +366,37 @@ def execute_pivot(gdf_dict, parameters):
     final_gdf.rename(columns={row_dim_col: 'rowKey'}, inplace=True)
     
     return pd.DataFrame(final_gdf)
+
+# 示例 2：带空间范围约束的二维交叉透视 (极其重要！)
+def execute_pivot(gdf_dict, parameters):
+    target_gdf = gdf_dict['target_id'].copy() 
+    constraint_gdf = gdf_dict['constraint_id'].copy()
+    
+    # 1. 提取空间约束范围并过滤
+    mask = constraint_gdf['真实的市州列名'].astype(str).str.contains('巴中', na=False)
+    if mask.any():
+        limit_geom = constraint_gdf[mask].geometry.unary_union
+        target_gdf = target_gdf[target_gdf.geometry.intersects(limit_geom)]
+    
+    # 2. 纯属性二维聚合 (无需再做 safe_intersects)
+    row_col = '真实的行维度列名'
+    col_dim = '真实的列维度列名'
+    value_col = '真实的数值列名' 
+    
+    if value_col and value_col in target_gdf.columns:
+        target_gdf[value_col] = pd.to_numeric(target_gdf[value_col], errors='coerce')
+        agg_df = target_gdf.groupby([row_col, col_dim])[value_col].sum().unstack(fill_value=0)
+    else:
+        agg_df = target_gdf.groupby([row_col, col_dim]).size().unstack(fill_value=0)
+    
+    agg_df.index.name = 'rowKey'
+    final_df = agg_df.reset_index()
+    
+    # 【核心重构】：返回字典，把透视结果和过滤后存活的网格 ID 列表一起返回！
+    return {
+        "chart_data": final_df,
+        "valid_ids": target_gdf['id'].tolist() if 'id' in target_gdf.columns else []
+    }
 `;
     // 4. HTML/Iframe 专用的数据契约 (保留层级)
     const IFRAME_CONTRACT = `
@@ -570,14 +630,17 @@ ${errorTraceback}
     }
 };
 
-export const generateFeatureCalcCode = async (blueprint: any, validFileIds: string[]): Promise<string> => {
-    
+export const generateFeatureCalcCode = async (blueprint: any, validFileIds: string[], availableFiles: any[] = []): Promise<string> => {
     let dataLoadingSkeleton = "";
+    let filesInfoStr = "暂无详细表结构";
+    if (availableFiles && availableFiles.length > 0) {
+        filesInfoStr = availableFiles.map(f => `- 文件ID: ${f.fileId}, 真实可用字段: [${f.columns?.join(', ')}]`).join('\n');
+    }
     let joinCounter = 0; 
     
     if (blueprint.data_dependencies && Array.isArray(blueprint.data_dependencies)) {
         blueprint.data_dependencies.forEach((dep: any, index: number) => {
-            // 🌟 UUID 幻觉自愈匹配器
+            // 🌟 UUID 幻觉自愈匹配器 (保持原样)
             let realUuid = dep.file_id;
             if (validFileIds && validFileIds.length > 0) {
                 const cleanDepId = String(dep.file_id).replace(/-/g, '').toLowerCase();
@@ -593,16 +656,27 @@ export const generateFeatureCalcCode = async (blueprint: any, validFileIds: stri
                 }
             }
 
-            let varName = `layer_${index}_gdf`;
-            if (dep.role === 'TargetLayer' || dep.role === 'Target') {
-                varName = 'target_gdf';
-            } else if (dep.role === 'JoinLayer') {
+            // 【核心重构】：根据类型变量，生成完全不同的安全骨架
+            let depType = (dep.type || 'Vector').toLowerCase();
+            
+            dataLoadingSkeleton += `    # 角色: ${dep.role} (${dep.description || ''}) - 类型: ${dep.type || 'Vector'}\n`;
+            
+            if (depType === 'raster') {
+                // 如果是栅格，绝对不碰 gdf_dict，直接生成物理路径变量
                 joinCounter++;
-                varName = joinCounter === 1 ? 'join_gdf' : `join_gdf_${joinCounter}`;
+                let rasterVarName = joinCounter === 1 ? 'join_raster_path' : `join_raster_path_${joinCounter}`;
+                dataLoadingSkeleton += `    ${rasterVarName} = file_paths_dict['${realUuid}']\n`;
+            } else {
+                // 如果是矢量，正常分配 GeoDataFrame 变量
+                let varName = `layer_${index}_gdf`;
+                if (dep.role === 'TargetLayer' || dep.role === 'Target') {
+                    varName = 'target_gdf';
+                } else if (dep.role === 'JoinLayer') {
+                    joinCounter++;
+                    varName = joinCounter === 1 ? 'join_gdf' : `join_gdf_${joinCounter}`;
+                }
+                dataLoadingSkeleton += `    ${varName} = gdf_dict['${realUuid}'].copy()\n`;
             }
-                
-            dataLoadingSkeleton += `    # 角色: ${dep.role} (${dep.description || ''})\n`;
-            dataLoadingSkeleton += `    ${varName} = gdf_dict['${realUuid}'].copy()\n`;
         });
     } else {
         dataLoadingSkeleton = `    # 兜底获取方式\n    target_gdf = list(gdf_dict.values())[0].copy()\n`;
@@ -630,13 +704,14 @@ export const generateFeatureCalcCode = async (blueprint: any, validFileIds: stri
    - 计算目标要素外扩 buffer_dist 米内包含的其他要素数量。
 7. safe_categorical_zonal_stats(vector_gdf, raster_file_path, col_name='majority_class')
    - 作用：提取分类栅格(如土地利用类型)在网格中的众数(占比最大的类别值)。
-   - 绝对重要：raster_file_path 必须从 file_paths_dict 中获取栅格文件的物理路径！
-   - 正确示例：target_gdf = safe_categorical_zonal_stats(target_gdf, file_paths_dict['栅格UUID'], col_name='LandUse_Majority')
-   - 错误示例：不要尝试从 gdf_dict 中获取栅格数据！栅格文件不会被加载到 gdf_dict 中！
+   - 绝对重要：如果你发现代码骨架为你提供了名为 “join_raster_path” 的变量，请直接将其作为 raster_file_path 参数传入！
+   - 正确示例：target_gdf = safe_categorical_zonal_stats(target_gdf, join_raster_path, col_name='LandUse_Majority')
    - 函数内部必须设置 categorical=True 参数，否则分类栅格的众数统计会失效返回空值！
-8. safe_natural_breaks(gdf, target_col, k=5, col_name='jenks_class')
+8. safe_natural_breaks(gdf, target_col, k=5, col_name='jenks_class', labels=None)
    - 作用：使用 Jenks 自然断点法将连续数值列离散化。
-   - 参数要求：请务必根据用户的自然语言需求，动态提取并传入真实的 k 值（例如用户说“分3类”，你必须显式传入 k=3）。
+   - 参数要求：请务必根据用户的自然语言需求，动态提取并传入真实的 k 值。
+   - 【极其重要】：如果用户要求给分级后的类别赋予具体文字名称（如"低降水区", "高降水区"），绝对不要自己写 apply 或 lambda 映射！你必须直接通过 labels 参数传入一个列表。
+   - 正确示例：safe_natural_breaks(gdf, 'rain', k=5, col_name='Rain_C', labels=['低降水区', '较低降水区', '中等降水区', '高降水区', '极高降水区'])
 9. safe_rule_reclassify(gdf, target_col, bins, labels, col_name='reclass_val', default_val='其他')
    - 作用：根据规则列表将数值离散化。支持重复的 label（如两个'北'）。
    - 【绝对禁令】：千万不要试图从 \`parameters\` 字典中读取 target_col、bins 或 labels！你必须在代码中**直接写死（Hardcode）**这些变量。
@@ -647,9 +722,17 @@ export const generateFeatureCalcCode = async (blueprint: any, validFileIds: stri
      \`safe_rule_reclassify(gdf, target_col='Aspect', bins=bins, labels=labels, col_name='Aspect_Class', default_val='平面')\`
 10. safe_sum_intersecting_length(target_gdf, line_gdf, col_name='total_length')
    - ：当需要计算 面内相交线(如路网、水网)的总长度 时，务必调用此算子！它会返回包含路网总长的新图层。
+11. safe_spatial_join_agg(target_gdf, join_gdf, agg_col, agg_func='sum', col_name='agg_val')
+   - 作用：将相交的客体要素（如滑坡点）的指定数值字段（agg_col）进行聚合（求和、均值等），并赋给目标面图层（如网格）。
+   - agg_func 支持：'sum' (求和), 'mean' (求平均), 'max', 'min'。
+   - 绝对指令：只要用户需求中包含“计算总和”、“求和”、“平均值”并涉及跨图层属性转移时，【必须使用本算子】，绝对不要使用 safe_spatial_join_attribute！
+
 
    【蓝图】：
 ${JSON.stringify(blueprint, null, 2)}
+
+   【当前可用的图层真实数据字典 (极其重要)】：
+${filesInfoStr}
 
 【严格要求】：
 1. 必须写一个 \`def execute_feature_calc(gdf_dict, file_paths_dict, parameters):\` 函数。
@@ -748,6 +831,18 @@ ${errorTraceback}
 
 请分析报错原因，彻底修复并返回完整的 \`def execute_feature_calc(gdf_dict, file_paths_dict, parameters):\` 函数。
 只输出纯 Python 代码，绝对不要包含 \`\`\`python 标签！
+【补充】：
+❌ 错误根因1：代码用了 parameters['某个key'] 或 parameters.get('某个key')。
+   parameters 字典在运行时始终为空 {}，从中读取任何键都会触发 KeyError！
+   ✅ 修复方案：直接将所有 parameters 读取替换为硬编码的列名列表或动态模式匹配。
+
+❌ 错误根因2 (致命幻觉)：使用了 "if df:" 或 "if not df:" 来判断 GeoDataFrame 变量（如 target_gdf 或 join_gdf）！
+   这会直接引发 "The truth value of a GeoDataFrame is ambiguous" 的底层崩溃！
+   ✅ 修复方案：判空或校验数据框的有效性时，必须且只能使用这种语法：\`if df is not None and not df.empty:\`。
+
+❌ 错误根因3：KeyError: 'uuid字符串'。
+   说明你试图从 gdf_dict 获取栅格数据！栅格数据不存在于 gdf_dict，只存在于 file_paths_dict。
+   ✅ 修复方案：删除 gdf_dict 的调用，改为 \`raster_path = file_paths_dict['出错的uuid']\`。
 `;
     const response = await openai.chat.completions.create({
         model: "deepseek-v3",

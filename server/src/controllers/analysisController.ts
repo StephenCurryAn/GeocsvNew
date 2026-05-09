@@ -186,9 +186,20 @@ def ensure_metric_crs(gdf):
     return gdf
 
 def safe_zonal_stats(vector_gdf, raster_file_path, stat='mean', col_name='raster_val'):
-    if vector_gdf.empty: return vector_gdf
-    
-    # 修复 1：读取栅格物理文件的真实 CRS，并强制将矢量对齐过去，杜绝空间错位
+    # 【SDK防线1】：兼容判断空值，防止大模型传入 None 导致 .empty 报错
+    if vector_gdf is None or (hasattr(vector_gdf, 'empty') and vector_gdf.empty):
+        return vector_gdf
+
+    # 【SDK防线2】：拦截参数类型错误
+    if not isinstance(raster_file_path, str):
+        raise TypeError(
+            f"\\n[SDK 拦截] 参数错误！raster_file_path 必须是文件的绝对路径字符串，"
+            f"但当前收到的是 {type(raster_file_path)}。\\n"
+            f"修复指导：请检查是否将 vector_gdf 和 raster_file_path 的传参顺序写反了，"
+            f"或者错误地传入了 GeoDataFrame 对象。"
+        )
+
+    # 修复 1：读取栅格物理文件的真实 CRS...
     try:
         with rasterio.open(raster_file_path) as src:
             raster_crs = src.crs
@@ -197,7 +208,6 @@ def safe_zonal_stats(vector_gdf, raster_file_path, stat='mean', col_name='raster
     except Exception as e:
         pass # 如果读取失败，降级依赖 rasterstats 的默认行为
 
-    # 修复 2：加入 all_touched=True，只要多边形触碰到像素边缘就纳入统计，彻底消灭规律性 0 值空洞！
     stats = zonal_stats(vector_gdf, raster_file_path, stats=[stat], all_touched=True, geojson_out=False)
     vector_gdf[col_name] = [s[stat] if s[stat] is not None else 0 for s in stats]
     return vector_gdf
@@ -234,14 +244,25 @@ def safe_calc_geometry(gdf, calc_type='area', col_name='geom_val'):
     return gdf
 
 def safe_spatial_join_attribute(target_gdf, ref_gdf, extract_col, join_type='nearest', col_name='ref_val'):
-    if target_gdf.empty or ref_gdf.empty or extract_col not in ref_gdf.columns:
+    if target_gdf.empty or ref_gdf.empty:
         target_gdf[col_name] = np.nan
         return target_gdf
+        
+    if extract_col not in ref_gdf.columns:
+        raise KeyError(
+            f"\\n[SDK 拦截] 列名错误！在客体图层中找不到名为 '{extract_col}' 的字段！\\n"
+            f"请不要自创英文列名，必须使用原始数据的真实列名。\\n"
+            f"当前客体图层真实的可用列名包括: {list(ref_gdf.columns)}"
+        )
+
     t_gdf = ensure_metric_crs(target_gdf)
     r_gdf = ensure_metric_crs(ref_gdf).to_crs(t_gdf.crs)
-    r_gdf_sub = r_gdf[['geometry', extract_col]]
+    
+    # 【核心修复】：使用 .geometry.name 动态获取真实的几何列名（兼容 geom 和 geometry）
+    r_gdf_sub = r_gdf[[r_gdf.geometry.name, extract_col]]
+    
     if join_type == 'nearest':
-        joined = gpd.sjoin_nearest(t_gdf, r_gdf_sub, how='left')
+        joined = gpd.sjoin_nearest(t_gdf, r_gdf_sub, how='left')        
     else:
         joined = gpd.sjoin(t_gdf, r_gdf_sub, how='left', predicate='intersects')
     joined = joined[~joined.index.duplicated(keep='first')]
@@ -254,8 +275,11 @@ def safe_buffer_count(target_gdf, join_gdf, buffer_dist=500, col_name='buf_count
         return target_gdf
     t_gdf = ensure_metric_crs(target_gdf)
     j_gdf = ensure_metric_crs(join_gdf).to_crs(t_gdf.crs)
+    
     t_buffered = t_gdf.copy()
-    t_buffered['geometry'] = t_buffered.geometry.buffer(buffer_dist)
+    # 【核心修复】：使用 set_geometry 确保活跃几何列被正确替换，而不是强行创建名为'geometry'的新列
+    t_buffered = t_buffered.set_geometry(t_buffered.geometry.buffer(buffer_dist))
+    
     joined = gpd.sjoin(t_buffered, j_gdf, how='inner', predicate='intersects')
     counts = joined.groupby(level=0).size()
     target_gdf[col_name] = counts
@@ -263,46 +287,79 @@ def safe_buffer_count(target_gdf, join_gdf, buffer_dist=500, col_name='buf_count
     return target_gdf
 
 def safe_categorical_zonal_stats(vector_gdf, raster_file_path, col_name='majority_class'):
-    if vector_gdf.empty: return vector_gdf
-    
+    # 【SDK防线1】
+    if vector_gdf is None or (hasattr(vector_gdf, 'empty') and vector_gdf.empty):
+        return vector_gdf
+
+    # 【SDK防线2】
+    if not isinstance(raster_file_path, str):
+        raise TypeError(
+            f"\\n[SDK 拦截] 参数错误！raster_file_path 必须是文件的绝对路径字符串..."
+        )
+
+    print(f"[*] 准备进行大规模栅格分区统计 (Zonal Stats)，共有 {len(vector_gdf)} 个多边形需要计算，这可能需要较长时间，请耐心等待...")
+
     try:
         with rasterio.open(raster_file_path) as src:
             raster_crs = src.crs
             if raster_crs and vector_gdf.crs != raster_crs:
+                print(f"[*] 正在将矢量投影转换为栅格一致的 CRS: {raster_crs} ...")
                 vector_gdf = vector_gdf.to_crs(raster_crs)
     except:
         pass
 
-    # 同样开启 all_touched=True 防止分类栅格提取遗漏
-    stats = zonal_stats(vector_gdf, raster_file_path, stats=['majority'], all_touched=True, categorical=False, geojson_out=False)
-    vector_gdf[col_name] = [s['majority'] if s['majority'] is not None else np.nan for s in stats]
+    import time
+    start_time = time.time()
+    
+    # 【重要修复】：您之前的 SDK 里硬编码了 categorical=False，这可能会导致某些分类栅格统计失败，必须改为 categorical=True
+    stats = zonal_stats(
+        vector_gdf, 
+        raster_file_path, 
+        stats=['majority'], 
+        all_touched=True, 
+        categorical=True,  # <-- 修复这里
+        geojson_out=False
+    )
+    
+    print(f"[*] 栅格统计计算完成！耗时: {round(time.time() - start_time, 2)} 秒")
+    
+    # 核心修复：坚决不使用 np.nan，改用 None。因为一旦流入 to_dict 会造成后续 JSON 500 崩溃
+    vector_gdf[col_name] = [s.get('majority') if (s and 'majority' in s and s['majority'] is not None) else None for s in stats]
+    
     return vector_gdf
 
-def safe_natural_breaks(gdf, target_col, k=5, col_name='jenks_class'):
+def safe_natural_breaks(gdf, target_col, k=5, col_name='jenks_class', labels=None): 
     """
     Jenks 自然断点法分级 (Feature Binning)
+    支持直接传入 labels 列表进行文本标签映射
     """
     if gdf.empty or target_col not in gdf.columns:
         gdf[col_name] = np.nan
         return gdf
-    
+
     # 过滤掉空值参与计算
     valid_data = gdf[target_col].dropna()
     if len(valid_data) < k:
-        gdf[col_name] = 0 # 数据量太少无法分级
+        gdf[col_name] = np.nan # 数据量太少无法分级
         return gdf
-        
+
     try:
         # 使用 mapclassify 计算断点
         classifier = mc.NaturalBreaks(valid_data, k=k)
-        # 将分类结果映射回原数据 (类别通常为 0, 1, 2... k-1)
-        # 我们让类别从 1 开始，即 1, 2, 3...
-        mapping = dict(zip(valid_data.index, classifier.yb + 1))
+        
+        # 核心升级：如果传入了 labels 并且长度匹配，直接映射为文本！
+        if labels and len(labels) >= k:
+            # classifier.yb 是 0 到 k-1 的索引，完美对应 Python List
+            mapping = dict(zip(valid_data.index, [labels[i] for i in classifier.yb]))
+        else:
+            # 否则回退到默认的 1, 2, 3...
+            mapping = dict(zip(valid_data.index, classifier.yb + 1))
+            
         gdf[col_name] = gdf.index.map(mapping)
     except Exception as e:
         print(f"Jenks分级失败: {e}")
         gdf[col_name] = np.nan
-        
+
     return gdf
 
 def safe_rule_reclassify(gdf, target_col, bins, labels, col_name='reclass_val', default_val='其他'):
@@ -352,6 +409,42 @@ def safe_sum_intersecting_length(target_gdf, line_gdf, col_name='total_length'):
     target_gdf[col_name] = length_sum
     target_gdf[col_name] = target_gdf[col_name].fillna(0)
     return target_gdf
+
+def safe_spatial_join_agg(target_gdf, join_gdf, agg_col, agg_func='sum', col_name='agg_val'):
+    """
+    【空间连接聚合算子】: 将相交的客体图层数值字段进行聚合计算赋给目标图层。
+    """
+    if target_gdf.empty or join_gdf.empty:
+        target_gdf[col_name] = 0 if agg_func == 'sum' else np.nan       
+        return target_gdf
+
+    if agg_col not in join_gdf.columns:
+        raise KeyError(
+            f"\\n[SDK 拦截] 列名错误！在客体图层中找不到名为 '{agg_col}' 的字段！\\n"
+            f"请不要自创英文列名，必须使用原始数据的真实列名。\\n"
+            f"当前客体图层真实的可用列名包括: {list(join_gdf.columns)}"
+        )
+
+    t_gdf = ensure_metric_crs(target_gdf)
+    j_gdf = ensure_metric_crs(join_gdf).to_crs(t_gdf.crs)
+
+    j_gdf_sub = j_gdf[[j_gdf.geometry.name, agg_col]]
+    joined = gpd.sjoin(t_gdf, j_gdf_sub, how='left', predicate='intersects')
+
+    # 【核心防御】：强悍的正则洗数据！把 "100万", "未知", "50.5元" 等乱七八糟的格式强行洗成纯数字
+    # 1. 提取所有数字和小数点
+    extracted_nums = joined[agg_col].astype(str).str.extract(r'([\\d\\.]+)', expand=False)
+    # 2. 转换为浮点数，提取不到的变成 NaN
+    joined[agg_col] = pd.to_numeric(extracted_nums, errors='coerce')
+
+    agg_series = joined.groupby(joined.index)[agg_col].agg(agg_func)   
+    target_gdf[col_name] = agg_series
+
+    if agg_func in ['sum', 'count']:
+        target_gdf[col_name] = target_gdf[col_name].fillna(0)
+
+    return target_gdf
+
 `;
 
 
@@ -1692,7 +1785,7 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
                 
                 emitStep(pivotDetails);
 
-                rawCode = await generatePivotCode(blueprint);
+                rawCode = await generatePivotCode(blueprint, availableFiles);
                 pythonCode = PYTHON_SDK_INJECTION + "\n\n" + rawCode;
             }
             endpointUrl = `${PYTHON_API_URL}/models/pivot_only`;
@@ -1700,6 +1793,7 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
 
         // 3 Python执行 (带自愈修复环)
         let aggregatedData: any = null;
+        let validIds: any[] = []; // 🌟 【新增】：用于接收并暂存后端的有效网格 ID
         let lastErrorDetails = "";
         const MAX_RETRIES = 2;
         let retries = 0;
@@ -1742,8 +1836,9 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
                     parameters: sandboxParameters   // ✅ 传入参数，防御 parameters['key'] 模式
                 });
                 
-                aggregatedData = sandboxResponse.data.data; 
-
+                aggregatedData = sandboxResponse.data.data;
+                validIds = sandboxResponse.data.valid_ids || []; // 🌟 【核心提取】：捕获 Python 传过来的巴中市网格 ID！
+             
                 if (!aggregatedData || aggregatedData.length === 0) {
                     throw new Error("计算结果为空，请检查需求或数据是否匹配");
                 }
@@ -1949,6 +2044,7 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
             type: 'result',
             data: {
                 code: 200, blueprint: blueprint, tableData: aggregatedData,
+                validIds: validIds, // 🌟 【完美闭环】：将 ID 塞进流式通道，发给前端的 GeoAIAgent！
                 engine: engine, aiChartType: chartResponseData?.ai_chart_type,
                 chartHtml: html_string, chartOption: chart_option, pythonCode: pythonCode 
             }

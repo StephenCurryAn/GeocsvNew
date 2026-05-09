@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+﻿import React, { useEffect, useRef, useState } from 'react';
 import * as maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { bbox } from '@turf/turf';
@@ -139,6 +139,46 @@ const COLOR_SCHEMES = {
         name: '冷暖双向渐变',
         // 配合你的暗色底图，极高饱和度、发光质感的霓虹色
         colors: ['#5e4fa2', '#3288bd', '#66c2a5', '#abdda4', '#e6f598', '#fee08b', '#fdae61', '#f46d43', '#d53e4f', '#9e0142']
+    },    // 新增：专业离散型配色方案（5类）
+    discrete_warm: {
+        name: '离散-暖色系',
+        // 参考"大地色"和"黑紫-亮橘"，暖色调高区分度
+        colors: ['#d73027', '#fc8d59', '#fee08b', '#d9ef8b', '#91cf60']
+    },
+    discrete_cool: {
+        name: '离散-冷色系',
+        // 参考"深海蓝"和"青水色"，冷色调专业配色
+        colors: ['#2166ac', '#4393c3', '#92c5de', '#d1e5f0', '#f7f7f7']
+    },
+    discrete_contrast: {
+        name: '离散-高对比',
+        // 参考"冷暖双向渐变"，冷暖色对比强烈
+        colors: ['#d53e4f', '#fc8d59', '#fee08b', '#91bfdb', '#4575b4']
+    },
+    discrete_nature: {
+        name: '离散-自然系',
+        // 参考"翠绿-明黄"，自然界色彩
+        colors: ['#1a9850', '#91cf60', '#d9ef8b', '#fee08b', '#d73027']
+    },
+    discrete_elegant: {
+        name: '离散-雅致系',
+        // 参考"大地色"和"青水色"，低饱和度优雅配色
+        colors: ['#8c510a', '#d8b365', '#f6e8c3', '#c7eae5', '#5ab4ac']
+    },
+    discrete_vibrant: {
+        name: '离散-活力系',
+        // 参考"烈焰红"和"极光绿"，高饱和度活力配色
+        colors: ['#e41a1c', '#377eb8', '#4daf4a', '#984ea3', '#ff7f00']
+    },
+    discrete_pastel: {
+        name: '离散-马卡龙',
+        // 柔和马卡龙色系，适合大面积填充
+        colors: ['#fbb4ae', '#b3cde3', '#ccebc5', '#decbe4', '#fed9a6']
+    },
+    discrete_dark: {
+        name: '离散-深色系',
+        // 深色调配色，适合暗色底图
+        colors: ['#7fc97f', '#beaed4', '#fdc086', '#ffff99', '#386cb0']
     },
 };
 
@@ -290,7 +330,8 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
         isMapLinkageEnabled, highlightedCategory, mapColorTheme,// 联动状态
         //   [新增] 获取 activeColumn
         activeColumn , 
-        layerColors, setLayerColor
+        layerColors, setLayerColor,
+        validIds // 新增：获取 validIds 用于地图过滤
     } = useAnalysisStore();
 
     //  切换文件时的自动清理逻辑
@@ -558,45 +599,89 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
         setActiveFilterValues(uniqueVals); 
     }, [activeField, displayData, isGridMode, stringFields]);
 
-    //   [修改] Effect 4: 将用户的过滤选项应用到地图图层 (Filter 属性)
+// =========================================================================
+    // 🌟 核心修复一：全图层覆盖 + 语义化智能遮罩 (不误伤背景边界图层)
+    // =========================================================================
     useEffect(() => {
         const map = mapInstance.current;
         if (!map || !isMapLoaded) return;
 
-        const applyFilter = () => {
-            //   判断是否为文本字段
+        const syncAllFilters = () => {
+            // 1. 获取当前地图上所有的图层 ID（主图层 + 所有的副图层）
+            const allLayers: { id: string, type: 'Polygon' | 'LineString' | 'Point' }[] = [
+                { id: 'geo-fill-layer', type: 'Polygon' },
+                { id: 'geo-polygon-border', type: 'Polygon' },
+                { id: 'geo-linestring-main', type: 'LineString' },
+                { id: 'geo-point-layer', type: 'Point' }
+            ];
+            
+            renderedExtraLayersRef.current.forEach(baseId => {
+                allLayers.push({ id: `extra-${baseId}-fill`, type: 'Polygon' });
+                allLayers.push({ id: `extra-${baseId}-line`, type: 'LineString' });
+                allLayers.push({ id: `extra-${baseId}-point`, type: 'Point' });
+            });
+
+            // 2. 构建智能的基础条件数组
+            let baseFilterConditions: any[] = [];
+
+            // A. 巴中市 validIds 过滤
+            if (validIds && validIds.length > 0) {
+                const validIdsStr = validIds.map(String);
+                const idExp = [
+                    'any',
+                    (['in', 'id'] as any[]).concat(validIds),
+                    (['in', 'id'] as any[]).concat(validIdsStr),
+                    (['in', '$id'] as any[]).concat(validIds),
+                    (['in', '$id'] as any[]).concat(validIdsStr)
+                ];
+                
+                // 【绝杀逻辑】：只对带有分析字段(如Slope_C)的图层应用遮罩！其他图层直接放行(true)
+                if (pivotConfig?.groupByRow) {
+                    baseFilterConditions.push(['case', ['has', pivotConfig.groupByRow], idExp, true]);
+                } else {
+                    baseFilterConditions.push(idExp);
+                }
+            }
+
+            // B. 图表高亮联动过滤
+            if (isMapLinkageEnabled && highlightedCategory && pivotConfig.groupByRow) {
+                const highlightExp = [
+                    'any',
+                    ['==', pivotConfig.groupByRow, highlightedCategory],
+                    ['==', pivotConfig.groupByRow, String(highlightedCategory)],
+                    ['==', pivotConfig.groupByRow, Number(highlightedCategory)]
+                ];
+                // 同样，只针对包含该分析字段的图层生效
+                baseFilterConditions.push(['case', ['has', pivotConfig.groupByRow], highlightExp, true]);
+            }
+
+            // C. 侧边栏基础属性过滤
             const isStringField = activeField ? stringFields.includes(activeField) : false;
-
-            // 当没有开启过滤、处于网格模式，或者是【连续数值字段】时，恢复默认显示所有，防止数组越界！
-            if (isGridMode || !activeField || activeField === 'none' || !isStringField) {
-                if (map.getLayer('geo-fill-layer')) map.setFilter('geo-fill-layer', ['==', '$type', 'Polygon']);
-                if (map.getLayer('geo-polygon-border')) map.setFilter('geo-polygon-border', ['==', '$type', 'Polygon']);
-                if (map.getLayer('geo-linestring-main')) map.setFilter('geo-linestring-main', ['==', '$type', 'LineString']);
-                if (map.getLayer('geo-point-layer')) map.setFilter('geo-point-layer', ['==', '$type', 'Point']);
-                return;
+            if (!isGridMode && activeField && activeField !== 'none' && isStringField) {
+                if (activeFilterValues.length === 0) {
+                    baseFilterConditions.push(['==', 'id', 'nothing_selected']);
+                } else {
+                    baseFilterConditions.push((['in', activeField] as any[]).concat(activeFilterValues));
+                }
             }
 
-            if (activeFilterValues.length === 0) {
-                const hideExp: any = ['==', 'id', 'nothing_selected'];
-                // ... 省略（保留你原有的 hideExp 应用逻辑）
-                if (map.getLayer('geo-fill-layer')) map.setFilter('geo-fill-layer', hideExp);
-                if (map.getLayer('geo-polygon-border')) map.setFilter('geo-polygon-border', hideExp);
-                if (map.getLayer('geo-linestring-main')) map.setFilter('geo-linestring-main', hideExp);
-                if (map.getLayer('geo-point-layer')) map.setFilter('geo-point-layer', hideExp);
-                return;
+        // 3. 循环遍历所有图层并应用过滤
+        allLayers.forEach(layerInfo => {
+            if (map.getLayer(layerInfo.id)) {
+                // 拼接基础的图层几何类型判断 + 我们上面的动态条件
+                const finalFilter = ['all', ['==', '$type', layerInfo.type], ...baseFilterConditions];
+                
+                // 🌟 【核心修复】：直接使用 as any，彻底强制闭嘴！
+                map.setFilter(layerInfo.id, finalFilter as any); 
             }
-
-            const filterExp: any = ['in', activeField, ...activeFilterValues];
-
-            if (map.getLayer('geo-fill-layer')) map.setFilter('geo-fill-layer', ['all', ['==', '$type', 'Polygon'], filterExp] as any);
-            if (map.getLayer('geo-polygon-border')) map.setFilter('geo-polygon-border', ['all', ['==', '$type', 'Polygon'], filterExp] as any);
-            if (map.getLayer('geo-linestring-main')) map.setFilter('geo-linestring-main', ['all', ['==', '$type', 'LineString'], filterExp] as any);
-            if (map.getLayer('geo-point-layer')) map.setFilter('geo-point-layer', ['all', ['==', '$type', 'Point'], filterExp] as any);
+        });
         };
 
-        applyFilter();
-    }, [activeFilterValues, activeField, isGridMode, isMapLoaded, stringFields]);
-
+        syncAllFilters();
+    }, [
+        validIds, highlightedCategory, isMapLinkageEnabled, pivotConfig.groupByRow, 
+        activeFilterValues, activeField, stringFields, isGridMode, isMapLoaded
+    ]);
 
     //   [新增] 全选/清空处理函数
     const handleSelectAllCategories = () => {
@@ -1013,36 +1098,51 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
             pointStrokeWidthMatch.push(0);          // 无描边
             pointStrokeColorMatch.push('rgba(0,0,0,0)');
             
-            // ============ 应用属性 ============
+            // ============ 应用属性 (增强版：全图层智能着色) ============
+            try { 
+                // 提取所有可能的图层ID
+                const fillLayers = ['geo-fill-layer', ...renderedExtraLayersRef.current.map(id => `extra-${id}-fill`)];
+                const borderLayers = ['geo-polygon-border'];
+                const lineLayers = ['geo-linestring-main', ...renderedExtraLayersRef.current.map(id => `extra-${id}-line`)];
+                const pointLayers = ['geo-point-layer', ...renderedExtraLayersRef.current.map(id => `extra-${id}-point`)];
 
-            try { //   [新增] 加上 try-catch 保护
-                // 1. Polygon Fill (面填充)
-                if (map.getLayer('geo-fill-layer')) {
-                    map.setPaintProperty('geo-fill-layer', 'fill-color', colorMatch);
-                    map.setPaintProperty('geo-fill-layer', 'fill-opacity', opacityMatch);
-                }
+                // 【绝杀逻辑】：用 case 语句保护背景图层。如果没有分析字段，使用备用颜色(如偏暗的背景色)
+                const safeColorMatch = ['case', ['has', rowField], colorMatch, 'rgba(100, 116, 139, 0.3)'];
+                const safeOpacityMatch = ['case', ['has', rowField], opacityMatch, 0.5];
+                const safeBorderColor = ['case', ['has', rowField], borderStrokeColorMatch, 'rgba(148, 163, 184, 0.3)'];
+                const safeBorderWidth = ['case', ['has', rowField], borderStrokeWidthMatch, 1];
 
-                // 2. Polygon Border (面边框)
-                if (map.getLayer('geo-polygon-border')) {
-                    map.setPaintProperty('geo-polygon-border', 'line-width', borderStrokeWidthMatch);
-                    map.setPaintProperty('geo-polygon-border', 'line-color', borderStrokeColorMatch);
-                }
+                fillLayers.forEach(l => {
+                    if (map.getLayer(l)) {
+                        map.setPaintProperty(l, 'fill-color', safeColorMatch as any);
+                        map.setPaintProperty(l, 'fill-opacity', safeOpacityMatch as any);
+                    }
+                });
 
-                // 3. LineString Main (线实体)
-                if (map.getLayer('geo-linestring-main')) {
-                    map.setPaintProperty('geo-linestring-main', 'line-color', colorMatch);
-                    map.setPaintProperty('geo-linestring-main', 'line-opacity', opacityMatch);
-                    map.setPaintProperty('geo-linestring-main', 'line-width', mainLineWidthMatch);
-                }
+                borderLayers.forEach(l => {
+                    if (map.getLayer(l)) {
+                        map.setPaintProperty(l, 'line-color', safeBorderColor as any);
+                        map.setPaintProperty(l, 'line-width', safeBorderWidth as any);
+                    }
+                });
 
-                // 4. Point (点)
-                if (map.getLayer('geo-point-layer')) {
-                     map.setPaintProperty('geo-point-layer', 'circle-color', colorMatch);
-                     map.setPaintProperty('geo-point-layer', 'circle-opacity', opacityMatch);
-                     map.setPaintProperty('geo-point-layer', 'circle-radius', pointRadiusMatch);
-                     map.setPaintProperty('geo-point-layer', 'circle-stroke-width', pointStrokeWidthMatch);
-                     map.setPaintProperty('geo-point-layer', 'circle-stroke-color', pointStrokeColorMatch);
-                 }
+                lineLayers.forEach(l => {
+                    if (map.getLayer(l)) {
+                        map.setPaintProperty(l, 'line-color', safeColorMatch as any);
+                        map.setPaintProperty(l, 'line-opacity', safeOpacityMatch as any);
+                        map.setPaintProperty(l, 'line-width', ['case', ['has', rowField], mainLineWidthMatch, 1] as any);
+                    }
+                });
+
+                pointLayers.forEach(l => {
+                    if (map.getLayer(l)) {
+                        map.setPaintProperty(l, 'circle-color', safeColorMatch as any);
+                        map.setPaintProperty(l, 'circle-opacity', safeOpacityMatch as any);
+                        map.setPaintProperty(l, 'circle-radius', ['case', ['has', rowField], pointRadiusMatch, 2] as any);
+                        map.setPaintProperty(l, 'circle-stroke-width', ['case', ['has', rowField], pointStrokeWidthMatch, 0] as any);
+                        map.setPaintProperty(l, 'circle-stroke-color', ['case', ['has', rowField], pointStrokeColorMatch, 'transparent'] as any);
+                    }
+                });
             } catch (e) {
                 console.error("Linkage Apply Error:", e);
             }
@@ -1088,9 +1188,12 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
      *   [ ] 更新颜色映射 (Choropleth) - 采用“分段阶梯”渲染以增强区分度，支持值过滤变暗
      */
     const updateChoroplethColors = () => {
-        // 卫兵：如果开启了联动模式且符合条件，直接退出
-        const isScenario1 = isMapLinkageEnabled && pivotData && pivotData.length > 0 && !pivotConfig.groupByCol && pivotConfig.groupByRow;
-        if (isScenario1) return;
+        // =========================================================================
+        // 🌟 核心修复二：只要是图表联动模式（无论是1D柱状图还是2D热力图），
+        // 颜色全权交给 updateLinkageColors 处理，此处立刻退出，防止覆写！
+        // =========================================================================
+        const isPivotMode = isMapLinkageEnabled && pivotData && pivotData.length > 0;
+        if (isPivotMode) return;
 
         const map = mapInstance.current;
         const currentDisplayData = displayDataRef.current;

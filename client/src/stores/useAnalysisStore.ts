@@ -84,6 +84,9 @@ interface AnalysisState {
     layerColors: Record<string, string>; // 记录每个 fileId 对应的颜色：{ fileId: colorHex }
     setLayerColor: (fileId: string, color: string) => void;
 
+    // 在 store 中追加 validIds
+    validIds: string[];
+    setValidIds: (ids: string[]) => void;
 }
 
 export const useAnalysisStore = create<AnalysisState>((set) => ({
@@ -150,4 +153,7 @@ export const useAnalysisStore = create<AnalysisState>((set) => ({
     setLayerColor: (fileId, color) => set((state) => ({ 
         layerColors: { ...state.layerColors, [fileId]: color } 
     })),
+
+    validIds: [],
+    setValidIds: (ids: string[]) => set({ validIds: ids }),
 }));
