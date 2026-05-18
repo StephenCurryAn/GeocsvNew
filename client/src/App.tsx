@@ -172,6 +172,23 @@ function App() {
         }
     };
 
+    // 🌟 新增：批量删除列的处理函数
+    const handleDeleteColumns = async (fieldNames: string[]) => {
+        if (!activeFileId || fieldNames.length === 0) return;
+        try {
+            message.loading({ content: `正在批量删除 ${fieldNames.length} 列...`, key: 'col-op' });
+            
+            // 使用 Promise.all 并发调用现有的单列删除接口
+            await Promise.all(fieldNames.map(fieldName => geoService.deleteColumn(activeFileId, fieldName)));
+            
+            message.success({ content: '批量删除成功', key: 'col-op' });
+            // 刷新当前页的数据
+            if (currentData) handlePageChange(currentData.pagination.page, currentData.pagination.pageSize);
+        } catch (e: any) {
+            message.error({ content: e.message || '批量删除列失败', key: 'col-op' });
+        }
+    };
+
     const handleRenameColumn = async (oldName: string, newName: string) => {
         if (!activeFileId) { message.error("未选中文件"); return; }
         try {
@@ -269,6 +286,7 @@ function App() {
                     onDeleteRow={handleDeleteRow}
                     onAddColumn={handleAddColumn}
                     onDeleteColumn={handleDeleteColumn}
+                    onDeleteColumns={handleDeleteColumns}
                     onRenameColumn={handleRenameColumn}
                     // 多文件 Tab 支持
                     selectedFilesData={selectedFilesData}

@@ -39,20 +39,18 @@ warnings.filterwarnings("ignore", category=ShapelyDeprecationWarning)
 # ==========================================
 
 def ensure_metric_crs(gdf):
-    """
-    【安全投影算子】
-    确保 GeoDataFrame 处于投影坐标系 (以米为单位，通常为 EPSG:3857)。
-    这是执行 Buffer 和 距离计算 的绝对前提，防止经纬度直接 Buffer 导致极度变形。
-    """
-    if gdf.empty or gdf.geometry.isnull().all():
+    if gdf.empty: 
         return gdf
-    
-    # 如果没有坐标系，假定为 WGS84 (EPSG:4326)
-    if gdf.crs is None:
-        gdf = gdf.set_crs(epsg=4326)
+    # 【核心防御1】：使用 .values.all() 强制将任何可能的 DataFrame 降维成单一布尔值，彻底消灭 truth value ambiguity 报错！
+    try:
+        if gdf.geometry.isnull().values.all():
+            return gdf
+    except:
+        pass
         
-    # 如果是地理坐标系 (经纬度，度为单位)，强制转为 Web Mercator (米为单位)
-    if gdf.crs.is_geographic:
+    if getattr(gdf, 'crs', None) is None: 
+        gdf = gdf.set_crs(epsg=4326)
+    if gdf.crs.is_geographic: 
         return gdf.to_crs(epsg=3857)
     return gdf
 
@@ -444,6 +442,63 @@ def safe_spatial_join_agg(target_gdf, join_gdf, agg_col, agg_func='sum', col_nam
         target_gdf[col_name] = target_gdf[col_name].fillna(0)
 
     return target_gdf
+
+def safe_spatial_categorical_summary(target_gdf, join_gdf, cat_col, col_prefix='cat'):
+    """
+    【分类统计算子】(终极防弹版): 统计目标面内，客体要素不同分类的数量、占比及主导分类。
+    """
+    if target_gdf.empty or join_gdf.empty or cat_col not in join_gdf.columns:
+        target_gdf[f'{col_prefix}_dominant'] = '未知'
+        return target_gdf
+
+    # 1. 彻底清洗列名，防止重复列名导致的 DataFrame 歧义
+    t_gdf = target_gdf.loc[:, ~target_gdf.columns.duplicated()].copy()
+    j_gdf = join_gdf.loc[:, ~join_gdf.columns.duplicated()].copy()
+
+    # 处理可能的重名冲突（如果目标图层也刚好有这个分类字段，先删掉防止后缀污染）
+    if cat_col in t_gdf.columns:
+        t_gdf = t_gdf.drop(columns=[cat_col])
+
+    t_gdf = ensure_metric_crs(t_gdf)
+    j_gdf = ensure_metric_crs(j_gdf).to_crs(t_gdf.crs)
+
+    # 2. 【核心防御2】：注入绝对唯一的临时主键，规避一切 Join 索引报错！
+    t_gdf['_temp_uid'] = range(len(t_gdf))
+
+    # 3. 空间连接
+    joined = gpd.sjoin(t_gdf, j_gdf, how='left', predicate='intersects')
+    valid_joined = joined.dropna(subset=[cat_col])
+    
+    if valid_joined.empty:
+        t_gdf[f'{col_prefix}_dominant'] = '无'
+        return t_gdf.drop(columns=['_temp_uid'])
+
+    # 4. 基于临时主键进行绝对安全的分组
+    counts = valid_joined.groupby(['_temp_uid', cat_col]).size().unstack(fill_value=0)
+
+    # 5. 计算指标
+    total = counts.sum(axis=1)
+    ratios = counts.div(total.replace(0, np.nan), axis=0).fillna(0)
+    dominant = ratios.idxmax(axis=1)
+
+    counts.columns = [f'{col_prefix}_{c}_count' for c in counts.columns]
+    ratios.columns = [f'{col_prefix}_{c}_ratio' for c in ratios.columns]
+
+    summary_df = pd.concat([counts, ratios], axis=1)
+    summary_df[f'{col_prefix}_dominant'] = dominant
+    summary_df[f'{col_prefix}_total'] = total
+
+    # 6. 安全合并回主表 (通过明确的 left_on 规避 multi-index 错误)
+    result_gdf = t_gdf.merge(summary_df, left_on='_temp_uid', right_index=True, how='left')
+    result_gdf = result_gdf.drop(columns=['_temp_uid'])
+
+    # 7. 优雅填充
+    for c in summary_df.columns:
+        if c.endswith('_count') or c.endswith('_total') or c.endswith('_ratio'):
+            result_gdf[c] = result_gdf[c].fillna(0)
+    result_gdf[f'{col_prefix}_dominant'] = result_gdf[f'{col_prefix}_dominant'].fillna('无')
+
+    return result_gdf
 
 `;
 

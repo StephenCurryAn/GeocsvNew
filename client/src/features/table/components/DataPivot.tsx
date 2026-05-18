@@ -4,7 +4,7 @@ import React, { useEffect, useState, useRef } from 'react';
 import { createPortal } from 'react-dom'; //    ：引入传送门技术
 import { AgGridReact } from 'ag-grid-react'; 
 import { type ColDef, ModuleRegistry, AllCommunityModule } from 'ag-grid-community'; 
-import { App, Empty, Button, Space, Popconfirm, Pagination } from 'antd'; // ... 引入 antd 组件
+import { App, Empty, Button, Space, Popconfirm, Pagination, Modal, Select } from 'antd'; // ... 引入 antd 组件
 import { PlusOutlined, DeleteOutlined, TableOutlined, MinusSquareOutlined, DownloadOutlined } from '@ant-design/icons';
 import { geoService } from '../../../services/geoService';
 import apiClient from '../../../services/apiClient';
@@ -38,6 +38,7 @@ interface DataPivotProps {
     onDeleteRow?: (recordId: string | number) => void;
     onAddColumn?: () => void;
     onDeleteColumn?: (fieldName: string) => void;
+    onDeleteColumns?: (fieldNames: string[]) => void; // 🌟 新增：支持接收字符串数组的批量删除函数
     onRenameColumn?: (oldFieldName: string, newFieldName: string) => void;
     // 多文件 Tab 支持
     selectedFilesData?: FileTabInfo[];
@@ -277,6 +278,7 @@ const FormulaCellEditor = (props: any) => {
 const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, pagination, onPageChange, 
     onRowClick, selectedFeature, onDataChange, 
     onAddRow, onDeleteRow, onAddColumn, onDeleteColumn, onRenameColumn,
+    onDeleteColumns,
     selectedFilesData, onFileTabChange }) => {
     //     2: 获取上下文感知的 message 实例
     // 注意：MapView 必须被包裹在 <App> 组件中（通常在 main.tsx 或 App.tsx 已经包了）
@@ -292,6 +294,21 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
     //   1. 新增：存储后端真实模型列表的状态
     const [modelList, setModelList] = useState<string[]>([]);
     
+    // ==========================================
+    // 🌟 新增：批量删除列的相关状态与逻辑
+    // ==========================================
+    const [isDeleteModalVisible, setIsDeleteModalVisible] = useState(false);
+    const [selectedColsToDelete, setSelectedColsToDelete] = useState<string[]>([]);
+
+    // 辅助函数：获取当前表格中所有“允许被删除”的列
+    const getDeletableColumns = () => {
+        const readOnlyFields = ['id', '_geometry', 'cp', '_cp', '_lng', '_lat', '_geom_coords', 'name'];
+        return columnDefs
+            .map(col => col.field as string)
+            .filter(field => field && !readOnlyFields.includes(field) && !field.startsWith('__empty_col_'));
+    };
+    // ==========================================
+
     //   2. 新增：组件初始化时，向后端请求活跃模型列表
     useEffect(() => {
         const fetchModels = async () => {
@@ -621,15 +638,72 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
                 icon={<MinusSquareOutlined />} 
                 className="bg-gray-700 text-white border-gray-600"
                 onClick={() => {
-                    // 简单的交互：让用户输入要删除的列名 (进阶版应该做一个下拉选框Modal)
-                    const col = prompt("请输入要删除的列名（注意：id, name, cp 禁止删除）:");
-                    if (col && onDeleteColumn) onDeleteColumn(col);
+                    setSelectedColsToDelete([]); // 打开时清空之前的选择
+                    setIsDeleteModalVisible(true);
                 }}
             >
-                删列
+                批量删列
             </Button>
         </Space>
         </div>
+
+        {/* 🌟 新增：批量删除列的高级交互弹窗 */}
+        <Modal
+            title={<span className="text-red-500 font-bold">批量删除列</span>}
+            open={isDeleteModalVisible}
+            destroyOnClose
+            onCancel={() => setIsDeleteModalVisible(false)}
+            footer={[
+                <Button key="cancel" onClick={() => setIsDeleteModalVisible(false)}>
+                    取消
+                </Button>,
+                <Button 
+                    key="delete" 
+                    type="primary" 
+                    danger 
+                    disabled={selectedColsToDelete.length === 0}
+                    onClick={() => {
+                        Modal.confirm({
+                            title: '危险操作确认',
+                            content: `确定要永久删除选中的 ${selectedColsToDelete.length} 列吗？此操作不可逆！`,
+                            okText: '确定删除',
+                            okType: 'danger',
+                            cancelText: '再想想',
+                            onOk: () => { // 🌟 修正 1：Modal.confirm 用的是 onOk，不是 onConfirm
+                                // 🌟 修正 2：去掉 props. 前缀，直接使用解构出来的 onDeleteColumns 和 onDeleteColumn
+                                // 优先调用支持批量删除的接口
+                                if (onDeleteColumns) {
+                                    onDeleteColumns(selectedColsToDelete);
+                                } 
+                                // 兼容旧版：如果父组件还没实现批量接口，就循环调用单列删除接口
+                                else if (onDeleteColumn) {
+                                    selectedColsToDelete.forEach(col => onDeleteColumn(col));
+                                }
+                                setIsDeleteModalVisible(false);
+                                setSelectedColsToDelete([]);
+                                message.success(`已发起删除 ${selectedColsToDelete.length} 列的请求`);
+                            }
+                        });
+                    }}
+                >
+                    确认删除
+                </Button>
+            ]}
+        >
+            <div className="mb-3 text-gray-500 text-sm">
+                请在下方选择需要删除的列（系统保留字段和空白公式列已自动过滤保护）。
+            </div>
+            <Select
+                mode="multiple"
+                allowClear
+                style={{ width: '100%' }}
+                placeholder="请点击下拉或搜索选择要删除的列..."
+                value={selectedColsToDelete}
+                onChange={(values) => setSelectedColsToDelete(values)}
+                options={getDeletableColumns().map(col => ({ label: col, value: col }))}
+                maxTagCount="responsive"
+            />
+        </Modal>
 
         <div 
             className="ag-theme-alpine-dark flex-1 w-full h-full"

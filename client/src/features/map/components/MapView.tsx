@@ -155,6 +155,17 @@ const COLOR_SCHEMES = {
         // 参考"冷暖双向渐变"，冷暖色对比强烈
         colors: ['#d53e4f', '#fc8d59', '#fee08b', '#91bfdb', '#4575b4']
     },
+    discrete_contrast4: {
+        name: '离散-高对比4色',
+        // 参考"冷暖双向渐变"，冷暖色对比强烈
+        colors: ['#d53e4f', '#fc8d59', '#91bfdb', '#4575b4']
+    },
+    discrete_contrast3: {
+        name: '离散-高对比3色',
+        // 参考"冷暖双向渐变"，冷暖色对比强烈
+        colors: ['#91bfdb','#d53e4f','#fee08b']
+        
+    },
     discrete_nature: {
         name: '离散-自然系',
         // 参考"翠绿-明黄"，自然界色彩

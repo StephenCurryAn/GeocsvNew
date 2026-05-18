@@ -195,6 +195,10 @@ ${contextPrompt}
 3. 请考虑多轮对话的连贯性。如果用户是"追问"或者要求"换个图表/仅改变渲染维度"，你只需修改 visualization_spec，并输出 "reuse_code": true 即可，无需重新定义数据抽取！
 4. 请严格按照以下 JSON Schema 输出：
 5. 【绝对红线】：在生成 parameters 或 visualization_spec 的 metrics/dimensions 时，引用的字段名【必须 100% 照抄原数据集中的真实列名】（如"威胁财"），绝对禁止自作主张将其翻译为英文！
+【JSON 语法绝对红线】：
+你生成的必须是标准的、可被严格 JSON.parse() 解析的格式。
+绝对禁止在 JSON 数组或数值中使用 Infinity、-Infinity 或 NaN！
+如果用户的需求中包含“以上”、“最大”等无穷大的开区间概念（例如：2000米以上），请统一使用极其安全的超大普通整数 999999 来代替无穷大！
 
 {
   "task_type": "任务类型，例如 spatial_join_pivot, buffer_analysis, chart_modification 等",
@@ -278,6 +282,8 @@ ${filesInfoStr}
 2. 【参数红线】：在运行时 parameters 字典始终为空 {}！绝对禁止在代码里写 parameters['xxx']！蓝图中的过滤条件（如 '巴中市'），必须直接硬编码为字符串！
 3. 【字符过滤红线】：使用 .str.contains 之前，必须强制类型转换并开启 na=False。标准语法：df['真实列名'].astype(str).str.contains('巴中', na=False)
 4. 【几何合并红线】：求 union 时，必须显式调用 .geometry.unary_union。标准语法：limit_geom = df[mask].geometry.unary_union
+"5. 【多指标红线】：如果用户要求统计多个指标（如总数和平均值），你必须在 groupby 后面使用 .agg()。" +
+"例如：agg_df = target_gdf.groupby(row_col).agg(count_val=('any_col','size'), avg_height=('height_col','mean'))"
 
 【核心决策：属性透视 vs 空间透视（绝对红线）】
 在写代码前，请根据蓝图中的数据依赖数量和意图做出判断：
@@ -393,6 +399,51 @@ def execute_pivot(gdf_dict, parameters):
     final_df = agg_df.reset_index()
     
     # 【核心重构】：返回字典，把透视结果和过滤后存活的网格 ID 列表一起返回！
+    return {
+        "chart_data": final_df,
+        "valid_ids": target_gdf['id'].tolist() if 'id' in target_gdf.columns else []
+    }
+
+# 示例 3：带空间范围约束的 多指标/单指标 透视 (极其重要！)
+def execute_pivot(gdf_dict, parameters):
+    target_gdf = gdf_dict['target_id'].copy() 
+    
+    # 1. 空间过滤逻辑 (如果蓝图中有 constraint_id)
+    if 'constraint_id' in gdf_dict:
+        constraint_gdf = gdf_dict['constraint_id'].copy()
+        mask = constraint_gdf['真实的行政区列名'].astype(str).str.contains('推断的城市名', na=False)
+        if mask.any():
+            limit_geom = constraint_gdf[mask].geometry.unary_union
+            target_gdf = target_gdf[target_gdf.geometry.intersects(limit_geom)]
+    
+    # 2. 数据安全清洗 (绝对禁止对整个 gdf 使用 replace，必须针对具体列！)
+    row_col = '真实的行维度列名'
+    target_gdf[row_col] = target_gdf[row_col].fillna('未知') 
+    
+    # 如果用户要求对连续数值分段 (如“年代段”、“高度段”)，使用 pd.cut 进行安全分箱
+    # target_gdf[row_col] = pd.cut(pd.to_numeric(target_gdf[row_col], errors='coerce'), bins=[0, 10, 20, 30, float('inf')], labels=['0-10', '10-20', '20-30', '30+'])
+    
+    # 将需要计算均值、总和的指标列，强制转为数值型，错误的值转为 NaN
+    target_gdf['真实的建筑高度列名'] = pd.to_numeric(target_gdf['真实的建筑高度列名'], errors='coerce')
+    
+    # 3. 核心透视逻辑
+    # 【情况 1：如果是多指标统计（如：统计总数量和平均高度）】--> 必须使用 .agg()
+    # 注意：统计 size 时必须使用刚刚转为数值的安全列！
+    agg_df = target_gdf.groupby(row_col).agg(
+        建筑总数量=('真实的建筑高度列名', 'size'), 
+        平均高度=('真实的建筑高度列名', 'mean')
+    )
+    
+    # 【情况 2：如果是单指标二维交叉透视】--> 使用 unstack()
+    # col_dim = '真实的列维度列名'
+    # agg_df = target_gdf.groupby([row_col, col_dim])['真实的数值列名'].sum().unstack(fill_value=0)
+    
+    # 4. 强制重命名索引为 rowKey 并重置索引
+    agg_df.index.name = 'rowKey'
+    final_df = agg_df.reset_index()
+    # 剔除 rowKey 为空或未知的脏数据
+    final_df = final_df[final_df['rowKey'].astype(str) != 'nan']
+    
     return {
         "chart_data": final_df,
         "valid_ids": target_gdf['id'].tolist() if 'id' in target_gdf.columns else []
@@ -726,7 +777,10 @@ export const generateFeatureCalcCode = async (blueprint: any, validFileIds: stri
    - 作用：将相交的客体要素（如滑坡点）的指定数值字段（agg_col）进行聚合（求和、均值等），并赋给目标面图层（如网格）。
    - agg_func 支持：'sum' (求和), 'mean' (求平均), 'max', 'min'。
    - 绝对指令：只要用户需求中包含“计算总和”、“求和”、“平均值”并涉及跨图层属性转移时，【必须使用本算子】，绝对不要使用 safe_spatial_join_attribute！
-
+12.safe_spatial_categorical_summary(target_gdf, join_gdf, cat_col, col_prefix='cat')
+   - 功能：统计目标图层(面)内，客体图层(点/线/面)不同分类的数量、占比及占比最高的主导分类。
+   - 适用场景：计算街道内不同建筑质量的占比、不同土地利用类型占比、寻找最主要的 POI 类型等。
+   - 返回：包含各类数量(count)、占比(ratio)、主导分类(dominant)和总数(total)的 GeoDataFrame。
 
    【蓝图】：
 ${JSON.stringify(blueprint, null, 2)}
@@ -755,6 +809,7 @@ ${filesInfoStr}
    ★ 无论使用哪种方式，绝对禁止从 parameters 中读取任何列名或数值参数！
 
 8. 【原生矩阵运算】：当用户要求计算复杂空间经济学公式时，你必须使用原生 Pandas/Numpy 的 DataFrame 向量化运算来实现，并务必处理除 0 异常（如使用 np.errstate, fillna, 或 np.divide）。
+9. 【动态列名红线】：调用 safe_spatial_categorical_summary 时，由于产生的列名是动态的（包含分类名称），【绝对禁止】在 return 时手动枚举或筛选列名！必须使用 \`return target_gdf.drop(columns=['geometry']).to_dict(orient='records')\` 返回全量数据。
 
 【代码填充】
 请严格按照以下代码骨架填充你的逻辑：
@@ -775,6 +830,28 @@ ${dataLoadingSkeleton}
         target_gdf['id'] = target_gdf.index
         
     return target_gdf[['id', '此处填入你计算的所有新特征列名']].to_dict(orient='records')
+
+# 示例 2：分类占比与主导类型提取 (如：计算各街道内不同建筑质量的占比及最高占比类型)
+def execute_feature_calc(gdf_dict, file_paths_dict, parameters):
+    target_gdf = gdf_dict['target_layer_id'].copy()
+    join_gdf = gdf_dict['join_layer_id'].copy()
+    
+    # 遇到提取最高占比、主导类型，直接调用分类统计算子！
+    result_gdf = safe_spatial_categorical_summary(
+        target_gdf=target_gdf, 
+        join_gdf=join_gdf, 
+        cat_col='Quality',  # 真实的分类字段名
+        col_prefix='bldg_qual' # 自定义一个列前缀
+    )
+    
+    if 'id' not in result_gdf.columns:
+        result_gdf['id'] = result_gdf.index
+
+    # 绝对红线：原始数据中可能含有列表(如cp)等无法序列化的脏列，会导致 to_dict 抛出 真值报错！
+    # 绝对禁止返回全表！必须通过您设置的 col_prefix (如 'bldg_qual') 动态筛选，仅返回 id 和新生成的特征列！
+    return_cols = ['id'] + [c for c in result_gdf.columns if str(c).startswith('bldg_qual_')]
+    
+    return result_gdf[return_cols].to_dict(orient='records')
 `;
 
     

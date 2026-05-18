@@ -123,13 +123,19 @@ const ChartOverlay: React.FC = () => {
 
         if (!pivotData || pivotData.length === 0) return {};
 
-        // 2. 数据维度解构
+        // 2. 数据维度解构与智能语义探测
         const is2D = generatedColumns.length > 1 || (generatedColumns[0] !== 'value');
         const seriesFields = is2D ? generatedColumns : ['value'];
         const xAxisData = pivotData.map(item => String(item.rowKey ?? '未分类'));
         const dataLength = xAxisData.length;
         const showScroll = dataLength > 8;
         const theme = THEME_COLORS[mapColorTheme] || THEME_COLORS.cyan;
+
+        // 🌟 【核心逻辑】：判断是“2D 交叉分组”还是“1D 多指标聚合”
+        // 如果用户设置了“列维度”(groupByCol)，说明是交叉分组 -> 采用分组柱状图 (Single Axis)
+        // 如果没有列维度，但有多个指标 (seriesFields.length >= 2) -> 采用双 Y 轴混合图 (Dual Axis)
+        const isPivot2D = !!pivotConfig.groupByCol; 
+        const useDualYAxis = !isPivot2D && seriesFields.length >= 2 && (chartType === 'Bar' || chartType === 'Line');
 
         // 3. 构建 BaseOption (公共UI配置)
         const tooltipBg = 'rgba(15, 23, 42, 0.95)';
@@ -143,7 +149,24 @@ const ChartOverlay: React.FC = () => {
             grid: { top: '15%', left: '8%', right: '8%', bottom: showScroll ? '20%' : '12%', containLabel: true },
             dataZoom: showScroll ? [{ type: 'slider', show: true, bottom: 5, height: 12, borderColor: 'transparent', fillerColor: 'rgba(34, 211, 238, 0.3)', backgroundColor: 'rgba(255,255,255,0.05)' }] : [],
             xAxis: { type: 'category', data: xAxisData, axisLine: { show: false }, axisTick: { show: false }, axisLabel: { color: axisLabelColor, rotate: showScroll ? 0 : 30 } },
-            yAxis: { type: 'value', axisLine: { show: false }, splitLine: { lineStyle: { color: 'rgba(255,255,255,0.05)', type: 'dashed' } }, axisLabel: { color: axisLabelColor } },
+            
+            // 🌟 【语义化 Y 轴】：双轴模式 vs 单轴模式
+            yAxis: useDualYAxis ? [
+                { 
+                    type: 'value', name: seriesFields[0], alignTicks: true,
+                    axisLine: { show: false }, splitLine: { lineStyle: { color: 'rgba(255,255,255,0.05)', type: 'dashed' } }, 
+                    axisLabel: { color: axisLabelColor }, nameTextStyle: { color: axisLabelColor }
+                },
+                { 
+                    type: 'value', name: seriesFields.length > 2 ? '指标均值/比例' : seriesFields[1], alignTicks: true,
+                    axisLine: { show: false }, splitLine: { show: false }, 
+                    axisLabel: { color: '#fbbf24' }, nameTextStyle: { color: '#fbbf24' }
+                }
+            ] : { 
+                type: 'value', axisLine: { show: false }, 
+                splitLine: { lineStyle: { color: 'rgba(255,255,255,0.05)', type: 'dashed' } }, 
+                axisLabel: { color: axisLabelColor } 
+            },
             series: []
         };
 
@@ -154,20 +177,32 @@ const ChartOverlay: React.FC = () => {
                 baseOption.series = seriesFields.map((field, index) => {
                     const palette = CONTRAST_PALETTES[index % CONTRAST_PALETTES.length];
                     const [lowColor, highColor] = palette;
+                    
+                    // 【混合渲染决策】：
+                    // 如果是 2D 交叉分组 (isPivot2D) -> 全部强制为 'bar' 实现震撼的分组并列效果
+                    // 如果是 1D 多指标 (useDualYAxis) -> 第一个为柱，后面全为折线挂右轴
+                    const isLineInDual = useDualYAxis && index > 0;
+                    const lineColors = ['#fbbf24', '#34d399', '#f472b6', '#22d3ee'];
+                    const lineColor = lineColors[(index - 1) % lineColors.length];
+
                     return {
-                        name: field, type: 'bar', barMaxWidth: !is2D ? 50 : 30,
+                        name: field, 
+                        type: isLineInDual ? 'line' : 'bar',   // 智能切换类型
+                        yAxisIndex: isLineInDual ? 1 : 0,      // 智能挂载 Y 轴
+                        smooth: isLineInDual ? true : undefined,
+                        barMaxWidth: !is2D ? 50 : 30,
+                        barGap: '10%', // 柱子间的间距，让分组更紧凑震撼
                         data: pivotData.map(row => row[field] || 0),
-                        itemStyle: {
+                        
+                        itemStyle: isLineInDual ? { color: lineColor } : {
                             color: !is2D ? new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: theme.gradient[0] }, { offset: 1, color: theme.gradient[1] }])
                                          : new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: highColor }, { offset: 1, color: lowColor }]),
-                            borderRadius: !is2D ? [4, 4, 0, 0] : [2, 2, 0, 0],
-                            shadowBlur: !is2D ? 5 : 0, shadowColor: !is2D ? theme.gradient[1] : 'transparent',
-                            borderColor: !is2D ? 'transparent' : 'rgba(255,255,255,0.1)', borderWidth: !is2D ? 0 : 1
+                            borderRadius: (isLineInDual) ? 0 : [2, 2, 0, 0],
+                            shadowBlur: (is2D || isLineInDual) ? 0 : 5, 
+                            shadowColor: (is2D || isLineInDual) ? 'transparent' : theme.gradient[1]
                         },
-                        emphasis: {
-                            focus: 'series', blurScope: 'coordinateSystem',
-                            itemStyle: { shadowBlur: 15, shadowColor: !is2D ? theme.primary : highColor, borderColor: '#fff', borderWidth: 1 }
-                        }
+                        lineStyle: isLineInDual ? { width: 3, color: lineColor } : undefined,
+                        emphasis: { focus: 'series', blurScope: 'coordinateSystem' }
                     };
                 });
                 break;
@@ -176,14 +211,17 @@ const ChartOverlay: React.FC = () => {
                 baseOption.tooltip.axisPointer = { type: 'line' };
                 baseOption.series = seriesFields.map((field, index) => {
                     const color = !is2D ? theme.primary : CONTRAST_PALETTES[index % CONTRAST_PALETTES.length][0];
-                    const gradient = !is2D ? theme.gradient : [color, 'rgba(0,0,0,0)'];
+                    const isSecondary = useDualYAxis && index > 0;
+                    const finalColor = isSecondary ? '#fbbf24' : color;
+
                     return {
                         name: field, type: 'line', smooth: true, showSymbol: false,
+                        yAxisIndex: isSecondary ? 1 : 0,
                         data: pivotData.map(row => row[field] || 0),
-                        lineStyle: { width: 3, color: color },
+                        lineStyle: { width: 3, color: finalColor },
                         areaStyle: {
-                            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: gradient[0] }, { offset: 1, color: 'rgba(0,0,0,0)' }]),
-                            opacity: 0.3
+                            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: isSecondary ? '#fcd34d' : (is2D ? finalColor : theme.gradient[0]) }, { offset: 1, color: 'rgba(0,0,0,0)' }]),
+                            opacity: is2D ? 0.1 : 0.3
                         },
                         emphasis: { focus: 'series' }
                     };
