@@ -13,6 +13,7 @@ import {
 } from '@ant-design/icons';
 import { useAnalysisStore } from '../../../stores/useAnalysisStore';
 import apiClient from '../../../services/apiClient';
+import SpatialPivotPanel from './SpatialPivotPanel';
 
 const { Option } = Select;
 
@@ -134,7 +135,14 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({ fileId, selectedFileIds, 
         }
     };
 
-    if (!fileId) return <div className="p-8 text-gray-500 text-sm text-center flex flex-col items-center justify-center h-full opacity-50"><ExperimentOutlined className="text-4xl mb-4"/>请先选择一个文件以激活工具箱</div>;
+    if (!fileId) return (
+        <div className="p-4 flex flex-col h-full overflow-y-auto custom-scrollbar gap-4">
+            <SpatialPivotPanel selectedFileIds={selectedFileIds} />
+            <div className="p-4 text-gray-500 text-sm text-center">
+                <ExperimentOutlined className="mr-2" />选择文件后可使用原有统计和模型工具
+            </div>
+        </div>
+    );
 
     return (
         <div className="p-4 flex flex-col h-full overflow-y-auto custom-scrollbar gap-8">
@@ -159,6 +167,8 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({ fileId, selectedFileIds, 
                     }
                 }}
             >
+                <SpatialPivotPanel selectedFileIds={selectedFileIds} />
+
                 {/* =========== 区域 1: 数据洞察 (DATA INSIGHTS) =========== */}
                 <div className="flex flex-col gap-3">
                     {/* 区域标题 */}

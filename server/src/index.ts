@@ -14,10 +14,12 @@ import fileRoutes from './routes/fileRoutes'; // 导入文件路由
 import analysisRoutes from './routes/analysisRoutes';
 import tileRoutes from './routes/tileRoutes';
 import { connectDB } from './config/db'; // 导入数据库连接函数
+import pool from './config/db';
+import { createSpatialPivotRouter } from './modules/spatialPivot/router';
 
 const app = express();
 // http://localhost:3000
-const PORT = 3000;
+const PORT = Number(process.env.PORT || 3000);
 
 // 连接数据库（异步）
 connectDB();
@@ -48,6 +50,7 @@ app.use('/api/analysis', analysisRoutes);
 
 // 注册矢量瓦片路由
 app.use('/api/tiles', tileRoutes);
+app.use('/api', createSpatialPivotRouter(pool));
 
 // 3. 测试路由
 app.get('/api/health', (req: Request, res: Response) => {

@@ -4,7 +4,10 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node -r ts-node/register --test tests/*.test.cjs",
+    "test:integration": "node -r ts-node/register --test tests/spatialPivot.integration.cjs",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
     "dev": "nodemon -L src/index.ts"
   },
   "keywords": [],

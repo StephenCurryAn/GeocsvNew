@@ -1,4 +1,5 @@
 import pool from '../config/db';
+import { readDataset } from '../modules/spatialPivot/datasets';
 
 export interface IFeature {
   id?: number;
@@ -118,22 +119,98 @@ export const countFeaturesByFileId = async (fileId: string): Promise<number> => 
 
 export const updateFeatureProperty = async (file_id: string, record_id: string, updateFields: Record<string, any>) => {
   const patch: Record<string, any> = {};
+  const reservedKeys = new Set(['id', 'rowKey', '__record_id__']);
   
   for (const [k, v] of Object.entries(updateFields)) {
     const keyName = k.replace('properties.', '');
+    if (reservedKeys.has(keyName)) continue;
     patch[keyName] = v;
   }
 
   if (Object.keys(patch).length === 0) return true;
 
   const sql = `
-    UPDATE spatial_features 
+    UPDATE spatial_features
     SET properties = properties || $3::jsonb
-    WHERE file_id = $1::text AND properties->>'id' = $2::text
+    WHERE file_id = $1::text
+      AND (id::text = $2::text OR properties->>'id' = $2::text)
   `;
   
   await pool.query(sql, [file_id, String(record_id), JSON.stringify(patch)]);
   return true;
+};
+
+export const updateFeaturePropertiesBatch = async (
+  file_id: string,
+  rows: Array<{ id: string | number; patch: Record<string, any> }>,
+  batchSize = 1000
+) => {
+  const reservedKeys = new Set(['id', 'rowKey', '__record_id__']);
+  const sanitizedRows = rows
+    .map(row => ({
+      id: String(row.id),
+      patch: Object.fromEntries(
+        Object.entries(row.patch || {})
+          .map(([k, v]) => [k.replace('properties.', ''), v] as const)
+          .filter(([k]) => !reservedKeys.has(k))
+      )
+    }))
+    .filter(row => row.id && Object.keys(row.patch).length > 0);
+
+  if (sanitizedRows.length === 0) return 0;
+
+  const client = await pool.connect();
+  let updatedCount = 0;
+
+  try {
+    await client.query('BEGIN');
+
+    for (let i = 0; i < sanitizedRows.length; i += batchSize) {
+      const chunk = sanitizedRows.slice(i, i + batchSize);
+      const sql = `
+        WITH updates AS (
+          SELECT record_id, patch
+          FROM jsonb_to_recordset($2::jsonb) AS x(record_id text, patch jsonb)
+        )
+        UPDATE spatial_features sf
+        SET properties = sf.properties || updates.patch
+        FROM updates
+        WHERE sf.file_id = $1::text
+          AND (sf.id::text = updates.record_id OR sf.properties->>'id' = updates.record_id)
+      `;
+      const payload = chunk.map(row => ({ record_id: row.id, patch: row.patch }));
+      const result = await client.query(sql, [file_id, JSON.stringify(payload)]);
+      updatedCount += result.rowCount || 0;
+    }
+
+    await client.query('COMMIT');
+    return updatedCount;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+};
+
+export const countMatchingFeatureIds = async (
+  file_id: string,
+  ids: Array<string | number>
+): Promise<number> => {
+  const normalizedIds = Array.from(
+    new Set(ids.map(id => String(id)).filter(id => id.length > 0))
+  );
+
+  if (normalizedIds.length === 0) return 0;
+
+  const sql = `
+    SELECT COUNT(*)::int AS match_count
+    FROM spatial_features
+    WHERE file_id = $1::text
+      AND (id::text = ANY($2::text[]) OR properties->>'id' = ANY($2::text[]))
+  `;
+  const result = await pool.query(sql, [file_id, normalizedIds]);
+  return Number(result.rows[0]?.match_count || 0);
 };
 
 export const renameColumnInFeatures = async (fileId: string, oldName: string, newName: string) => {
@@ -221,24 +298,13 @@ export const getFileSchemaSummary = async (fileId: string) => {
         };
     }
     
-    // 2. 获取一次空间数据的几何类型与属性 JSONB 键
-    const featureSql = `
-        SELECT ST_GeometryType(geom) as geom_type, properties
-        FROM spatial_features
-        WHERE file_id = $1
-        LIMIT 1
-    `;
-    const featResult = await pool.query(featureSql, [fileId]);
-    
-    if (featResult.rowCount === 0) {
-        return { fileId, name: fileName, geomType: 'Unknown', columns: [] };
-    }
-
-    const row = featResult.rows[0];
-    const columns = row.properties ? Object.keys(row.properties).filter(k => k !== 'id') : [];
-    let geomType = row.geom_type ? row.geom_type.replace('ST_', '') : 'Unknown';
-    
-    return { fileId, name: fileName, geomType, columns };
+    const dataset = await readDataset(pool, fileId);
+    return {
+        fileId, name: fileName,
+        geomType: dataset.geometryTypes.map(type => type.replace('ST_', '')).join(', ') || 'Unknown',
+        columns: dataset.fields.filter(key => key !== 'id'),
+        featureCount: dataset.featureCount,
+    };
 };
 
 /**

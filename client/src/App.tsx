@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import './App.css';
 import MainLayout from './layouts/MainLayout';
 import LeftPanel from './features/workspace/components/LeftPanel';
@@ -27,8 +27,9 @@ export interface FileLayerInfo {
 function App() {
     const { message, modal } = AntdApp.useApp();
 
-    // 已加载的文件数据 (按文件名索引)
+    // 已加载的文件数据以稳定的文件 ID 索引，避免同名文件共用缓存。
     const [uploadedFilesData, setUploadedFilesData] = React.useState<Record<string, PaginatedGeoResponse>>({});
+    const loadVersionByFileRef = useRef<Record<string, number>>({});
 
     // 选中的所有文件 ID 列表（多图层分析用）
     const [selectedFileIds, setSelectedFileIds] = useState<string[]>([]);
@@ -46,7 +47,7 @@ function App() {
     const [aiPanelOpen, setAiPanelOpen] = useState<boolean>(false);
 
     // 当前主文件数据快捷引用
-    const currentData = uploadedFilesData[activeFileName];
+    const currentData = uploadedFilesData[activeFileId];
 
     // 当前文件的字段列表（传给左侧分析面板）
     const activeFileFields = React.useMemo(() => {
@@ -60,32 +61,40 @@ function App() {
 
     // ===== 数据加载 =====
     const loadFileData = async (fileId: string, fileName: string, page = 1, pageSize = 20) => {
+        const requestVersion = (loadVersionByFileRef.current[fileId] || 0) + 1;
+        loadVersionByFileRef.current[fileId] = requestVersion;
+        const messageKey = `loading-${fileId}`;
         try {
-            message.loading({ content: '加载数据中...', key: 'loading' });
+            if (fileId === activeFileId) message.loading({ content: '加载数据中...', key: messageKey });
             const res = await geoService.getFileData(fileId, page, pageSize);
-            setUploadedFilesData(prev => ({ ...prev, [fileName]: res }));
-            message.success({ content: `加载第 ${page} 页成功`, key: 'loading' });
+            if (loadVersionByFileRef.current[fileId] !== requestVersion) return;
+            setUploadedFilesData(prev => ({ ...prev, [fileId]: res }));
+            if (fileId === activeFileId) message.success({ content: `加载第 ${page} 页成功`, key: messageKey });
             return res;
         } catch (err: any) {
+            if (loadVersionByFileRef.current[fileId] !== requestVersion) return;
             console.error(err);
-            message.error({ content: '数据加载失败', key: 'loading' });
+            if (fileId === activeFileId) message.error({ content: `“${fileName}”数据加载失败`, key: messageKey });
         }
     };
 
     // ===== 回调函数 =====
     const handleDataLoaded = (fileName: string, data: any, fileId: string) => {
-        setUploadedFilesData(prev => ({ ...prev, [fileName]: data }));
+        loadVersionByFileRef.current[fileId] = (loadVersionByFileRef.current[fileId] || 0) + 1;
+        setUploadedFilesData(prev => ({ ...prev, [fileId]: data }));
         setActiveFileName(fileName);
         setActiveFileId(fileId);
+        setSelectedFeature(null);
     };
 
     const handlePageChange = async (page: number, pageSize: number) => {
         if (!activeFileId || !activeFileName) return;
+        setSelectedFeature(null);
         await loadFileData(activeFileId, activeFileName, page, pageSize);
     };
 
     const handleDataChange = async (recordId: string | number, newRowData: any) => {
-        if (!activeFileName || !currentData) return;
+        if (!activeFileId || !activeFileName || !currentData) return;
         const oldFeatures = [...currentData.features];
         const targetIndex = oldFeatures.findIndex((f: any) =>
             f.properties?.id == recordId || f.id == recordId
@@ -98,7 +107,7 @@ function App() {
         newFeatures[targetIndex] = newFeature;
         setUploadedFilesData(prev => ({
             ...prev,
-            [activeFileName]: { ...prev[activeFileName], features: newFeatures }
+            [activeFileId]: { ...prev[activeFileId], features: newFeatures }
         }));
         try {
             message.loading({ content: '保存中...', key: 'save' });
@@ -205,7 +214,7 @@ function App() {
                 });
                 setUploadedFilesData((prevData: any) => ({
                     ...prevData,
-                    [activeFileName]: { ...prevData[activeFileName], features: updatedFeatures }
+                    [activeFileId]: { ...prevData[activeFileId], features: updatedFeatures }
                 }));
             }
             message.success({ content: `列名 [${oldName}] 已重命名为 [${newName}]`, key: 'renameMsg' });
@@ -222,6 +231,7 @@ function App() {
         if (fileIds.length === 0) {
             setActiveFileId('');
             setActiveFileName('');
+            setSelectedFeature(null);
             return;
         }
 
@@ -235,7 +245,7 @@ function App() {
         await Promise.all(
             fileIds.map((fid, i) => {
                 const fname = fileNames[i];
-                if (!uploadedFilesData[fname]) return loadFileData(fid, fname, 1, 20);
+                if (!uploadedFilesData[fid]) return loadFileData(fid, fname, 1, 20);
                 return Promise.resolve();
             })
         );
@@ -245,16 +255,20 @@ function App() {
     const selectedFilesData: FileTabInfo[] = selectedFilesInfo.map(f => ({
         fileId: f.fileId,
         fileName: f.fileName,
-        data: uploadedFilesData[f.fileName]?.features || [],
-        pagination: uploadedFilesData[f.fileName]?.pagination,
+        data: uploadedFilesData[f.fileId]?.features || [],
+        pagination: uploadedFilesData[f.fileId]?.pagination,
     }));
 
-    // 构造传给 MapView 的多图层信息
-    const mapLayersInfo: FileLayerInfo[] = selectedFilesInfo.map(f => ({
-        fileId: f.fileId,
-        fileName: f.fileName,
-        totalFeatures: uploadedFilesData[f.fileName]?.pagination?.total ?? 0,
-    }));
+    // Only pass known feature counts so MapView never treats unloaded metadata as a small layer.
+    // Primitive keys keep page changes from rebuilding all extra map layers.
+    const selectedLayerIdsKey = selectedFilesInfo.map(file => file.fileId).join('|');
+    const selectedLayerCountsKey = selectedFilesInfo
+        .map(file => uploadedFilesData[file.fileId]?.pagination?.total ?? '')
+        .join('|');
+    const mapLayersInfo: FileLayerInfo[] = React.useMemo(() => selectedFilesInfo.flatMap(file => {
+        const totalFeatures = uploadedFilesData[file.fileId]?.pagination?.total;
+        return totalFeatures === undefined ? [] : [{ fileId: file.fileId, fileName: file.fileName, totalFeatures }];
+    }), [selectedLayerIdsKey, selectedLayerCountsKey]);
 
     return (
         <MainLayout
@@ -293,7 +307,8 @@ function App() {
                     onFileTabChange={async (fileId, fileName) => {
                         setActiveFileId(fileId);
                         setActiveFileName(fileName);
-                        if (!uploadedFilesData[fileName]) {
+                        setSelectedFeature(null);
+                        if (!uploadedFilesData[fileId]) {
                             await loadFileData(fileId, fileName, 1, 20);
                         }
                     }}

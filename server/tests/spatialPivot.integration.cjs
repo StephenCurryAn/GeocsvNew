@@ -1,0 +1,201 @@
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const { randomUUID } = require('node:crypto');
+const { readFileSync } = require('node:fs');
+const { join } = require('node:path');
+const { Pool } = require('pg');
+const express = require('express');
+const { createSpatialPivotRouter } = require('../src/modules/spatialPivot/router');
+const { SpatialPivotService } = require('../src/modules/spatialPivot/service');
+const { queryAttributePivot } = require('../src/modules/attributePivot');
+
+const databaseUrl = process.env.TEST_DATABASE_URL;
+
+test('PostGIS: plan -> persisted run -> table/map/CSV artifact; boundaries, replay and source isolation',
+  { skip: !databaseUrl, timeout: 90000 }, async () => {
+  const databaseName = new URL(databaseUrl).pathname;
+  assert.match(databaseName, /test|tmp/i, 'Use an explicitly named test database, never the application database');
+  const admin = new Pool({ connectionString: databaseUrl });
+  const schema = `geocsv_test_${randomUUID().replaceAll('-', '')}`;
+  await admin.query(`CREATE SCHEMA "${schema}"`);
+  const db = new Pool({ connectionString: databaseUrl, options: `-c search_path=${schema},public`, max: 8 });
+  db.on('error', error => console.error('[test pool]', error.message));
+  const service = new SpatialPivotService(db, 10000);
+  const app = express();
+  app.use(express.json());
+  app.use('/api', createSpatialPivotRouter(db, service));
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise(resolve => server.once('listening', resolve));
+  const base = `http://127.0.0.1:${server.address().port}/api`;
+  const request = async (path, body, expected = 200) => {
+    const response = await fetch(base + path, body === undefined ? {} : {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    const data = await response.json();
+    assert.equal(response.status, expected, JSON.stringify(data));
+    return data.data;
+  };
+  const terminal = async id => {
+    for (let attempt = 0; attempt < 200; attempt++) {
+      const run = await request(`/runs/${id}`);
+      if (!['queued', 'running'].includes(run.status)) return run;
+      await new Promise(resolve => setTimeout(resolve, 30));
+    }
+    throw new Error('run never reached a terminal state');
+  };
+  const spec = {
+    schemaVersion: 1, kind: 'spatial_pivot', operatorVersion: 1,
+    target: { fileId: 'districts', labelField: 'name' },
+    join: { fileId: 'pois', categoryField: 'category' }, boundaryPolicy: 'exclude',
+  };
+  try {
+    await db.query(readFileSync(join(__dirname, '../src/config/init.sql'), 'utf8'));
+    await db.query(`INSERT INTO file_nodes(id,name,type) VALUES
+      ('districts','same.geojson','file'), ('pois','same.geojson','file'), ('empty','empty.geojson','file')`);
+    const feature = async (fileId, wkt, properties) => db.query(`
+      INSERT INTO spatial_features(file_id,geom,properties) VALUES($1,ST_GeomFromText($2,4326),$3)`, [fileId, wkt, properties]);
+    await feature('districts', 'POLYGON((0 0,2 0,2 2,0 2,0 0))', { id: 'duplicate', name: 'same' });
+    await feature('districts', 'POLYGON((2 0,4 0,4 2,2 2,2 0))', { id: 'duplicate', name: 'same' });
+    await feature('districts', 'POLYGON((5 0,6 0,6 1,5 1,5 0))', { id: 'third', name: '=SUM(A1)', laterField: 'found' });
+    await feature('pois', 'POINT(1 1)', { id: 'duplicate', category: 'park', value: 0, "O'Brien": 1 });
+    await feature('pois', 'POINT(1.5 1)', { id: 'duplicate', category: '__proto__', value: 2 });
+    await feature('pois', 'POINT(2 1)', { category: 'park', value: 4 });
+    await feature('pois', 'POINT(3 1)', { category: null, value: 6 });
+    await feature('pois', 'POINT(10 10)', { category: 'outside', value: 8 });
+    const before = await db.query('SELECT id, properties, ST_AsText(geom) AS geom FROM spatial_features ORDER BY id');
+    const datasets = await request('/datasets?ids=districts,pois');
+    assert.ok(datasets[0].fields.includes('laterField'), 'Schema includes fields beyond the first record');
+    assert.equal(datasets[0].fileId, 'districts');
+    assert.equal(datasets[1].fileId, 'pois');
+    assert.deepEqual(await request('/analysis-plans', spec), spec);
+    const beforePlanning = Number((await db.query('SELECT count(*) FROM geocsv_analysis_runs')).rows[0].count);
+    const natural = await request('/analysis-plans/natural-language', {
+      userPrompt: '按category分类统计每个街道内设施数量，排除边界', fileIds: ['districts', 'pois'],
+    });
+    assert.equal(natural.status, 'ready');
+    assert.equal(natural.source, 'rules');
+    assert.deepEqual(natural.spec, spec, 'Form and natural language produce the same validated protocol');
+    assert.equal(Number((await db.query('SELECT count(*) FROM geocsv_analysis_runs')).rows[0].count), beforePlanning, 'Planning never creates a run');
+    const naturalRun = await terminal((await request('/runs', { spec: natural.spec }, 202)).id);
+    assert.equal(naturalRun.status, 'succeeded', naturalRun.error);
+    assert.deepEqual((await request(`/artifacts/${naturalRun.artifactId}/rows`)).rows.map(row => row.total), [2, 1, 0]);
+    const beforeView = Number((await db.query('SELECT count(*) FROM geocsv_analysis_runs')).rows[0].count);
+    const view = await request('/analysis-plans/natural-language', {
+      userPrompt: '把上次结果换成饼图', fileIds: [], contextRunId: naturalRun.id,
+    });
+    assert.equal(view.status, 'view_only');
+    assert.equal(view.artifactId, naturalRun.artifactId);
+    assert.equal(view.view.chartType, 'pie');
+    const unsupported = await request('/analysis-plans/natural-language', {
+      userPrompt: '统计街道周边500米设施数量', fileIds: ['districts', 'pois'],
+    });
+    assert.equal(unsupported.status, 'unsupported');
+    assert.equal(Number((await db.query('SELECT count(*) FROM geocsv_analysis_runs')).rows[0].count), beforeView, 'Views and unsupported requests never create a run');
+    await request('/analysis-plans', { ...spec, target: { ...spec.target, labelField: 'missing' } }, 400);
+    await request('/analysis-plans', { ...spec, boundaryPolicy: 'guess' }, 400);
+    const run = await terminal((await request('/runs', { spec }, 202)).id);
+    assert.equal(run.status, 'succeeded', run.error);
+    assert.ok(run.inputVersions.target.fingerprint);
+    const artifact = await request(`/artifacts/${run.artifactId}`);
+    assert.equal(artifact.totalRows, 3);
+    assert.equal(artifact.summary.matchedPairs, 3);
+    const page = await request(`/artifacts/${run.artifactId}/rows?page=1&pageSize=20`);
+    assert.deepEqual(page.rows.map(row => row.total), [2, 1, 0]);
+    assert.equal(new Set(page.rows.map(row => row.featureId)).size, 3);
+    const mapResponse = await fetch(`${base}/artifacts/${run.artifactId}/geojson`);
+    const geojson = await mapResponse.json();
+    assert.equal(geojson.features.length, 3);
+    assert.deepEqual(geojson.features.map(item => item.properties.total), [2, 1, 0]);
+    assert.equal(geojson.features[0].geometry.type, 'Polygon');
+    const csv = await (await fetch(`${base}/artifacts/${run.artifactId}/export.csv`)).text();
+    assert.ok(csv.includes("'=SUM(A1)"), 'Spreadsheet formulas in labels are escaped');
+    assert.equal(csv.trim().split('\n').length, 4);
+    await request(`/artifacts/${run.artifactId}/rows?page=-1`, undefined, 400);
+    await request('/runs/not-a-uuid', undefined, 400);
+
+    const replay = await terminal((await request(`/runs/${run.id}/replay`, {}, 202)).id);
+    assert.equal(replay.status, 'succeeded', replay.error);
+    const replayRows = await request(`/artifacts/${replay.artifactId}/rows`);
+    assert.deepEqual(replayRows.rows, page.rows);
+    const inclusive = await terminal((await request('/runs', { spec: { ...spec, boundaryPolicy: 'include' } }, 202)).id);
+    assert.equal(inclusive.status, 'succeeded', inclusive.error);
+    assert.deepEqual((await request(`/artifacts/${inclusive.artifactId}/rows`)).rows.map(row => row.total), [3, 2, 0]);
+    const empty = await terminal((await request('/runs', { spec: { ...spec, join: { fileId: 'empty', categoryField: null } } }, 202)).id);
+    assert.equal(empty.status, 'succeeded', empty.error);
+    assert.deepEqual((await request(`/artifacts/${empty.artifactId}/rows`)).rows.map(row => row.total), [0, 0, 0]);
+    assert.deepEqual((await db.query('SELECT id, properties, ST_AsText(geom) AS geom FROM spatial_features ORDER BY id')).rows, before.rows);
+
+    const quotePivot = await queryAttributePivot(db, { fileId: 'pois', groupByRow: 'category', valueField: "O'Brien", method: 'sum' });
+    assert.ok(quotePivot.success);
+    const injection = await queryAttributePivot(db, { fileId: 'pois', groupByRow: "x'); DROP TABLE file_nodes; --", method: 'count' });
+    assert.equal(injection.data[0].value, 5);
+    assert.equal((await db.query('SELECT count(*) FROM file_nodes')).rows[0].count, '3');
+    const zero = await queryAttributePivot(db, { fileId: 'pois', groupByRow: 'id', valueField: 'value', method: 'sum' });
+    assert.equal(zero.data.find(row => row.rowKey === 'duplicate').value, 2);
+    await feature('pois', 'POINT(10 10)', { category: '未分类', value: 0 });
+    const missing = await queryAttributePivot(db, { fileId: 'pois', groupByRow: 'category', method: 'count' });
+    assert.equal(missing.data.find(row => row.rowKey === '未分类').value, 1);
+    assert.equal(missing.data.find(row => row.rowKey === '未分类（空值）').value, 1);
+
+    await db.query(`UPDATE spatial_features SET properties=properties || '{"changed":true}'::jsonb WHERE file_id='pois'`);
+    const changed = await terminal((await request(`/runs/${run.id}/replay`, {}, 202)).id);
+    assert.equal(changed.status, 'failed');
+    assert.match(changed.error, /数据已改变/);
+    assert.deepEqual((await request(`/artifacts/${run.artifactId}/rows`)).rows, page.rows);
+
+    const hold = await db.connect();
+    await hold.query('SELECT pg_advisory_lock(193607241)');
+    const queued = await request('/runs', { spec }, 202);
+    assert.ok(queued.inputVersions.target.fingerprint, 'Submission fixes input versions before entering the queue');
+    assert.equal((await request(`/runs/${queued.id}/cancel`, {})).status, 'cancelled');
+    const waiting = await request('/runs', { spec }, 202);
+    await db.query(`UPDATE spatial_features SET properties=properties || '{"queuedEdit":true}'::jsonb WHERE file_id='pois'`);
+    await hold.query('SELECT pg_advisory_unlock(193607241)');
+    hold.release();
+    assert.equal((await terminal(queued.id)).status, 'cancelled');
+    const changedWhileQueued = await terminal(waiting.id);
+    assert.equal(changedWhileQueued.status, 'failed');
+    assert.match(changedWhileQueued.error, /数据已改变/);
+    assert.equal(changedWhileQueued.artifactId, null);
+
+    // A real, cancellable database operation, not a mocked HTTP status.
+    await db.query(`CREATE FUNCTION pause_artifact() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN PERFORM pg_sleep(3); RETURN NEW; END $$`);
+    await db.query(`CREATE TRIGGER slow_artifact BEFORE INSERT ON geocsv_analysis_artifacts
+      FOR EACH ROW EXECUTE FUNCTION pause_artifact()`);
+    const running = await request('/runs', { spec }, 202);
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const active = await db.query(`SELECT a.wait_event FROM geocsv_analysis_runs r
+        JOIN pg_stat_activity a ON a.pid=r.backend_pid WHERE r.id=$1`, [running.id]);
+      if (active.rows[0]?.wait_event === 'PgSleep') break;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    await request(`/runs/${running.id}/cancel`, {});
+    assert.equal((await terminal(running.id)).status, 'cancelled');
+    assert.equal((await db.query('SELECT count(*) FROM geocsv_analysis_artifacts WHERE run_id=$1', [running.id])).rows[0].count, '0');
+    const disconnected = await request('/runs', { spec }, 202);
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const active = await db.query(`SELECT r.backend_pid,a.wait_event FROM geocsv_analysis_runs r
+        JOIN pg_stat_activity a ON a.pid=r.backend_pid WHERE r.id=$1`, [disconnected.id]);
+      if (active.rows[0]?.wait_event === 'PgSleep') {
+        await admin.query('SELECT pg_terminate_backend($1)', [active.rows[0].backend_pid]);
+        break;
+      }
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    const interrupted = await terminal(disconnected.id).catch(error => { throw new Error('Connection recovery polling failed', { cause: error }); });
+    assert.equal(interrupted.status, 'failed', 'Lost worker connections must recover without restarting the API');
+    assert.equal(interrupted.artifactId, null);
+    await db.query('DROP TRIGGER slow_artifact ON geocsv_analysis_artifacts');
+    const healthy = await terminal((await request('/runs', { spec }, 202)).id);
+    assert.equal(healthy.status, 'succeeded', healthy.error);
+    assert.ok((await request('/runs')).length >= 6);
+  } finally {
+    service.stop();
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+    await db.end();
+    await admin.query(`DROP SCHEMA "${schema}" CASCADE`);
+    await admin.end();
+  }
+});

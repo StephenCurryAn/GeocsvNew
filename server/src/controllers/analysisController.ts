@@ -1,10 +1,14 @@
 import { Request, Response } from 'express';
 import * as Feature from '../models/Feature';
+import pool from '../config/db';
+import { queryAttributePivot } from '../modules/attributePivot';
+import { AnalysisInputError } from '../modules/spatialPivot/plan';
 import * as ModelRegistry from '../models/ModelRegistry';
 import { generateModelCodeFromAI, planWorkflow, generatePivotCode, 
         generateChartCode, fixPivotCode, fixChartCode,
         generateFeatureCalcCode, fixFeatureCalcCode,
-        generateProModelCode, fixProModelCode
+        generateProModelCode, fixProModelCode,
+        type WorkflowBlueprint
          /* ... */  } from '../utils/llmService';
 import * as turf from '@turf/turf';
 import axios from 'axios';
@@ -14,7 +18,7 @@ import Papa from 'papaparse';
 import * as FileNode from '../models/FileNode'; // 用于写库
 
 // WSL2 中 FastAPI 运行的地址
-const PYTHON_API_URL = 'http://127.0.0.1:8000/api';
+const PYTHON_API_URL = process.env.PYTHON_API_URL || 'http://127.0.0.1:8000/api';
 // 更新后的 Python API 返回结构 (API 契约)
 interface PythonApiResponse {
   status: string;
@@ -26,6 +30,1534 @@ interface PythonApiResponse {
 // [Phase 5] Python SDK 物理直注字符串
 // 直接拼接在执行代码前方，彻底解决沙盒 import 找不到路径的问题
 // ==========================================
+type AgentMode = 'pivot' | 'feature_calc' | 'pro_model';
+
+interface InteractionPairSummary {
+    factorA: string;
+    factorB: string;
+    qValue: number;
+    interactionType?: string;
+}
+
+interface GeodetectorSpecSummary {
+    analysisType: 'interaction' | 'factor' | 'unknown';
+    yCol: string | null;
+    xCols: string[];
+}
+
+interface PipelineContextMemory {
+    lastBlueprint?: WorkflowBlueprint | any;
+    lastPythonCode?: string;
+    lastTableData?: Array<Record<string, any>>;
+    lastResultMeta?: {
+        agentMode?: AgentMode;
+        sourceFileIds?: string[];
+        resultFileId?: string;
+        resultRowCount?: number;
+        topInteractionPair?: InteractionPairSummary | null;
+        geodetectorSpec?: GeodetectorSpecSummary;
+    };
+}
+
+const INTERACTION_FACTOR_A_KEY = '因子A';
+const INTERACTION_FACTOR_B_KEY = '因子B';
+const INTERACTION_Q_KEY = '交互q值';
+const INTERACTION_TYPE_KEY = '交互类型';
+const FOLLOWUP_HINT_PATTERNS = [
+    /刚才/,
+    /上次/,
+    /上一轮/,
+    /交互.*q值最高/,
+    /最高的两个因子/,
+    /最高交互/,
+    /组合下/,
+];
+
+const uniqueStrings = (values: unknown[]): string[] => {
+    return Array.from(new Set((values || []).filter((value): value is string => typeof value === 'string' && value.trim().length > 0)));
+};
+
+const resolveFeatureCalcWriteTarget = async (
+    candidateFileIds: unknown[],
+    rows: Array<{ id?: string | number }>,
+    fallbackFileId?: string,
+): Promise<{ targetFileId: string; matchedCount: number }> => {
+    const ids = rows
+        .map(row => row?.id)
+        .filter((id): id is string | number => id !== undefined && id !== null && String(id).length > 0);
+    const candidates = uniqueStrings([...candidateFileIds, fallbackFileId]);
+
+    let bestFileId = candidates[0] || fallbackFileId || '';
+    let bestMatchCount = -1;
+
+    for (const fileId of candidates) {
+        const matchCount = await Feature.countMatchingFeatureIds(fileId, ids);
+        if (matchCount > bestMatchCount) {
+            bestFileId = fileId;
+            bestMatchCount = matchCount;
+        }
+    }
+
+    return { targetFileId: bestFileId, matchedCount: Math.max(bestMatchCount, 0) };
+};
+
+const toFiniteNumber = (value: unknown): number | null => {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : null;
+};
+
+const inferTopInteractionPairFromRows = (rows?: Array<Record<string, any>>): InteractionPairSummary | null => {
+    if (!Array.isArray(rows) || rows.length === 0) return null;
+
+    let bestPair: InteractionPairSummary | null = null;
+    for (const row of rows) {
+        const factorA = row?.[INTERACTION_FACTOR_A_KEY];
+        const factorB = row?.[INTERACTION_FACTOR_B_KEY];
+        const qValue = toFiniteNumber(row?.[INTERACTION_Q_KEY]);
+
+        if (!factorA || !factorB || qValue === null || factorA === factorB) continue;
+        if (!bestPair || qValue > bestPair.qValue) {
+            bestPair = {
+                factorA: String(factorA),
+                factorB: String(factorB),
+                qValue,
+                interactionType: row?.[INTERACTION_TYPE_KEY] ? String(row[INTERACTION_TYPE_KEY]) : undefined,
+            };
+        }
+    }
+
+    return bestPair;
+};
+
+const extractGeodetectorSpecFromCode = (pythonCode?: string): GeodetectorSpecSummary => {
+    if (!pythonCode) {
+        return { analysisType: 'unknown', yCol: null, xCols: [] };
+    }
+
+    const analysisType = pythonCode.includes('safe_geodetector_interaction')
+        ? 'interaction'
+        : pythonCode.includes('safe_geodetector_factor')
+        ? 'factor'
+        : 'unknown';
+
+    const yMatch = pythonCode.match(/y_col\s*=\s*['"]([^'"]+)['"]/);
+    const xMatch = pythonCode.match(/x_cols\s*=\s*\[([^\]]*)\]/);
+    const xCols = xMatch
+        ? Array.from(xMatch[1].matchAll(/['"]([^'"]+)['"]/g)).map(match => match[1])
+        : [];
+
+    return {
+        analysisType,
+        yCol: yMatch?.[1] ?? null,
+        xCols,
+    };
+};
+
+const inferYColumnFromContext = (context?: PipelineContextMemory): string | null => {
+    const metaSpec = context?.lastResultMeta?.geodetectorSpec;
+    if (metaSpec?.yCol) return metaSpec.yCol;
+
+    const codeSpec = extractGeodetectorSpecFromCode(context?.lastPythonCode);
+    if (codeSpec.yCol) return codeSpec.yCol;
+
+    const parameterMatch = context?.lastBlueprint?.parameters?.find((parameter: any) => {
+        const key = String(parameter?.name || '').toLowerCase();
+        return key.includes('y') && key.includes('col') && parameter?.defaultValue;
+    });
+
+    return parameterMatch?.defaultValue ? String(parameterMatch.defaultValue) : null;
+};
+
+const inferTargetFileIdFromContext = (context: PipelineContextMemory | undefined, fallbackFileIds: string[]): string | null => {
+    const targetDep = context?.lastBlueprint?.data_dependencies?.find((dependency: any) => {
+        return typeof dependency?.role === 'string' && dependency.role.toLowerCase().includes('target');
+    });
+
+    return targetDep?.file_id
+        || uniqueStrings(context?.lastResultMeta?.sourceFileIds || [])[0]
+        || fallbackFileIds[0]
+        || null;
+};
+
+const isInteractionFollowupPrompt = (userPrompt: string): boolean => {
+    return FOLLOWUP_HINT_PATTERNS.some(pattern => pattern.test(userPrompt));
+};
+
+const buildFollowupPivotBlueprint = (
+    userPrompt: string,
+    availableFileIds: string[],
+    context?: PipelineContextMemory,
+): WorkflowBlueprint | null => {
+    if (!context || !isInteractionFollowupPrompt(userPrompt)) return null;
+
+    const topInteractionPair = context.lastResultMeta?.topInteractionPair
+        || inferTopInteractionPairFromRows(context.lastTableData);
+    const geodetectorSpec = context.lastResultMeta?.geodetectorSpec
+        || extractGeodetectorSpecFromCode(context.lastPythonCode);
+    const yCol = geodetectorSpec.yCol || inferYColumnFromContext(context);
+    const targetFileId = inferTargetFileIdFromContext(context, availableFileIds);
+
+    if (!topInteractionPair || !yCol || !targetFileId) return null;
+
+    return {
+        task_type: 'context_followup_pivot',
+        reuse_code: false,
+        data_dependencies: [
+            {
+                file_id: targetFileId,
+                role: 'TargetLayer',
+                description: '沿用上一轮专业模型分析所使用的主体网格图层',
+                type: 'Vector',
+            },
+        ],
+        parameters: [],
+        visualization_spec: {
+            engine: 'echarts',
+            chart_type: 'heatmap',
+            dimensions: [topInteractionPair.factorA, topInteractionPair.factorB],
+            metrics: [`sum(${yCol})`],
+        },
+        explanation: `识别为基于上一轮交互探测结果的连续追问：已从上下文中提取交互q值最高的两个因子 ${topInteractionPair.factorA} 与 ${topInteractionPair.factorB}，并以它们作为二维透视的行列维度，对 ${yCol} 执行组合统计。`,
+    };
+};
+
+const resolveExecutionMode = (requestedMode: AgentMode, blueprint: WorkflowBlueprint): AgentMode => {
+    if (requestedMode === 'pro_model' && blueprint.task_type === 'context_followup_pivot') {
+        return 'pivot';
+    }
+    return requestedMode;
+};
+
+interface SensitivityScoreOperatorParams {
+    targetFileId: string;
+    yField: string;
+    factorFields: string[];
+    scoreFieldName?: string;
+    levelFieldName?: string;
+    levelCount?: number;
+}
+
+interface SensitivityScoreOperatorResult {
+    targetFileId: string;
+    yField: string;
+    factorFields: string[];
+    scoreFieldName: string;
+    levelFieldName: string;
+    levelCount: number;
+    updatedCount: number;
+    scoreRows: Array<Record<string, any>>;
+    weightRows: Array<Record<string, any>>;
+    weightFileId: string;
+    weightFileName: string;
+    summary?: Record<string, any>;
+}
+
+interface SpatialAutocorrelationParams {
+    targetFileId: string;
+    valueField: string;
+    nameField?: string | null;
+    contiguity?: 'queen' | 'rook';
+    permutations?: number;
+    significanceLevel?: number;
+    localIFieldName?: string;
+    pValueFieldName?: string;
+    clusterFieldName?: string;
+    hotspotFieldName?: string;
+    spatialLagFieldName?: string;
+    zScoreFieldName?: string;
+    neighborCountFieldName?: string;
+}
+
+interface SpatialAutocorrelationResult {
+    targetFileId: string;
+    valueField: string;
+    nameField?: string | null;
+    contiguity: 'queen' | 'rook';
+    permutations: number;
+    significanceLevel: number;
+    localIFieldName: string;
+    pValueFieldName: string;
+    clusterFieldName: string;
+    hotspotFieldName: string;
+    spatialLagFieldName: string;
+    zScoreFieldName: string;
+    neighborCountFieldName: string;
+    updatedCount: number;
+    localRows: Array<Record<string, any>>;
+    mapPayload: Array<Record<string, any>>;
+    resultFileId: string;
+    resultFileName: string;
+    summary?: Record<string, any>;
+}
+
+interface ParkAccessibilityParams {
+    gridFileId: string;
+    streetFileId: string;
+    distanceField: string;
+    streetNameField?: string | null;
+    normalizationMethod?: 'linear_reverse' | 'log_reverse';
+    gridScoreFieldName?: string;
+    streetScoreFieldName?: string;
+}
+
+interface ParkAccessibilityResult {
+    gridFileId: string;
+    streetFileId: string;
+    distanceField: string;
+    streetNameField?: string | null;
+    normalizationMethod: 'linear_reverse' | 'log_reverse';
+    gridScoreFieldName: string;
+    streetScoreFieldName: string;
+    gridUpdatedCount: number;
+    streetUpdatedCount: number;
+    streetRows: Array<Record<string, any>>;
+    resultFileId: string;
+    resultFileName: string;
+    summary?: Record<string, any>;
+}
+
+const SENSITIVITY_PROMPT_PATTERNS = [
+    /q值.*权重/,
+    /q\s*值.*归一化/,
+    /归一化为权重/,
+    /综合评分/,
+    /敏感性综合评分/,
+];
+
+const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const isSensitivityScoringPrompt = (userPrompt: string): boolean => {
+    const normalized = userPrompt || '';
+    return SENSITIVITY_PROMPT_PATTERNS.some((pattern) => pattern.test(normalized));
+};
+
+const normalizePromptToken = (value: string): string => {
+    return String(value || '').toLowerCase().replace(/[\s_\-（）()]/g, '');
+};
+
+const SENSITIVITY_COLUMN_ALIASES: Array<{ terms: string[]; hints: string[] }> = [
+    { terms: ['滑坡发生数量', '滑坡数量', '滑坡发生', '因变量'], hints: ['landslidecount', 'landslide', 'hazard', 'disaster'] },
+    { terms: ['坡度等级', '坡度'], hints: ['slopec', 'slope'] },
+    { terms: ['高程等级', '高程', '海拔'], hints: ['demc', 'elev', 'elevation', 'dem'] },
+    { terms: ['植被覆盖等级', '植被覆盖', '植被', 'ndvi'], hints: ['ndvic', 'ndvi', 'vegetation'] },
+    { terms: ['降水等级', '降水', '雨量'], hints: ['rainc', 'rain', 'precip'] },
+    { terms: ['到断裂带距离等级', '断裂带距离', '断裂带', '断层'], hints: ['duanc', 'fault', 'duan'] },
+    { terms: ['到道路距离等级', '道路距离', '道路'], hints: ['roadc', 'road'] },
+    { terms: ['到河流距离等级', '河流距离', '河流'], hints: ['riverc', 'river', 'stream'] },
+    { terms: ['土地利用类型', '土地利用'], hints: ['landusec', 'landuse', 'land'] },
+    { terms: ['坡向等级', '坡向'], hints: ['aspectclass', 'aspect'] },
+];
+
+const findColumnByHints = (columns: string[], hints: string[]): string | null => {
+    const normalizedColumns = columns.map((column) => ({
+        raw: column,
+        normalized: normalizePromptToken(column),
+    }));
+
+    for (const hint of hints) {
+        const normalizedHint = normalizePromptToken(hint);
+        const matchedColumn = normalizedColumns.find(({ normalized }) => normalized.includes(normalizedHint));
+        if (matchedColumn) return matchedColumn.raw;
+    }
+
+    return null;
+};
+
+const inferColumnsByPromptAliases = (userPrompt: string, columns: string[]) => {
+    const matched = new Set<string>();
+    const aliasesHit = SENSITIVITY_COLUMN_ALIASES.filter((alias) => {
+        return alias.terms.some((term) => userPrompt.includes(term));
+    });
+
+    for (const alias of aliasesHit) {
+        const column = findColumnByHints(columns, alias.hints);
+        if (column) matched.add(column);
+    }
+
+    return Array.from(matched);
+};
+
+const pickSensitivityTargetSchema = (userPrompt: string, availableFiles: any[]) => {
+    const scored = (availableFiles || []).map((file) => {
+        const columns = Array.isArray(file?.columns) ? file.columns : [];
+        const exactHitCount = columns.filter((column: string) => userPrompt.includes(column)).length;
+        const aliasHitCount = inferColumnsByPromptAliases(userPrompt, columns).length;
+        const hitCount = exactHitCount + aliasHitCount;
+        return { file, hitCount };
+    });
+
+    scored.sort((a, b) => b.hitCount - a.hitCount);
+    return scored[0]?.file || availableFiles?.[0] || null;
+};
+
+const inferSensitivitySpecFromPrompt = (
+    userPrompt: string,
+    availableFiles: any[],
+): SensitivityScoreOperatorParams | null => {
+    if (!isSensitivityScoringPrompt(userPrompt)) return null;
+
+    const targetSchema = pickSensitivityTargetSchema(userPrompt, availableFiles);
+    if (!targetSchema?.fileId || !Array.isArray(targetSchema.columns) || targetSchema.columns.length === 0) {
+        return null;
+    }
+
+    const columns = targetSchema.columns as string[];
+    const mentionedColumns = Array.from(new Set([
+        ...columns.filter((column: string) => userPrompt.includes(column)),
+        ...inferColumnsByPromptAliases(userPrompt, columns),
+    ]));
+    if (mentionedColumns.length < 2) return null;
+
+    const yField = mentionedColumns.find((column: string) => {
+        const escaped = escapeRegExp(column);
+        return new RegExp(`以\\s*${escaped}\\s*为因变量`).test(userPrompt)
+            || new RegExp(`${escaped}\\s*为因变量`).test(userPrompt)
+            || new RegExp(`${escaped}[^，。；,\\n]{0,20}因变量`).test(userPrompt);
+    }) || findColumnByHints(mentionedColumns, ['landslidecount', 'landslide', 'hazard', 'disaster'])
+        || mentionedColumns.find((column: string) => /滑坡|灾害|发生/.test(column));
+
+    if (!yField) return null;
+
+    const factorFields = mentionedColumns.filter((column: string) => column !== yField);
+    if (factorFields.length === 0) return null;
+
+    return {
+        targetFileId: targetSchema.fileId,
+        yField,
+        factorFields,
+        scoreFieldName: '滑坡敏感性综合评分',
+        levelFieldName: '滑坡敏感性等级',
+        levelCount: 5,
+    };
+};
+
+const SPATIAL_AUTOCORR_PROMPT_PATTERNS = [
+    /moran/i,
+    /lisa/i,
+    /空间自相关/,
+    /局部自相关/,
+    /热点街道/,
+    /高-高/,
+    /低-低/,
+];
+
+const SPATIAL_AUTOCORR_VALUE_HINTS = [
+    '可达性得分',
+    '可达性评分',
+    '公园可达性',
+    '医疗设施可达性',
+    '可达性',
+    'accessibilityscore',
+    'accessibility',
+    'parkaccessscore',
+    'parkaccess',
+    'accessscore',
+    'access',
+    'score',
+];
+
+const SPATIAL_AUTOCORR_NAME_HINTS = [
+    '街道名称',
+    '街道名',
+    '街道',
+    '名称',
+    'name',
+    'street',
+    'town',
+    'subdistrict',
+];
+
+const PARK_ACCESSIBILITY_PROMPT_PATTERNS = [
+    /公园可达性/,
+    /park.*access/i,
+    /距公园距离/,
+    /最近公园距离/,
+];
+
+const PARK_DISTANCE_FIELD_HINTS = [
+    'distance_to_nearest_park',
+    'nearest_park_distance',
+    'nearestparkdistance',
+    'nearest_park',
+    '距公园距离',
+    '到公园距离',
+    '最近公园距离',
+    '公园距离',
+    'park_distance',
+    'distance_to_park',
+    'dist_park',
+    'parkdist',
+];
+
+const isParkAccessibilityPrompt = (userPrompt: string): boolean => {
+    const normalized = userPrompt || '';
+    const hasAccessibility = PARK_ACCESSIBILITY_PROMPT_PATTERNS.some((pattern) => pattern.test(normalized));
+    const hasComputeIntent = /计算|构建|生成|测算|标准化|聚合/.test(normalized);
+    const hasStreetIntent = /街道|主城区|聚合到街道/.test(normalized);
+    return hasAccessibility && hasComputeIntent && hasStreetIntent;
+};
+
+const isSpatialAutocorrelationPrompt = (userPrompt: string): boolean => {
+    const normalized = userPrompt || '';
+    return SPATIAL_AUTOCORR_PROMPT_PATTERNS.some((pattern) => pattern.test(normalized));
+};
+
+const isPolygonGeomType = (geomType?: string): boolean => /polygon/i.test(String(geomType || ''));
+
+const findSpatialAutocorrelationNameField = (columns: string[]): string | null => {
+    const exactCandidates = ['街道名称', '街道名', '街道', '名称', 'name', 'Name', 'street_name'];
+    for (const candidate of exactCandidates) {
+        const matched = columns.find((column) => column === candidate);
+        if (matched) return matched;
+    }
+
+    return findColumnByHints(columns, SPATIAL_AUTOCORR_NAME_HINTS);
+};
+
+const findSpatialAutocorrelationValueField = (userPrompt: string, columns: string[]): string | null => {
+    const exactMentioned = columns.filter((column) => userPrompt.includes(column));
+    for (const hint of SPATIAL_AUTOCORR_VALUE_HINTS) {
+        const normalizedHint = normalizePromptToken(hint);
+        const exactMatched = exactMentioned.find((column) => normalizePromptToken(column).includes(normalizedHint));
+        if (exactMatched) return exactMatched;
+    }
+
+    for (const hint of SPATIAL_AUTOCORR_VALUE_HINTS) {
+        const matched = findColumnByHints(columns, [hint]);
+        if (matched) return matched;
+    }
+
+    return exactMentioned.sort((a, b) => b.length - a.length)[0] || null;
+};
+
+const inferSpatialAutocorrelationSpecFromPrompt = (
+    userPrompt: string,
+    availableFiles: any[],
+): SpatialAutocorrelationParams | null => {
+    if (!isSpatialAutocorrelationPrompt(userPrompt)) return null;
+
+    const candidates = (availableFiles || [])
+        .map((file) => {
+            const columns = Array.isArray(file?.columns) ? file.columns : [];
+            const valueField = findSpatialAutocorrelationValueField(userPrompt, columns);
+            const nameField = findSpatialAutocorrelationNameField(columns);
+            let score = 0;
+
+            if (isPolygonGeomType(file?.geomType)) score += 8;
+            if (valueField) score += 10;
+            if (nameField) score += 2;
+            if (columns.some((column: string) => userPrompt.includes(column))) score += 3;
+            if (/街道|street|subdistrict/i.test(`${String(file?.name || '')} ${columns.join(' ')}`)) score += 2;
+
+            return { file, valueField, nameField, score };
+        })
+        .filter((candidate) => candidate.file?.fileId && isPolygonGeomType(candidate.file?.geomType) && candidate.valueField)
+        .sort((a, b) => b.score - a.score);
+
+    const best = candidates[0];
+    if (!best?.file?.fileId || !best.valueField) return null;
+
+    return {
+        targetFileId: best.file.fileId,
+        valueField: best.valueField,
+        nameField: best.nameField,
+        contiguity: 'queen',
+        permutations: 199,
+        significanceLevel: 0.05,
+        localIFieldName: `${best.valueField}_LISA局部I`,
+        pValueFieldName: `${best.valueField}_LISA_P值`,
+        clusterFieldName: `${best.valueField}_LISA聚类`,
+        hotspotFieldName: `${best.valueField}_热点类型`,
+        spatialLagFieldName: `${best.valueField}_空间滞后`,
+        zScoreFieldName: `${best.valueField}_标准化Z值`,
+        neighborCountFieldName: `${best.valueField}_邻居数`,
+    };
+};
+
+const findParkDistanceField = (userPrompt: string, columns: string[]): string | null => {
+    const exactMentioned = columns.filter((column) => userPrompt.includes(column));
+    for (const hint of PARK_DISTANCE_FIELD_HINTS) {
+        const matched = exactMentioned.find((column) => normalizePromptToken(column).includes(normalizePromptToken(hint)));
+        if (matched) return matched;
+    }
+    for (const hint of PARK_DISTANCE_FIELD_HINTS) {
+        const matched = findColumnByHints(columns, [hint]);
+        if (matched) return matched;
+    }
+    return null;
+};
+
+const inferParkAccessibilitySpecFromPrompt = (
+    userPrompt: string,
+    availableFiles: any[],
+): ParkAccessibilityParams | null => {
+    if (!isParkAccessibilityPrompt(userPrompt)) return null;
+
+    const gridCandidates = (availableFiles || [])
+        .map((file) => {
+            const columns = Array.isArray(file?.columns) ? file.columns : [];
+            const distanceField = findParkDistanceField(userPrompt, columns);
+            let score = 0;
+
+            if (isPolygonGeomType(file?.geomType)) score += 6;
+            if (distanceField) score += 10;
+            if (/网格|grid/i.test(String(file?.name || ''))) score += 4;
+            if (columns.some((column: string) => userPrompt.includes(column))) score += 2;
+
+            return { file, distanceField, score };
+        })
+        .filter((candidate) => candidate.file?.fileId && candidate.distanceField)
+        .sort((a, b) => b.score - a.score);
+
+    const gridMatch = gridCandidates[0];
+    if (!gridMatch?.file?.fileId || !gridMatch.distanceField) return null;
+
+    const streetCandidates = (availableFiles || [])
+        .filter((file) => file?.fileId !== gridMatch.file.fileId)
+        .map((file) => {
+            const columns = Array.isArray(file?.columns) ? file.columns : [];
+            const streetNameField = findSpatialAutocorrelationNameField(columns);
+            let score = 0;
+
+            if (isPolygonGeomType(file?.geomType)) score += 6;
+            if (streetNameField) score += 6;
+            if (/街道|street|subdistrict/i.test(`${String(file?.name || '')} ${columns.join(' ')}`)) score += 4;
+
+            return { file, streetNameField, score };
+        })
+        .filter((candidate) => candidate.file?.fileId && isPolygonGeomType(candidate.file?.geomType))
+        .sort((a, b) => b.score - a.score);
+
+    const streetMatch = streetCandidates[0];
+    if (!streetMatch?.file?.fileId) return null;
+
+    return {
+        gridFileId: gridMatch.file.fileId,
+        streetFileId: streetMatch.file.fileId,
+        distanceField: gridMatch.distanceField,
+        streetNameField: streetMatch.streetNameField || null,
+        normalizationMethod: /对数|log/i.test(userPrompt) ? 'log_reverse' : 'linear_reverse',
+        gridScoreFieldName: '公园可达性得分',
+        streetScoreFieldName: '公园可达性得分',
+    };
+};
+
+const persistTabularRowsAsCsv = async (rows: Array<Record<string, any>>, fileName: string) => {
+    const csvString = '\uFEFF' + Papa.unparse(rows || []);
+    const uploadDir = path.join(process.cwd(), 'uploads');
+    await fs.promises.mkdir(uploadDir, { recursive: true });
+
+    const newFilePath = path.join(uploadDir, fileName);
+    await fs.promises.writeFile(newFilePath, csvString, 'utf8');
+
+    const fileNodeObj = FileNode.createFileNodeObject({
+        name: fileName,
+        type: 'file',
+        parent_id: null,
+        path: newFilePath,
+        size: Buffer.byteLength(csvString, 'utf8'),
+        extension: '.csv',
+        mime_type: 'text/csv',
+    });
+    const savedNode = await FileNode.insertFileNode(fileNodeObj);
+
+    if (rows && rows.length > 0) {
+        const featuresToInsert = rows.map((row: any, index: number) => ({
+            fileId: savedNode.id,
+            type: 'Feature',
+            geometry: null,
+            properties: { id: `score_weight_${Date.now()}_${index}`, ...row },
+        }));
+        await Feature.insertFeaturesBatch(savedNode.id, featuresToInsert);
+    }
+
+    return savedNode;
+};
+
+const executeSensitivityScoreOperator = async (
+    params: SensitivityScoreOperatorParams,
+): Promise<SensitivityScoreOperatorResult> => {
+    const {
+        targetFileId,
+        yField,
+        factorFields,
+        scoreFieldName = '滑坡敏感性综合评分',
+        levelFieldName = '滑坡敏感性等级',
+        levelCount = 5,
+    } = params;
+
+    const response = await axios.post<any>(`${PYTHON_API_URL}/models/landslide_sensitivity_score`, {
+        target_file_id: targetFileId,
+        y_column: yField,
+        factor_columns: factorFields,
+        score_column: scoreFieldName,
+        level_column: levelFieldName,
+        level_count: levelCount,
+    });
+
+    const scoreRows = Array.isArray(response.data?.score_rows) ? response.data.score_rows : [];
+    const weightRows = Array.isArray(response.data?.weight_rows) ? response.data.weight_rows : [];
+    if (scoreRows.length === 0) {
+        throw new Error('综合评分算子未返回可写回的网格评分结果');
+    }
+    if (weightRows.length === 0) {
+        throw new Error('综合评分算子未返回 q 值和权重结果表');
+    }
+
+    const updateRows = scoreRows
+        .filter((row: any) => row.id !== undefined && row.id !== null)
+        .map((row: any) => {
+            const { id, ...patch } = row;
+            return { id, patch };
+        });
+    const updatedCount = await Feature.updateFeaturePropertiesBatch(targetFileId, updateRows);
+
+    const timestamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+    const weightFileName = `landslide_q_weights_${timestamp}.csv`;
+    const savedNode = await persistTabularRowsAsCsv(weightRows, weightFileName);
+
+    return {
+        targetFileId,
+        yField,
+        factorFields,
+        scoreFieldName,
+        levelFieldName,
+        levelCount,
+        updatedCount,
+        scoreRows,
+        weightRows,
+        weightFileId: savedNode.id,
+        weightFileName,
+        summary: response.data?.summary,
+    };
+};
+
+const executeSpatialAutocorrelationOperator = async (
+    params: SpatialAutocorrelationParams,
+): Promise<SpatialAutocorrelationResult> => {
+    const {
+        targetFileId,
+        valueField,
+        nameField = null,
+        contiguity = 'queen',
+        permutations = 199,
+        significanceLevel = 0.05,
+        localIFieldName = `${valueField}_LISA局部I`,
+        pValueFieldName = `${valueField}_LISA_P值`,
+        clusterFieldName = `${valueField}_LISA聚类`,
+        hotspotFieldName = `${valueField}_热点类型`,
+        spatialLagFieldName = `${valueField}_空间滞后`,
+        zScoreFieldName = `${valueField}_标准化Z值`,
+        neighborCountFieldName = `${valueField}_邻居数`,
+    } = params;
+
+    const response = await axios.post<any>(`${PYTHON_API_URL}/models/spatial_autocorrelation`, {
+        target_file_id: targetFileId,
+        value_column: valueField,
+        name_column: nameField,
+        contiguity,
+        permutations,
+        significance_level: significanceLevel,
+        local_i_column: localIFieldName,
+        p_value_column: pValueFieldName,
+        cluster_column: clusterFieldName,
+        hotspot_column: hotspotFieldName,
+        spatial_lag_column: spatialLagFieldName,
+        z_score_column: zScoreFieldName,
+        neighbor_count_column: neighborCountFieldName,
+    });
+
+    const localRows = Array.isArray(response.data?.local_rows) ? response.data.local_rows : [];
+    const mapPayload = Array.isArray(response.data?.map_payload) ? response.data.map_payload : [];
+    if (localRows.length === 0) {
+        throw new Error('空间自相关算子未返回街道级局部 LISA 结果');
+    }
+
+    const updateRows = localRows
+        .filter((row: any) => row.id !== undefined && row.id !== null)
+        .map((row: any) => {
+            const { id, ...patch } = row;
+            return { id, patch };
+        });
+    const updatedCount = await Feature.updateFeaturePropertiesBatch(targetFileId, updateRows);
+
+    const timestamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+    const resultFileName = `spatial_autocorrelation_${timestamp}.csv`;
+    const savedNode = await persistTabularRowsAsCsv(localRows, resultFileName);
+
+    return {
+        targetFileId,
+        valueField,
+        nameField,
+        contiguity,
+        permutations,
+        significanceLevel,
+        localIFieldName,
+        pValueFieldName,
+        clusterFieldName,
+        hotspotFieldName,
+        spatialLagFieldName,
+        zScoreFieldName,
+        neighborCountFieldName,
+        updatedCount,
+        localRows,
+        mapPayload,
+        resultFileId: savedNode.id,
+        resultFileName,
+        summary: response.data?.summary,
+    };
+};
+
+const executeParkAccessibilityOperator = async (
+    params: ParkAccessibilityParams,
+): Promise<ParkAccessibilityResult> => {
+    const {
+        gridFileId,
+        streetFileId,
+        distanceField,
+        streetNameField = null,
+        normalizationMethod = 'linear_reverse',
+        gridScoreFieldName = '公园可达性得分',
+        streetScoreFieldName = '公园可达性得分',
+    } = params;
+
+    const response = await axios.post<any>(`${PYTHON_API_URL}/models/park_accessibility_score`, {
+        grid_file_id: gridFileId,
+        street_file_id: streetFileId,
+        distance_field: distanceField,
+        street_name_field: streetNameField,
+        normalization_method: normalizationMethod,
+        grid_score_field: gridScoreFieldName,
+        street_score_field: streetScoreFieldName,
+    });
+
+    const gridScoreRows = Array.isArray(response.data?.grid_score_rows) ? response.data.grid_score_rows : [];
+    const streetScoreRows = Array.isArray(response.data?.street_score_rows) ? response.data.street_score_rows : [];
+    if (gridScoreRows.length === 0) {
+        throw new Error('公园可达性算子未返回网格评分结果');
+    }
+    if (streetScoreRows.length === 0) {
+        throw new Error('公园可达性算子未返回街道聚合结果');
+    }
+
+    const gridUpdateRows = gridScoreRows
+        .filter((row: any) => row.id !== undefined && row.id !== null)
+        .map((row: any) => {
+            const { id, ...patch } = row;
+            return { id, patch };
+        });
+    const streetUpdateRows = streetScoreRows
+        .filter((row: any) => row.id !== undefined && row.id !== null)
+        .map((row: any) => {
+            const { id, ...patch } = row;
+            return { id, patch };
+        });
+
+    const gridUpdatedCount = await Feature.updateFeaturePropertiesBatch(gridFileId, gridUpdateRows);
+    const streetUpdatedCount = await Feature.updateFeaturePropertiesBatch(streetFileId, streetUpdateRows);
+
+    const timestamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+    const resultFileName = `park_accessibility_street_${timestamp}.csv`;
+    const savedNode = await persistTabularRowsAsCsv(streetScoreRows, resultFileName);
+
+    return {
+        gridFileId,
+        streetFileId,
+        distanceField,
+        streetNameField,
+        normalizationMethod,
+        gridScoreFieldName,
+        streetScoreFieldName,
+        gridUpdatedCount,
+        streetUpdatedCount,
+        streetRows: streetScoreRows,
+        resultFileId: savedNode.id,
+        resultFileName,
+        summary: response.data?.summary,
+    };
+};
+
+const buildSpatialAutocorrelationPreviewRows = (
+    result: SpatialAutocorrelationResult,
+): Array<Record<string, any>> => {
+    const clusterCounts = result.summary?.cluster_counts || {};
+    const hotspotNames = Array.isArray(result.summary?.hotspot_names) ? result.summary.hotspot_names : [];
+    const coldspotNames = Array.isArray(result.summary?.coldspot_names) ? result.summary.coldspot_names : [];
+
+    return [
+        {
+            指标: '全局 Moran\'s I',
+            数值: result.summary?.global_moran_i ?? null,
+            说明: result.summary?.positive_spatial_autocorrelation ? '显著正相关' : '未达到显著正相关',
+        },
+        {
+            指标: '全局 p 值',
+            数值: result.summary?.global_p_value ?? null,
+            说明: `邻接方式: ${result.contiguity}`,
+        },
+        {
+            指标: '高-高聚集街道数',
+            数值: clusterCounts['高-高聚集'] ?? 0,
+            说明: hotspotNames.slice(0, 5).join('、') || '无',
+        },
+        {
+            指标: '低-低聚集街道数',
+            数值: clusterCounts['低-低聚集'] ?? 0,
+            说明: coldspotNames.slice(0, 5).join('、') || '无',
+        },
+        {
+            指标: '高-低 / 低-高异常数',
+            数值: (clusterCounts['高-低异常'] ?? 0) + (clusterCounts['低-高异常'] ?? 0),
+            说明: `不显著: ${clusterCounts['不显著'] ?? 0}`,
+        },
+    ];
+};
+
+const isSensitivitySpatialMapPrompt = (userPrompt: string): boolean => {
+    const normalized = userPrompt || '';
+    const hasScoreIntent = /敏感性|综合评分|评分/.test(normalized);
+    const hasMapIntent = /地图|热力|渐变|专题图|可视化|渲染/.test(normalized);
+    const hasPointIntent = /滑坡点|点位|历史滑坡|灾害点|叠加/.test(normalized);
+    return hasScoreIntent && hasMapIntent && hasPointIntent;
+};
+
+const findSensitivityScoreField = (columns: string[]): string | null => {
+    const exactCandidates = [
+        '滑坡敏感性综合评分',
+        '滑坡敏感性评分',
+        '综合敏感性评分',
+        '综合评分',
+    ];
+    for (const candidate of exactCandidates) {
+        const matched = columns.find((column) => column === candidate);
+        if (matched) return matched;
+    }
+
+    const fuzzyCandidates = [
+        /滑坡.*敏感.*评分/,
+        /敏感.*综合.*评分/,
+        /综合.*评分/,
+        /sensitivity.*score/i,
+    ];
+    for (const pattern of fuzzyCandidates) {
+        const matched = columns.find((column) => pattern.test(column));
+        if (matched) return matched;
+    }
+    return null;
+};
+
+const findSensitivityLevelField = (columns: string[]): string | null => {
+    const exactCandidates = [
+        '滑坡敏感性等级',
+        '敏感性等级',
+        '综合敏感性等级',
+    ];
+    for (const candidate of exactCandidates) {
+        const matched = columns.find((column) => column === candidate);
+        if (matched) return matched;
+    }
+
+    const matched = columns.find((column) => /敏感.*等级|level/i.test(column));
+    return matched || null;
+};
+
+const findPointLabelField = (columns: string[]): string | null => {
+    const exactCandidates = ['名称', 'name', 'Name', '灾害点名称', '滑坡名称', '编号', 'ID'];
+    for (const candidate of exactCandidates) {
+        const matched = columns.find((column) => column === candidate);
+        if (matched) return matched;
+    }
+
+    const matched = columns.find((column) => /名称|name|编号|code|id/i.test(column));
+    return matched || null;
+};
+
+const buildSensitivitySpatialMapBlueprint = (
+    userPrompt: string,
+    availableFiles: any[],
+    context?: PipelineContextMemory,
+): WorkflowBlueprint | null => {
+    if (!isSensitivitySpatialMapPrompt(userPrompt)) return null;
+
+    const contextTargetId = inferTargetFileIdFromContext(context, []);
+    const gridCandidates = (availableFiles || []).map((file) => {
+        const columns = Array.isArray(file?.columns) ? file.columns : [];
+        const geomType = String(file?.geomType || '').toLowerCase();
+        const scoreField = findSensitivityScoreField(columns);
+        let score = 0;
+
+        if (geomType.includes('polygon')) score += 6;
+        if (scoreField) score += 8;
+        if (findSensitivityLevelField(columns)) score += 1;
+        if (file?.fileId && contextTargetId && file.fileId === contextTargetId) score += 6;
+        if (/网格|grid/i.test(String(file?.name || ''))) score += 3;
+        if (/四川/.test(String(file?.name || ''))) score += 1;
+
+        return { file, scoreField, score };
+    }).sort((a, b) => b.score - a.score);
+
+    const gridMatch = gridCandidates.find((candidate) => candidate.scoreField && candidate.score >= 10) || gridCandidates[0];
+    if (!gridMatch?.file?.fileId || !gridMatch.scoreField) {
+        return null;
+    }
+
+    const pointCandidates = (availableFiles || [])
+        .filter((file) => file?.fileId !== gridMatch.file.fileId)
+        .map((file) => {
+            const columns = Array.isArray(file?.columns) ? file.columns : [];
+            const geomType = String(file?.geomType || '').toLowerCase();
+            const nameText = `${String(file?.name || '')} ${columns.join(' ')}`;
+            let score = 0;
+
+            if (geomType.includes('point')) score += 6;
+            if (/滑坡|landslide|灾害/.test(nameText)) score += 5;
+            if (/历史|history|historical/i.test(nameText)) score += 2;
+            if (/点|point/i.test(nameText)) score += 1;
+
+            return {
+                file,
+                score,
+                labelField: findPointLabelField(columns),
+            };
+        })
+        .sort((a, b) => b.score - a.score);
+
+    const pointMatch = pointCandidates.find((candidate) => candidate.score >= 6) || null;
+    const levelField = findSensitivityLevelField(Array.isArray(gridMatch.file.columns) ? gridMatch.file.columns : []);
+
+    return {
+        task_type: 'landslide_sensitivity_map',
+        reuse_code: false,
+        data_dependencies: [
+            {
+                file_id: gridMatch.file.fileId,
+                role: 'TargetLayer',
+                description: '包含滑坡敏感性综合评分字段的网格面图层',
+                type: 'Vector',
+            },
+            ...(pointMatch?.file?.fileId ? [{
+                file_id: pointMatch.file.fileId,
+                role: 'JoinLayer',
+                description: '用于叠加显示的历史滑坡点图层',
+                type: 'Vector',
+            }] : []),
+        ],
+        parameters: [
+            {
+                name: 'scoreFieldName',
+                type: 'column',
+                defaultValue: gridMatch.scoreField,
+                description: '网格图层中的滑坡敏感性综合评分字段',
+            },
+            {
+                name: 'levelFieldName',
+                type: 'column',
+                defaultValue: levelField,
+                description: '网格图层中的敏感性等级字段，可用于悬浮提示',
+            },
+            {
+                name: 'pointLabelField',
+                type: 'column',
+                defaultValue: pointMatch?.labelField || null,
+                description: '历史滑坡点的标注字段，可为空',
+            },
+        ],
+        visualization_spec: {
+            engine: 'html_iframe',
+            chart_type: 'thematic_map',
+            chart_library: 'folium',
+            dimensions: [gridMatch.scoreField],
+            metrics: [gridMatch.scoreField],
+        },
+        explanation: pointMatch?.file?.fileId
+            ? `识别为滑坡敏感性专题制图任务：使用网格面图层字段 ${gridMatch.scoreField} 进行热力渐变渲染，并叠加历史滑坡点图层形成独立地图视图。`
+            : `识别为滑坡敏感性专题制图任务：使用网格面图层字段 ${gridMatch.scoreField} 进行热力渐变渲染；当前未明确识别到历史滑坡点图层，将优先输出评分面专题图。`,
+    };
+};
+
+const buildLandslideSensitivityMapPivotCode = (blueprint: WorkflowBlueprint): string => {
+    const gridLayerId = blueprint.data_dependencies.find((dependency) => dependency.role === 'TargetLayer')?.file_id;
+    const pointLayerId = blueprint.data_dependencies.find((dependency) => dependency.role === 'JoinLayer')?.file_id;
+    const scoreFieldName = String(blueprint.parameters.find((parameter) => parameter.name === 'scoreFieldName')?.defaultValue || '滑坡敏感性综合评分');
+    const levelFieldName = blueprint.parameters.find((parameter) => parameter.name === 'levelFieldName')?.defaultValue ?? null;
+    const pointLabelField = blueprint.parameters.find((parameter) => parameter.name === 'pointLabelField')?.defaultValue ?? null;
+
+    if (!gridLayerId) {
+        throw new Error('专题地图蓝图缺少 TargetLayer，无法生成确定性专题地图代码。');
+    }
+
+    return `
+# [Deterministic thematic map] landslide sensitivity map extractor
+def execute_pivot(gdf_dict, parameters):
+    import geopandas as gpd
+    import pandas as pd
+    import json
+
+    def round_nested_coords(value, digits=5):
+        if isinstance(value, list):
+            return [round_nested_coords(item, digits) for item in value]
+        if isinstance(value, float):
+            return round(value, digits)
+        return value
+
+    grid_gdf = gdf_dict[${JSON.stringify(gridLayerId)}].copy()
+    point_gdf = gdf_dict[${JSON.stringify(pointLayerId || '')}].copy() if ${pointLayerId ? 'True' : 'False'} else None
+
+    score_col = parameters.get('scoreFieldName') or ${JSON.stringify(scoreFieldName)}
+    level_col = parameters.get('levelFieldName') or ${JSON.stringify(levelFieldName)}
+    point_label_col = parameters.get('pointLabelField') or ${JSON.stringify(pointLabelField)}
+
+    if score_col not in grid_gdf.columns:
+        raise ValueError(f"目标网格图层缺少评分字段: {score_col}")
+
+    grid_gdf = grid_gdf.dropna(subset=[grid_gdf.geometry.name]).copy()
+    if grid_gdf.empty:
+        raise ValueError("目标网格图层为空，无法绘制专题地图")
+
+    if grid_gdf.crs is None:
+        grid_gdf = grid_gdf.set_crs(epsg=3857)
+    grid_gdf = grid_gdf.to_crs(epsg=4326)
+    grid_gdf[score_col] = pd.to_numeric(grid_gdf[score_col], errors='coerce')
+    grid_gdf = grid_gdf.dropna(subset=[score_col]).copy()
+
+    if grid_gdf.empty:
+        raise ValueError(f"评分字段 {score_col} 没有可用于绘图的有效数值")
+
+    grid_gdf = safe_get_centroid_coords(grid_gdf, x_col='lon', y_col='lat')
+
+    # Keep GeoJSON payload minimal to avoid oversized iframe rendering requests.
+    grid_export_columns = [score_col]
+    if level_col and level_col in grid_gdf.columns:
+        grid_export_columns.append(level_col)
+    grid_export_columns.append(grid_gdf.geometry.name)
+
+    grid_export = gpd.GeoDataFrame(
+        grid_gdf[grid_export_columns].copy(),
+        geometry=grid_gdf.geometry.name,
+        crs=grid_gdf.crs
+    )
+    grid_geojson = json.loads(grid_export.to_json(drop_id=True))
+    for feature in grid_geojson.get('features', []):
+        geometry = feature.get('geometry') or {}
+        if 'coordinates' in geometry:
+            geometry['coordinates'] = round_nested_coords(geometry['coordinates'], digits=5)
+
+    point_rows = []
+    if point_gdf is not None and not point_gdf.empty:
+        point_gdf = point_gdf.dropna(subset=[point_gdf.geometry.name]).copy()
+        if not point_gdf.empty:
+            if point_gdf.crs is None:
+                point_gdf = point_gdf.set_crs(epsg=3857)
+            point_gdf = point_gdf.to_crs(epsg=4326)
+            point_gdf = safe_get_centroid_coords(point_gdf, x_col='lon', y_col='lat')
+
+            export_cols = ['lon', 'lat']
+            if point_label_col and point_label_col in point_gdf.columns:
+                export_cols.append(point_label_col)
+            if 'id' in point_gdf.columns:
+                export_cols.append('id')
+
+            point_rows = point_gdf[export_cols].dropna(subset=['lon', 'lat']).to_dict(orient='records')
+            for row in point_rows:
+                row['lon'] = round(float(row['lon']), 5)
+                row['lat'] = round(float(row['lat']), 5)
+
+    center_lat = float(grid_gdf['lat'].mean())
+    center_lon = float(grid_gdf['lon'].mean())
+
+    payload = {
+        'map_title': '四川省滑坡敏感性综合评分与历史滑坡点叠加图',
+        'score_column': score_col,
+        'level_column': level_col if level_col in grid_gdf.columns else None,
+        'point_label_column': point_label_col if point_rows else None,
+        'grid_feature_count': int(len(grid_gdf)),
+        'landslide_point_count': int(len(point_rows)),
+        'score_min': round(float(grid_gdf[score_col].min()), 6),
+        'score_max': round(float(grid_gdf[score_col].max()), 6),
+        'center_lat': center_lat,
+        'center_lon': center_lon,
+        'grid_geojson': grid_geojson,
+        'landslide_points': point_rows,
+    }
+
+    valid_ids = grid_gdf['id'].tolist() if 'id' in grid_gdf.columns else []
+    return {
+        'chart_data': pd.DataFrame([payload]),
+        'valid_ids': valid_ids
+    }
+`.trim();
+};
+
+const buildLandslideSensitivityMapChartCode = (): string => `
+def execute_chart(df, parameters):
+    import json
+    import math
+    import folium
+    from branca.colormap import LinearColormap
+    from branca.element import Element
+
+    if df.empty:
+        raise ValueError("专题地图绘图数据为空")
+
+    payload = df.iloc[0].to_dict()
+
+    def ensure_object(value):
+        if isinstance(value, str):
+            value = value.strip()
+            return json.loads(value) if value else None
+        return value
+
+    grid_geojson = ensure_object(payload.get('grid_geojson')) or {}
+    landslide_points = ensure_object(payload.get('landslide_points')) or []
+    score_col = payload.get('score_column') or '滑坡敏感性综合评分'
+    level_col = payload.get('level_column')
+    point_label_col = payload.get('point_label_column')
+    map_title = payload.get('map_title') or '滑坡敏感性综合评分空间分布'
+
+    features = grid_geojson.get('features', [])
+    if not features:
+        raise ValueError("网格 GeoJSON 为空，无法绘图")
+
+    score_values = []
+    min_lon, min_lat = 180.0, 90.0
+    max_lon, max_lat = -180.0, -90.0
+
+    def update_bounds(coords):
+        nonlocal min_lon, min_lat, max_lon, max_lat
+        if isinstance(coords, (list, tuple)):
+            if len(coords) == 2 and all(isinstance(v, (int, float)) for v in coords):
+                lon, lat = float(coords[0]), float(coords[1])
+                min_lon = min(min_lon, lon)
+                max_lon = max(max_lon, lon)
+                min_lat = min(min_lat, lat)
+                max_lat = max(max_lat, lat)
+            else:
+                for item in coords:
+                    update_bounds(item)
+
+    for feature in features:
+        props = feature.get('properties', {}) or {}
+        raw_score = props.get(score_col)
+        try:
+            score = float(raw_score)
+            if math.isfinite(score):
+                score_values.append(score)
+        except Exception:
+            pass
+        update_bounds(feature.get('geometry', {}).get('coordinates', []))
+
+    if not score_values:
+        raise ValueError(f"字段 {score_col} 没有可用于渲染的有效数值")
+
+    center_lat = float(payload.get('center_lat')) if payload.get('center_lat') is not None else (min_lat + max_lat) / 2
+    center_lon = float(payload.get('center_lon')) if payload.get('center_lon') is not None else (min_lon + max_lon) / 2
+
+    m = create_system_base_map(center_lat, center_lon, zoom=7)
+    if min_lon < max_lon and min_lat < max_lat:
+        m.fit_bounds([[min_lat, min_lon], [max_lat, max_lon]])
+
+    color_scale = LinearColormap(
+        colors=['#143d59', '#1f6f8b', '#22c1c3', '#fdbb2d', '#f97316', '#dc2626'],
+        vmin=min(score_values),
+        vmax=max(score_values)
+    )
+    color_scale.caption = score_col
+
+    def style_function(feature):
+        props = feature.get('properties', {}) or {}
+        raw_value = props.get(score_col)
+        try:
+            value = float(raw_value)
+            fill_color = color_scale(value) if math.isfinite(value) else '#334155'
+        except Exception:
+            fill_color = '#334155'
+        return {
+            'fillColor': fill_color,
+            'color': '#0f172a',
+            'weight': 0.7,
+            'fillOpacity': 0.78
+        }
+
+    tooltip_fields = [score_col]
+    tooltip_aliases = ['综合评分']
+    if level_col and any(level_col in (feature.get('properties', {}) or {}) for feature in features):
+        tooltip_fields.append(level_col)
+        tooltip_aliases.append('敏感性等级')
+
+    folium.GeoJson(
+        grid_geojson,
+        name='敏感性评分网格',
+        style_function=style_function,
+        highlight_function=lambda _: {'weight': 1.3, 'color': '#f8fafc', 'fillOpacity': 0.92},
+        tooltip=folium.GeoJsonTooltip(
+            fields=tooltip_fields,
+            aliases=tooltip_aliases,
+            sticky=False,
+            labels=True,
+            localize=True,
+            style="""
+                background-color: rgba(15, 23, 42, 0.92);
+                border: 1px solid rgba(56, 189, 248, 0.35);
+                border-radius: 8px;
+                box-shadow: 0 8px 22px rgba(2, 6, 23, 0.35);
+                color: #e2e8f0;
+                font-size: 12px;
+                padding: 8px 10px;
+            """
+        )
+    ).add_to(m)
+
+    color_scale.add_to(m)
+
+    point_layer = folium.FeatureGroup(name='历史滑坡点', show=True)
+    for point in landslide_points:
+        lat = point.get('lat')
+        lon = point.get('lon')
+        if lat is None or lon is None:
+            continue
+
+        label_parts = []
+        if point_label_col and point.get(point_label_col):
+            label_parts.append(f"{point_label_col}: {point.get(point_label_col)}")
+        if point.get('id') is not None:
+            label_parts.append(f"id: {point.get('id')}")
+
+        popup_html = '<br>'.join(label_parts) if label_parts else '历史滑坡点'
+        folium.CircleMarker(
+            location=[float(lat), float(lon)],
+            radius=4.5,
+            weight=0.8,
+            color='#fff7ed',
+            fill=True,
+            fill_color='#fb7185',
+            fill_opacity=0.9,
+            opacity=0.95,
+            popup=folium.Popup(popup_html, max_width=260)
+        ).add_to(point_layer)
+    point_layer.add_to(m)
+
+    folium.LayerControl(collapsed=False, position='topright').add_to(m)
+
+    info_card = f"""
+    <div style="
+        position: fixed;
+        top: 18px;
+        left: 18px;
+        z-index: 9999;
+        min-width: 240px;
+        max-width: 320px;
+        padding: 14px 16px;
+        border-radius: 14px;
+        background: rgba(8, 15, 30, 0.88);
+        color: #e2e8f0;
+        border: 1px solid rgba(56, 189, 248, 0.22);
+        box-shadow: 0 14px 38px rgba(2, 6, 23, 0.42);
+        backdrop-filter: blur(10px);
+        font-family: Arial, sans-serif;
+    ">
+        <div style="font-size: 15px; font-weight: 700; color: #f8fafc; margin-bottom: 6px;">{map_title}</div>
+        <div style="font-size: 12px; line-height: 1.6; color: #cbd5e1;">
+            网格数: {payload.get('grid_feature_count', 0)}<br>
+            历史滑坡点: {payload.get('landslide_point_count', 0)}<br>
+            评分范围: {round(min(score_values), 3)} - {round(max(score_values), 3)}
+        </div>
+    </div>
+    """
+    m.get_root().html.add_child(Element(info_card))
+
+    return {"html_string": safe_render_folium(m)}
+`.trim();
+
+const buildSpatialAutocorrelationMapChartCode = (): string => `
+def execute_chart(df, parameters):
+    import json
+    import math
+    import folium
+    from branca.element import Element
+
+    if df.empty:
+        raise ValueError("空间自相关专题图绘图数据为空")
+
+    payload = df.iloc[0].to_dict()
+
+    def ensure_object(value):
+        if isinstance(value, str):
+            value = value.strip()
+            return json.loads(value) if value else None
+        return value
+
+    geojson = ensure_object(payload.get('geojson')) or {}
+    features = geojson.get('features', [])
+    if not features:
+        raise ValueError("空间自相关 GeoJSON 为空，无法绘图")
+
+    name_col = payload.get('name_column')
+    value_col = payload.get('value_column')
+    local_i_col = payload.get('local_i_column')
+    p_value_col = payload.get('p_value_column')
+    cluster_col = payload.get('cluster_column')
+    hotspot_col = payload.get('hotspot_column')
+    lag_col = payload.get('spatial_lag_column')
+    z_col = payload.get('z_score_column')
+    neighbor_col = payload.get('neighbor_count_column')
+    map_title = payload.get('map_title') or '空间自相关聚类图'
+
+    cluster_palette = {
+        '高-高聚集': '#ef4444',
+        '低-低聚集': '#2563eb',
+        '高-低异常': '#f59e0b',
+        '低-高异常': '#14b8a6',
+        '不显著': '#64748b',
+        '孤立街道': '#0f172a',
+    }
+
+    min_lon, min_lat = 180.0, 90.0
+    max_lon, max_lat = -180.0, -90.0
+
+    def update_bounds(coords):
+        nonlocal min_lon, min_lat, max_lon, max_lat
+        if isinstance(coords, (list, tuple)):
+            if len(coords) == 2 and all(isinstance(v, (int, float)) for v in coords):
+                lon, lat = float(coords[0]), float(coords[1])
+                min_lon = min(min_lon, lon)
+                max_lon = max(max_lon, lon)
+                min_lat = min(min_lat, lat)
+                max_lat = max(max_lat, lat)
+            else:
+                for item in coords:
+                    update_bounds(item)
+
+    for feature in features:
+        update_bounds((feature.get('geometry') or {}).get('coordinates', []))
+
+    center_lat = float(payload.get('center_lat')) if payload.get('center_lat') is not None else (min_lat + max_lat) / 2
+    center_lon = float(payload.get('center_lon')) if payload.get('center_lon') is not None else (min_lon + max_lon) / 2
+
+    m = create_system_base_map(center_lat, center_lon, zoom=10)
+    if min_lon < max_lon and min_lat < max_lat:
+        m.fit_bounds([[min_lat, min_lon], [max_lat, max_lon]])
+
+    def style_function(feature):
+        props = feature.get('properties', {}) or {}
+        cluster_value = props.get(cluster_col)
+        fill_color = cluster_palette.get(cluster_value, '#334155')
+        return {
+            'fillColor': fill_color,
+            'color': '#020617',
+            'weight': 0.8,
+            'fillOpacity': 0.82,
+        }
+
+    tooltip_fields = []
+    tooltip_aliases = []
+    if name_col and any(name_col in (feature.get('properties', {}) or {}) for feature in features):
+        tooltip_fields.append(name_col)
+        tooltip_aliases.append('街道')
+    for field_name, alias in [
+        (value_col, '得分'),
+        (cluster_col, '聚类类型'),
+        (hotspot_col, '热点类型'),
+        (local_i_col, '局部 Moran\\'s I'),
+        (p_value_col, 'P 值'),
+        (lag_col, '空间滞后'),
+        (z_col, '标准化 Z 值'),
+        (neighbor_col, '邻居数'),
+    ]:
+        if field_name and any(field_name in (feature.get('properties', {}) or {}) for feature in features):
+            tooltip_fields.append(field_name)
+            tooltip_aliases.append(alias)
+
+    folium.GeoJson(
+        geojson,
+        name='LISA 聚类',
+        style_function=style_function,
+        highlight_function=lambda _: {'weight': 1.4, 'color': '#f8fafc', 'fillOpacity': 0.96},
+        tooltip=folium.GeoJsonTooltip(
+            fields=tooltip_fields,
+            aliases=tooltip_aliases,
+            sticky=False,
+            labels=True,
+            localize=True,
+            style="""
+                background-color: rgba(15, 23, 42, 0.94);
+                border: 1px solid rgba(56, 189, 248, 0.35);
+                border-radius: 8px;
+                box-shadow: 0 8px 22px rgba(2, 6, 23, 0.35);
+                color: #e2e8f0;
+                font-size: 12px;
+                padding: 8px 10px;
+            """
+        )
+    ).add_to(m)
+
+    legend_items = [
+        ('高-高聚集', cluster_palette['高-高聚集']),
+        ('低-低聚集', cluster_palette['低-低聚集']),
+        ('高-低异常', cluster_palette['高-低异常']),
+        ('低-高异常', cluster_palette['低-高异常']),
+        ('不显著', cluster_palette['不显著']),
+        ('孤立街道', cluster_palette['孤立街道']),
+    ]
+    legend_html = ''.join([
+        f"<div style='display:flex;align-items:center;gap:8px;margin:4px 0;'><span style='display:inline-block;width:12px;height:12px;border-radius:3px;background:{color};border:1px solid rgba(255,255,255,0.18);'></span><span>{label}</span></div>"
+        for label, color in legend_items
+    ])
+
+    info_card = f"""
+    <div style="
+        position: fixed;
+        top: 18px;
+        left: 18px;
+        z-index: 9999;
+        min-width: 250px;
+        max-width: 360px;
+        padding: 14px 16px;
+        border-radius: 14px;
+        background: rgba(8, 15, 30, 0.9);
+        color: #e2e8f0;
+        border: 1px solid rgba(56, 189, 248, 0.22);
+        box-shadow: 0 14px 38px rgba(2, 6, 23, 0.42);
+        backdrop-filter: blur(10px);
+        font-family: Arial, sans-serif;
+    ">
+        <div style="font-size: 15px; font-weight: 700; color: #f8fafc; margin-bottom: 8px;">{map_title}</div>
+        <div style="font-size: 12px; line-height: 1.65; color: #cbd5e1;">
+            全局 Moran's I: {payload.get('global_moran_i')}<br>
+            全局 p 值: {payload.get('global_p_value')}<br>
+            邻接方式: {payload.get('contiguity')}<br>
+            高-高聚集: {payload.get('hotspot_count', 0)}<br>
+            低-低聚集: {payload.get('coldspot_count', 0)}
+        </div>
+        <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(148, 163, 184, 0.2); font-size: 12px; color: #e2e8f0;">
+            {legend_html}
+        </div>
+    </div>
+    """
+    m.get_root().html.add_child(Element(info_card))
+
+    return {"html_string": safe_render_folium(m)}
+`.trim();
+
+const buildLandslideSensitivityMapPreviewRows = (rows: any[]): any[] => {
+    const payload = rows?.[0] || {};
+    if (!payload || typeof payload !== 'object') return rows;
+
+    return [
+        {
+            图层: '敏感性评分网格',
+            评分字段: payload.score_column || '滑坡敏感性综合评分',
+            要素数量: payload.grid_feature_count || 0,
+            最小值: payload.score_min ?? null,
+            最大值: payload.score_max ?? null,
+        },
+        {
+            图层: '历史滑坡点',
+            标注字段: payload.point_label_column || '无',
+            要素数量: payload.landslide_point_count || 0,
+        },
+    ];
+};
+
 const PYTHON_SDK_INJECTION = `
 import geopandas as gpd
 import pandas as pd
@@ -616,6 +2148,198 @@ def safe_geodetector_interaction(gdf, y_col, x_cols):
         results.append({'因子A': x2, '因子B': x1, '交互q值': q12_round, '交互类型': int_type})
         
     return results
+
+def safe_geodetector_weighted_sensitivity(
+    gdf,
+    y_col,
+    x_cols,
+    score_col='滑坡敏感性综合评分',
+    level_col='滑坡敏感性等级',
+    level_count=5
+):
+    """
+    地理探测器 q 值转权重，并计算综合敏感性评分。
+    返回结构化结果：
+    {
+        "result_type": "sensitivity_score",
+        "score_rows": [...],
+        "weight_rows": [...],
+        "summary": {...}
+    }
+    """
+    if gdf.empty or y_col not in gdf.columns:
+        return {
+            "result_type": "sensitivity_score",
+            "score_rows": [],
+            "weight_rows": [],
+            "summary": {"error": "empty_gdf_or_missing_y"}
+        }
+
+    def _coerce_factor_to_numeric(series):
+        direct_numeric = pd.to_numeric(series, errors='coerce')
+        valid_ratio = direct_numeric.notna().sum() / max(len(series), 1)
+        if valid_ratio >= 0.6:
+            return direct_numeric.astype(float)
+
+        extracted = series.astype(str).str.extract(r'(-?\\d+(?:\\.\\d+)?)', expand=False)
+        extracted_numeric = pd.to_numeric(extracted, errors='coerce')
+        extracted_ratio = extracted_numeric.notna().sum() / max(len(series), 1)
+        if extracted_ratio >= 0.6:
+            return extracted_numeric.astype(float)
+
+        ordered_label_map = {
+            '低': 1, '较低': 2, '中': 3, '中等': 3, '较高': 4, '高': 5, '极高': 6,
+            'low': 1, 'medium': 3, 'high': 5,
+        }
+        normalized_text = series.astype(str).str.strip()
+        if normalized_text.dropna().isin(ordered_label_map.keys()).all():
+            return normalized_text.map(ordered_label_map).astype(float)
+
+        codes, _ = pd.factorize(normalized_text, sort=True)
+        result = pd.Series(codes + 1, index=series.index, dtype='float64')
+        result[series.isna()] = np.nan
+        return result
+
+    def _calc_q(df, x_c, y_c):
+        valid = df[[y_c, x_c]].dropna().copy()
+        if valid.empty:
+            return 0.0, 0, 0
+
+        valid[y_c] = pd.to_numeric(valid[y_c], errors='coerce')
+        valid = valid.dropna(subset=[y_c])
+        n = len(valid)
+        if n < 2:
+            return 0.0, n, int(valid[x_c].nunique())
+
+        sst = valid[y_c].var(ddof=0) * n
+        if pd.isna(sst) or not np.isfinite(sst) or sst <= 0:
+            return 0.0, n, int(valid[x_c].nunique())
+
+        ssw = 0.0
+        for _, group in valid.groupby(x_c)[y_c]:
+            group_n = len(group)
+            if group_n > 1:
+                group_var = group.var(ddof=0)
+                if pd.notna(group_var) and np.isfinite(group_var):
+                    ssw += float(group_var) * group_n
+
+        q_value = max(0.0, 1 - (ssw / sst))
+        return round(float(q_value), 6), n, int(valid[x_c].nunique())
+
+    def _classify_levels(score_series, k):
+        labels = ['低', '较低', '中', '较高', '高', '极高', '超高'][:max(1, k)]
+        valid_scores = score_series.dropna()
+        result = pd.Series(index=score_series.index, dtype='object')
+
+        if valid_scores.empty:
+            return result
+
+        unique_count = int(valid_scores.nunique())
+        if unique_count == 1:
+            middle_label = labels[min(len(labels) - 1, len(labels) // 2)]
+            result.loc[valid_scores.index] = middle_label
+            return result
+
+        class_count = min(k, unique_count)
+        active_labels = labels[:class_count]
+
+        try:
+            import mapclassify as mc
+            classifier = mc.NaturalBreaks(valid_scores.to_numpy(), k=class_count)
+            bins = classifier.bins
+            classified = pd.cut(
+                valid_scores,
+                bins=[-np.inf] + list(bins[:-1]) + [np.inf],
+                labels=active_labels,
+                include_lowest=True
+            )
+            result.loc[valid_scores.index] = classified.astype(str)
+            return result
+        except Exception:
+            ranked = valid_scores.rank(method='average')
+            classified = pd.qcut(ranked, q=class_count, labels=active_labels, duplicates='drop')
+            result.loc[valid_scores.index] = classified.astype(str)
+            return result
+
+    working = gdf.copy()
+    working[y_col] = pd.to_numeric(working[y_col], errors='coerce')
+    record_ids = working['id'] if 'id' in working.columns else pd.Series(range(len(working)), index=working.index)
+
+    weight_rows = []
+    usable_factors = []
+    q_values = []
+    factor_numeric_map = {}
+
+    for x_col in x_cols:
+        if x_col not in working.columns:
+            continue
+        numeric_x = _coerce_factor_to_numeric(working[x_col])
+        working[x_col] = numeric_x
+        q_value, sample_count, class_count = _calc_q(working, x_col, y_col)
+        weight_rows.append({
+            '因子字段': x_col,
+            'q值': q_value,
+            '权重': 0.0,
+            '有效样本数': sample_count,
+            '类别数': class_count,
+        })
+        usable_factors.append(x_col)
+        q_values.append(q_value)
+        factor_numeric_map[x_col] = numeric_x
+
+    if not usable_factors:
+        return {
+            "result_type": "sensitivity_score",
+            "score_rows": [],
+            "weight_rows": [],
+            "summary": {"error": "no_usable_factors", "y_col": y_col}
+        }
+
+    q_sum = float(np.nansum(q_values))
+    if q_sum > 0:
+        weights = [float(q) / q_sum for q in q_values]
+    else:
+        equal_weight = 1.0 / len(usable_factors)
+        weights = [equal_weight for _ in usable_factors]
+
+    for row, weight in zip(weight_rows, weights):
+        row['权重'] = round(weight, 6)
+
+    weighted_sum = pd.Series(0.0, index=working.index, dtype='float64')
+    applied_weight_sum = pd.Series(0.0, index=working.index, dtype='float64')
+
+    for x_col, weight in zip(usable_factors, weights):
+        factor_values = factor_numeric_map[x_col]
+        valid_mask = factor_values.notna()
+        weighted_sum = weighted_sum.add(factor_values.fillna(0) * weight, fill_value=0)
+        applied_weight_sum = applied_weight_sum.add(valid_mask.astype(float) * weight, fill_value=0)
+
+    score_series = weighted_sum.where(applied_weight_sum > 0, np.nan)
+    score_series = score_series / applied_weight_sum.replace(0, np.nan)
+    level_series = _classify_levels(score_series, level_count)
+
+    score_rows = []
+    for idx in working.index:
+        score_value = score_series.loc[idx]
+        level_value = level_series.loc[idx] if idx in level_series.index else None
+        score_rows.append({
+            'id': record_ids.loc[idx],
+            score_col: None if pd.isna(score_value) else round(float(score_value), 6),
+            level_col: None if pd.isna(level_value) else str(level_value),
+        })
+
+    return {
+        "result_type": "sensitivity_score",
+        "score_rows": score_rows,
+        "weight_rows": weight_rows,
+        "summary": {
+            "y_col": y_col,
+            "x_cols": usable_factors,
+            "score_col": score_col,
+            "level_col": level_col,
+            "level_count": level_count
+        }
+    }
 `
 ;
 
@@ -742,140 +2466,10 @@ function safeIntersect(poly1: any, poly2: any): any {
 
 export const pivotAnalysis = async (req: Request, res: Response) => {
     try {
-        const { 
-            fileId, 
-            groupByRow,   // 行分组 (必填) e.g. "properties.District"
-            groupByCol,   // 列分组 (选填) e.g. "properties.Year"
-            valueField,   // 统计值 (必填) e.g. "properties.Rainfall"
-            method        // "sum", "avg", "max", "min", "count"
-        } = req.body;
-
-        if (!fileId || !groupByRow) {
-            return res.status(400).json({ message:'缺少参数' });
-        }
-
-        const pool = require('../config/db').default;
-        
-        let aggSql = '';
-        const rField = groupByRow.replace('properties.', '');
-        const cField = groupByCol ? groupByCol.replace('properties.', '') : null;
-
-        if (method === 'count') {
-            aggSql = `COUNT(*) as value`;
-        } else {
-            const vKey = valueField.replace('properties.', '');
-            // null 处理：如果字段不存在需要怎么处理？PostgreSQL在聚合时会忽略null。
-            const safeField = `(properties->>'${vKey}')::numeric`;
-            switch (method) {
-                case 'sum': aggSql = `SUM(${safeField}) as value`; break;
-                case 'avg': aggSql = `AVG(${safeField}) as value`; break;
-                case 'max': aggSql = `MAX(${safeField}) as value`; break;
-                case 'min': aggSql = `MIN(${safeField}) as value`; break;
-                case 'boxplot': 
-                case 'ridgeline': 
-                    // jsonb_agg 等同于 mongodb 的 $push (去除为null的元素)
-                    aggSql = `jsonb_agg(${safeField}) as value`; 
-                    break;
-                default: aggSql = `SUM(${safeField}) as value`;
-            }
-        }
-
-        let rawResults: any[] = [];
-        if (!cField) {
-            // 一维分组
-            const sql = `
-                SELECT 
-                    properties->>'${rField}' as "_id",
-                    ${aggSql}
-                FROM spatial_features
-                WHERE file_id = $1
-                GROUP BY properties->>'${rField}'
-                ORDER BY value DESC NULLS LAST
-            `;
-            const result = await pool.query(sql, [fileId]);
-            rawResults = result.rows.map((r: any) => ({
-                _id: r._id,
-                value: method === 'boxplot' || method === 'ridgeline' 
-                         ? (Array.isArray(r.value) ? r.value.filter((v: any) => v !== null) : [])
-                         : Number(r.value)
-            }));
-        } else {
-            // 二维透视
-            if (method === 'boxplot' || method === 'ridgeline') {
-                return res.status(400).json({ message: '二维模式不支持 raw array 聚合' });
-            }
-            
-            const sql = `
-                SELECT 
-                    properties->>'${rField}' as "row",
-                    properties->>'${cField}' as "col",
-                    ${aggSql}
-                FROM spatial_features
-                WHERE file_id = $1
-                GROUP BY properties->>'${rField}', properties->>'${cField}'
-            `;
-            const result = await pool.query(sql, [fileId]);
-            rawResults = result.rows.map((r: any) => ({
-                _id: { row: r.row, col: r.col },
-                val: Number(r.value)
-            }));
-        }
-
-        // 数据格式化（转成echarts格式）
-        let finalData: any[] = [];
-        let dynamicColumns: string[] = [];
-
-        if (!cField) {
-            // 一维格式化
-            finalData = rawResults.map((item, idx) => ({
-                key: idx,
-                rowKey: (item._id === null || item._id === undefined || item._id === '') ? '未分类' : item._id,
-                // 要是是boxplot和ridgeline，则返回数组
-                value: (method === 'boxplot' || method === 'ridgeline')
-                    ? item.value 
-                    : (typeof item.value === 'number' ? parseFloat(item.value.toFixed(2)) : item.value)
-            }));
-            // 标记列类型
-            if (method === 'boxplot') dynamicColumns = ['boxplot_raw'];
-            else if (method === 'ridgeline') dynamicColumns = ['ridgeline_raw'];
-            else dynamicColumns = ['value'];
-        } else {
-            // 二维格式化(Matrix转置)
-            const map = new Map<string, any>();
-            const colSet = new Set<string>();
-
-            rawResults.forEach(item => {
-                const rKey = (item._id.row === null || item._id.row === undefined || item._id.row === '') ? '未分类' : item._id.row;
-                const cKey = String(item._id.col || '未分类'); // 列名必须是字符串
-                const val = typeof item.val === 'number' ? parseFloat(item.val.toFixed(2)) : item.val;
-
-                // 把所有列名自动去重，做表头
-                colSet.add(cKey);
-
-                // 行列交叉值的存储
-                if (!map.has(rKey)) {
-                    map.set(rKey, { key: rKey, rowKey: rKey });
-                }
-                const rowObj = map.get(rKey);
-                rowObj[cKey] = val; // { rowKey: '南京', '2020': 100, '2021': 200 }
-            });
-
-            dynamicColumns = Array.from(colSet).sort(); // 列排序
-
-            // 最终数据格式 [ { rowKey: '南京', '2020': 100, '2021': 200 }, { rowKey: '苏州', '2020': 150, '2021': 120 } ]
-            finalData = Array.from(map.values());
-        }
-
-        res.json({
-            success: true,
-            data: finalData,
-            columns: dynamicColumns,
-            meta: { groupByRow, groupByCol, valueField, method }
-        });
-
-    } catch (error) {
-        console.error('Pivot error:', error);
-        res.status(500).json({ message: 'Analysis failed' });
+        res.json(await queryAttributePivot(pool, req.body || {}));
+    } catch (error: any) {
+        const status = error instanceof AnalysisInputError || error.code === '22P02' ? 400 : 500;
+        res.status(status).json({ message: status === 400 ? (error.code === '22P02' ? '统计字段包含非数值内容，请先清理数据' : error.message) : '透视分析失败' });
     }
 };
 
@@ -1389,6 +2983,177 @@ export const exportGrid = async (req: Request, res: Response): Promise<void> => 
 }
 
 // 获取所有已注册的活跃模型
+export const computeLandslideSensitivityScore = async (req: Request, res: Response): Promise<void> => {
+    try {
+        const {
+            targetFileId,
+            yField,
+            factorFields,
+            scoreFieldName,
+            levelFieldName,
+            levelCount,
+        } = req.body || {};
+
+        if (!targetFileId || !yField || !Array.isArray(factorFields) || factorFields.length === 0) {
+            res.status(400).json({
+                code: 400,
+                message: '缺少 targetFileId、yField 或 factorFields 参数',
+            });
+            return;
+        }
+
+        const result = await executeSensitivityScoreOperator({
+            targetFileId,
+            yField,
+            factorFields,
+            scoreFieldName,
+            levelFieldName,
+            levelCount,
+        });
+
+        res.json({
+            code: 200,
+            message: `综合评分计算完成，已将 [${result.scoreFieldName}, ${result.levelFieldName}] 回写至目标图层，并导出 q 值权重文件 [${result.weightFileName}]`,
+            refreshSchema: true,
+            targetFileId: result.targetFileId,
+            newFileId: result.weightFileId,
+            weightFileName: result.weightFileName,
+            scoreFieldName: result.scoreFieldName,
+            levelFieldName: result.levelFieldName,
+            factorFields: result.factorFields,
+            yField: result.yField,
+            updatedCount: result.updatedCount,
+            tableData: result.weightRows,
+            summary: result.summary,
+        });
+    } catch (error: any) {
+        const details = error.response?.data?.detail || error.message;
+        console.error('[Sensitivity Score Error]', details);
+        res.status(500).json({
+            code: 500,
+            message: '滑坡敏感性综合评分计算失败',
+            details,
+        });
+    }
+};
+
+export const computeParkAccessibilityScore = async (req: Request, res: Response): Promise<void> => {
+    try {
+        const {
+            gridFileId,
+            streetFileId,
+            distanceField,
+            streetNameField,
+            normalizationMethod,
+            gridScoreFieldName,
+            streetScoreFieldName,
+        } = req.body || {};
+
+        if (!gridFileId || !streetFileId || !distanceField) {
+            res.status(400).json({
+                code: 400,
+                message: '缺少 gridFileId、streetFileId 或 distanceField 参数',
+            });
+            return;
+        }
+
+        const result = await executeParkAccessibilityOperator({
+            gridFileId,
+            streetFileId,
+            distanceField,
+            streetNameField,
+            normalizationMethod,
+            gridScoreFieldName,
+            streetScoreFieldName,
+        });
+
+        res.json({
+            code: 200,
+            message: `公园可达性计算完成，已将 [${result.gridScoreFieldName}] 回写至网格图层，并将 [${result.streetScoreFieldName}] 聚合回写至街道图层，同时导出结果文件 [${result.resultFileName}]`,
+            refreshSchema: true,
+            targetFileId: result.streetFileId,
+            newFileId: result.resultFileId,
+            resultFileName: result.resultFileName,
+            gridUpdatedCount: result.gridUpdatedCount,
+            streetUpdatedCount: result.streetUpdatedCount,
+            tableData: result.streetRows,
+            summary: result.summary,
+        });
+    } catch (error: any) {
+        const details = error.response?.data?.detail || error.message;
+        console.error('[Park Accessibility Error]', details);
+        res.status(500).json({
+            code: 500,
+            message: '公园可达性计算失败',
+            details,
+        });
+    }
+};
+
+export const computeSpatialAutocorrelation = async (req: Request, res: Response): Promise<void> => {
+    try {
+        const {
+            targetFileId,
+            valueField,
+            nameField,
+            contiguity,
+            permutations,
+            significanceLevel,
+            localIFieldName,
+            pValueFieldName,
+            clusterFieldName,
+            hotspotFieldName,
+            spatialLagFieldName,
+            zScoreFieldName,
+            neighborCountFieldName,
+        } = req.body || {};
+
+        if (!targetFileId || !valueField) {
+            res.status(400).json({
+                code: 400,
+                message: '缺少 targetFileId 或 valueField 参数',
+            });
+            return;
+        }
+
+        const result = await executeSpatialAutocorrelationOperator({
+            targetFileId,
+            valueField,
+            nameField,
+            contiguity,
+            permutations,
+            significanceLevel,
+            localIFieldName,
+            pValueFieldName,
+            clusterFieldName,
+            hotspotFieldName,
+            spatialLagFieldName,
+            zScoreFieldName,
+            neighborCountFieldName,
+        });
+
+        res.json({
+            code: 200,
+            message: `空间自相关分析完成，已将 [${result.clusterFieldName}, ${result.hotspotFieldName}] 等字段回写至目标图层，并导出结果文件 [${result.resultFileName}]`,
+            refreshSchema: true,
+            targetFileId: result.targetFileId,
+            newFileId: result.resultFileId,
+            resultFileName: result.resultFileName,
+            updatedCount: result.updatedCount,
+            tableData: buildSpatialAutocorrelationPreviewRows(result),
+            summary: result.summary,
+        });
+    } catch (error: any) {
+        const details = error.response?.data?.detail || error.message;
+        console.error('[Spatial Autocorrelation Error]', details);
+        res.status(500).json({
+            code: 500,
+            message: '空间自相关分析失败',
+            details,
+        });
+    }
+};
+
 export const getRegisteredModels = async (req: Request, res: Response) => {
   try {
     const allModels = await ModelRegistry.getAllModels();
@@ -1417,7 +3182,10 @@ export const registerModelByAI = async (req: Request, res: Response) => {
     // 接收 LLM 生成的模型名称、描述、参数规范，以及最关键的：Python 源代码字符串
     const { modelName, displayName, description, parameters, pythonCode } = req.body;
 
-    if (!pythonCode) {
+    if (typeof modelName !== 'string' || !/^[A-Za-z][A-Za-z0-9_]{0,99}$/.test(modelName)) {
+      return res.status(400).json({ error: '模型名称必须以字母开头，仅包含字母、数字和下划线' });
+    }
+    if (typeof pythonCode !== 'string' || !pythonCode.trim()) {
       return res.status(400).json({ error: '智能体未能提供有效的 Python 代码' });
     }
 
@@ -1664,24 +3432,31 @@ export const rerunPivotCode = async (req: Request, res: Response): Promise<void>
             console.log(`[Rerun] 正在将重新计算的特征同步回写至数据库...`);
             
             // 找到主目标图层ID，如果没有 blueprint 就取第一个 fileId
-            const targetFileId = blueprint?.data_dependencies?.find((d: any) => d.role.includes('Target'))?.file_id || fileIds[0];
+            const fallbackTargetFileId = blueprint?.data_dependencies?.find((d: any) => d.role.includes('Target'))?.file_id || fileIds[0];
             
             // 找出新生成的列名（排除掉 id）
-            const newCols = Object.keys(aggregatedData[0] || {}).filter(k => k !== 'id' && k !== 'rowKey');
+            const newCols = Object.keys(aggregatedData[0] || {}).filter(
+                k => k !== 'id' && k !== 'rowKey' && k !== '__record_id__'
+            );
 
             // 执行数据库同步
-            const CHUNK_SIZE = 100;
-            for (let i = 0; i < aggregatedData.length; i += CHUNK_SIZE) {
-                const chunk = aggregatedData.slice(i, i + CHUNK_SIZE);
-                await Promise.all(chunk.map(async (row: any) => {
-                    // 🌟 这里的健壮性改进：如果 AI 没返回 id，尝试根据 index 匹配（兜底逻辑）
-                    const featureId = row.id;
-                    if (featureId) {
-                        const { id, rowKey, ...newProps } = row;
-                        await Feature.updateFeatureProperty(targetFileId, featureId, newProps);
-                    }
-                }));
-            }
+            const updateRows = aggregatedData
+                .filter((row: any) => row.id)
+                .map((row: any) => {
+                    const { id, rowKey, __record_id__, ...newProps } = row;
+                    return { id, patch: newProps };
+                });
+            const { targetFileId, matchedCount } = await resolveFeatureCalcWriteTarget(
+                [
+                    ...(blueprint?.data_dependencies || []).map((d: any) => d?.file_id),
+                    ...(fileIds || []),
+                ],
+                updateRows,
+                fallbackTargetFileId
+            );
+            console.log(`[Rerun] 自动匹配写回目标图层: ${targetFileId} (${matchedCount}/${updateRows.length})`);
+            const updatedCount = await Feature.updateFeaturePropertiesBatch(targetFileId, updateRows);
+            console.log(`[Rerun] 批量同步完成: ${updatedCount} / ${updateRows.length}`);
 
             // 🌟 3. 返回一个特殊的 'refreshSchema' 标志位，告诉前端去刷新文件属性
             res.json({
@@ -1691,7 +3466,9 @@ export const rerunPivotCode = async (req: Request, res: Response): Promise<void>
                 refreshSchema: true, // 关键：通知前端
                 targetFileId: targetFileId,
                 message: `特征重算成功！[${newCols.join(', ')}] 已持久化至数据库。`,
-                pythonCode
+                pythonCode,
+                agentMode,
+                sourceFileIds: fileIds
             });
             return; 
         }
@@ -1702,6 +3479,9 @@ export const rerunPivotCode = async (req: Request, res: Response): Promise<void>
         let engine: string | undefined;
         let html_string: string | undefined;
         let chart_option: any;
+        const clientTableData = blueprint?.task_type === 'landslide_sensitivity_map'
+            ? buildLandslideSensitivityMapPreviewRows(aggregatedData)
+            : aggregatedData;
 
         // 如果图表引擎是 echarts，其实可以直接复用原有图表类型，跳过 LLM
         if (blueprint && blueprint.visualization_spec?.engine === 'echarts') {
@@ -1711,11 +3491,16 @@ export const rerunPivotCode = async (req: Request, res: Response): Promise<void>
         } 
         else if (blueprint) {
             console.log(`[Rerun] 正在生成 HTML 渲染图表...`);
-            const chartCode = await generateChartCode(blueprint, aggregatedData.slice(0, 3));
+            const chartCode = blueprint.task_type === 'landslide_sensitivity_map'
+                ? buildLandslideSensitivityMapChartCode()
+                : await generateChartCode(blueprint, aggregatedData.slice(0, 3));
             const chartResponse = await axios.post<any>(`${PYTHON_API_URL}/models/chart_only`, {
-                python_code: chartCode,
+                python_code: CHART_SDK_INJECTION + "\n\n" + chartCode,
                 data: aggregatedData
-            });
+            }, {
+                maxBodyLength: Infinity,
+                maxContentLength: Infinity,
+            } as any);
             engine = chartResponse.data.engine;
             html_string = chartResponse.data.html_string;
             chart_option = chartResponse.data.chart_option;
@@ -1724,11 +3509,13 @@ export const rerunPivotCode = async (req: Request, res: Response): Promise<void>
 
         res.json({
             code: 200,
-            tableData: aggregatedData,
+            tableData: clientTableData,
             engine,
             aiChartType: blueprint?.visualization_spec?.chart_type?.toLowerCase(),
             chartHtml: html_string,
             chartOption: chart_option,
+            agentMode,
+            sourceFileIds: fileIds,
             pythonCode // 回传修改后的代码
         });
 
@@ -1753,48 +3540,297 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
     };
 
     try {
-        const { userPrompt, fileIds, context, agentMode = 'pivot' } = req.body;
+        const {
+            userPrompt,
+            fileIds,
+            context,
+            agentMode = 'pivot',
+        }: {
+            userPrompt: string;
+            fileIds?: string[];
+            context?: PipelineContextMemory;
+            agentMode?: AgentMode;
+        } = req.body;
 
-        if (!userPrompt || !fileIds || fileIds.length === 0) {
+        const contextSourceFileIds = uniqueStrings(context?.lastResultMeta?.sourceFileIds || []);
+        const requestedFileIds = uniqueStrings(fileIds || []);
+        const resolvedFileIds = uniqueStrings([...requestedFileIds, ...contextSourceFileIds]);
+
+        if (!userPrompt || resolvedFileIds.length === 0) {
             res.write(JSON.stringify({ type: 'error', data: { error: "缺少用户需求或未选择任何文件" } }) + '\n');
             res.end();
             return;
         }
 
         console.log(`\n======================================================`);
-        console.log(`[Pipeline] 分析文件数: ${fileIds.length}`);
+        console.log(`[Pipeline] 分析文件数: ${resolvedFileIds.length}`);
         console.log(`[Pipeline] 用户意图: "${userPrompt}"`);
         console.log(`[Pipeline] 当前工作模式: [${agentMode}]`);
 
         // 1 意图拆解节点
         console.log(`[Pipeline] 节点1正在拆解意图...`);
-        emitStep('正在调用 LLM 拆解自然语言意图并规划方案...');
+        emitStep('正在读取数据结构并识别自然语言意图...');
         
         const availableFiles = [];
-        for (const fId of fileIds) {
+        for (const fId of resolvedFileIds) {
             const schema = await Feature.getFileSchemaSummary(fId);
             availableFiles.push(schema);
         }
 
-        blueprint = await planWorkflow(userPrompt, availableFiles, context, agentMode);
+        const parkAccessibilitySpec = inferParkAccessibilitySpecFromPrompt(userPrompt, availableFiles);
+        if (parkAccessibilitySpec) {
+            console.log(`[Pipeline] 命中【公园可达性】确定性算子，直接计算网格得分并聚合到街道...`);
+            emitStep('识别为公园可达性计算任务，正在执行“距离反向标准化 + 街道聚合”确定性算子...');
+
+            blueprint = {
+                task_type: 'park_accessibility_score',
+                data_dependencies: [
+                    {
+                        file_id: parkAccessibilitySpec.gridFileId,
+                        role: 'TargetGridLayer',
+                        description: '包含距公园距离字段的网格面图层',
+                        type: 'Vector',
+                    },
+                    {
+                        file_id: parkAccessibilitySpec.streetFileId,
+                        role: 'TargetStreetLayer',
+                        description: '用于承接街道尺度公园可达性得分的街道面图层',
+                        type: 'Vector',
+                    },
+                ],
+                parameters: [
+                    { name: 'distanceField', defaultValue: parkAccessibilitySpec.distanceField },
+                    { name: 'streetNameField', defaultValue: parkAccessibilitySpec.streetNameField || null },
+                    { name: 'normalizationMethod', defaultValue: parkAccessibilitySpec.normalizationMethod || 'linear_reverse' },
+                    { name: 'gridScoreFieldName', defaultValue: parkAccessibilitySpec.gridScoreFieldName || '公园可达性得分' },
+                    { name: 'streetScoreFieldName', defaultValue: parkAccessibilitySpec.streetScoreFieldName || '公园可达性得分' },
+                ],
+                visualization_spec: {
+                    engine: 'echarts',
+                    chart_type: 'bar',
+                    dimensions: [parkAccessibilitySpec.streetNameField || 'id'],
+                    metrics: [parkAccessibilitySpec.streetScoreFieldName || '公园可达性得分'],
+                },
+                explanation: `识别为公园可达性计算任务：基于网格字段 ${parkAccessibilitySpec.distanceField} 进行距离反向标准化，生成网格公园可达性得分，并按街道单元求平均聚合，回写街道尺度公园可达性得分。`,
+            } as any;
+
+            const result = await executeParkAccessibilityOperator(parkAccessibilitySpec);
+            emitStep(`公园可达性计算完成：已更新 ${result.gridUpdatedCount} 个网格与 ${result.streetUpdatedCount} 个街道要素。`);
+            res.write(JSON.stringify({
+                type: 'result',
+                data: {
+                    code: 200,
+                    blueprint,
+                    tableData: result.streetRows,
+                    engine: 'echarts',
+                    aiChartType: 'bar',
+                    chartHtml: null,
+                    chartOption: null,
+                    pythonCode: null,
+                    agentMode,
+                    sourceFileIds: resolvedFileIds,
+                    refreshSchema: true,
+                    targetFileId: result.streetFileId,
+                    newFileId: result.resultFileId,
+                    resultFileName: result.resultFileName,
+                    summary: { ...(result.summary || {}), gridUpdatedCount: result.gridUpdatedCount, streetUpdatedCount: result.streetUpdatedCount },
+                    message: `公园可达性计算完成，已将 [${result.gridScoreFieldName}] 回写至网格图层，并将 [${result.streetScoreFieldName}] 聚合回写至街道图层，同时导出结果文件 [${result.resultFileName}]`,
+                }
+            }) + '\n');
+            res.end();
+            return;
+        }
+
+        const spatialAutocorrSpec = inferSpatialAutocorrelationSpecFromPrompt(userPrompt, availableFiles);
+        if (spatialAutocorrSpec) {
+            console.log(`[Pipeline] 命中【空间自相关】确定性算子，直接计算全局 Moran's I 与局部 LISA...`);
+            emitStep('识别为空间自相关分析任务，正在调用 Moran\'s I / LISA 确定性算子...');
+
+            blueprint = {
+                task_type: 'spatial_autocorrelation',
+                data_dependencies: [
+                    {
+                        file_id: spatialAutocorrSpec.targetFileId,
+                        role: 'TargetLayer',
+                        description: '用于空间自相关分析的街道面图层',
+                        type: 'Vector',
+                    },
+                ],
+                parameters: [
+                    { name: 'valueField', defaultValue: spatialAutocorrSpec.valueField },
+                    { name: 'nameField', defaultValue: spatialAutocorrSpec.nameField || null },
+                    { name: 'contiguity', defaultValue: spatialAutocorrSpec.contiguity || 'queen' },
+                    { name: 'permutations', defaultValue: spatialAutocorrSpec.permutations || 199 },
+                    { name: 'significanceLevel', defaultValue: spatialAutocorrSpec.significanceLevel || 0.05 },
+                    { name: 'clusterFieldName', defaultValue: spatialAutocorrSpec.clusterFieldName },
+                    { name: 'hotspotFieldName', defaultValue: spatialAutocorrSpec.hotspotFieldName },
+                ],
+                visualization_spec: {
+                    engine: 'html_iframe',
+                    chart_type: 'thematic_map',
+                    chart_library: 'folium',
+                    dimensions: [spatialAutocorrSpec.valueField],
+                    metrics: [spatialAutocorrSpec.clusterFieldName || 'LISA_Cluster'],
+                },
+                explanation: `识别为空间自相关分析任务：对字段 ${spatialAutocorrSpec.valueField} 计算全局 Moran's I 与局部 LISA，识别高-高聚集、低-低聚集及空间异常街道，并将聚类标签回写到目标街道图层。`,
+            } as any;
+
+            const result = await executeSpatialAutocorrelationOperator(spatialAutocorrSpec);
+            emitStep(`空间自相关计算完成：Moran's I=${result.summary?.global_moran_i ?? 'N/A'}，p=${result.summary?.global_p_value ?? 'N/A'}。`);
+
+            let engine: 'echarts' | 'html_iframe' | null = null;
+            let chartHtml: string | null = null;
+            let chartOption: any = null;
+            if (Array.isArray(result.mapPayload) && result.mapPayload.length > 0) {
+                try {
+                    const chartResponse = await axios.post<any>(`${PYTHON_API_URL}/models/chart_only`, {
+                        python_code: CHART_SDK_INJECTION + "\n\n" + buildSpatialAutocorrelationMapChartCode(),
+                        data: result.mapPayload,
+                    });
+                    engine = chartResponse.data?.engine || null;
+                    chartHtml = chartResponse.data?.html_string || null;
+                    chartOption = chartResponse.data?.chart_option || null;
+                } catch (chartError: any) {
+                    const chartDetails = chartError.response?.data?.detail || chartError.message;
+                    console.error('[Spatial Autocorrelation Map Error]', chartDetails);
+                    emitStep('聚类专题图生成失败，已保留数值结果与回写字段。');
+                }
+            }
+
+            res.write(JSON.stringify({
+                type: 'result',
+                data: {
+                    code: 200,
+                    blueprint,
+                    tableData: buildSpatialAutocorrelationPreviewRows(result),
+                    engine,
+                    aiChartType: null,
+                    chartHtml,
+                    chartOption,
+                    pythonCode: null,
+                    agentMode,
+                    sourceFileIds: resolvedFileIds,
+                    refreshSchema: true,
+                    targetFileId: result.targetFileId,
+                    newFileId: result.resultFileId,
+                    resultFileName: result.resultFileName,
+                    valueField: result.valueField,
+                    clusterFieldName: result.clusterFieldName,
+                    hotspotFieldName: result.hotspotFieldName,
+                    summary: { ...(result.summary || {}), updatedCount: result.updatedCount },
+                    message: `空间自相关分析完成，已将 [${result.clusterFieldName}, ${result.hotspotFieldName}] 等字段回写至目标图层，并导出结果文件 [${result.resultFileName}]`,
+                }
+            }) + '\n');
+            res.end();
+            return;
+        }
+
+        const sensitivityMapBlueprint = buildSensitivitySpatialMapBlueprint(userPrompt, availableFiles, context);
+        if (sensitivityMapBlueprint) {
+            blueprint = sensitivityMapBlueprint;
+            emitStep('识别为滑坡敏感性专题地图任务，已切换到确定性专题制图通道');
+        }
+
+        const sensitivitySpec = !sensitivityMapBlueprint && agentMode === 'pro_model'
+            ? inferSensitivitySpecFromPrompt(userPrompt, availableFiles)
+            : null;
+        if (sensitivitySpec) {
+            console.log(`[Pipeline] 命中【专业模型-综合评分】确定性算子，跳过 LLM 代码生成，直接计算并回写评分字段...`);
+            emitStep(`识别为“q值归一化为权重 + 综合评分”任务，正在调用综合评分算子...`);
+
+            blueprint = {
+                task_type: 'landslide_sensitivity_score',
+                data_dependencies: [
+                    {
+                        file_id: sensitivitySpec.targetFileId,
+                        role: 'TargetLayer',
+                        description: '用于滑坡敏感性综合评分的目标网格图层',
+                        type: 'Vector',
+                    },
+                ],
+                parameters: [
+                    { name: 'yField', defaultValue: sensitivitySpec.yField },
+                    { name: 'factorFields', defaultValue: sensitivitySpec.factorFields },
+                    { name: 'scoreFieldName', defaultValue: sensitivitySpec.scoreFieldName },
+                    { name: 'levelFieldName', defaultValue: sensitivitySpec.levelFieldName },
+                    { name: 'levelCount', defaultValue: sensitivitySpec.levelCount },
+                ],
+                visualization_spec: {
+                    engine: 'echarts',
+                    chart_type: 'bar',
+                    dimensions: ['因子字段'],
+                    metrics: ['权重'],
+                },
+                explanation: `识别为滑坡敏感性综合评分任务：以 ${sensitivitySpec.yField} 为因变量，对 ${sensitivitySpec.factorFields.join('、')} 做因子探测，将 q 值归一化为权重，并把评分字段回写到目标网格图层。`,
+            };
+
+            const result = await executeSensitivityScoreOperator(sensitivitySpec);
+            emitStep(`综合评分回写完成，并已生成 q 值权重文件`);
+            res.write(JSON.stringify({
+                type: 'result',
+                data: {
+                    code: 200,
+                    blueprint,
+                    tableData: result.weightRows,
+                    engine: 'echarts',
+                    aiChartType: 'bar',
+                    chartHtml: null,
+                    chartOption: null,
+                    pythonCode: null,
+                    agentMode,
+                    sourceFileIds: resolvedFileIds,
+                    refreshSchema: true,
+                    targetFileId: result.targetFileId,
+                    newFileId: result.weightFileId,
+                    weightFileName: result.weightFileName,
+                    scoreFieldName: result.scoreFieldName,
+                    levelFieldName: result.levelFieldName,
+                    factorFields: result.factorFields,
+                    yField: result.yField,
+                    summary: { ...(result.summary || {}), updatedCount: result.updatedCount },
+                    message: `综合评分计算完成，已将 [${result.scoreFieldName}, ${result.levelFieldName}] 回写至目标图层，并导出权重结果文件 [${result.weightFileName}]`
+                }
+            }) + '\n');
+            res.end();
+            return;
+        }
+
+        const followupBlueprint = !sensitivityMapBlueprint && agentMode === 'pro_model'
+            ? buildFollowupPivotBlueprint(userPrompt, resolvedFileIds, context)
+            : null;
+        const effectiveAgentMode = followupBlueprint
+            ? resolveExecutionMode(agentMode, followupBlueprint)
+            : agentMode;
+        blueprint = blueprint || followupBlueprint || await planWorkflow(userPrompt, availableFiles, context, agentMode);
+        if (followupBlueprint) {
+            emitStep('识别为基于上一轮交互分析结果的连续追问，已自动提取最高交互因子并转为二维透视任务');
+        }
         console.log(`[Pipeline] 拆解意图完成:`, blueprint.explanation);
         emitStep('意图拆解分析完成');
         emitStep(`意图解析\n${blueprint.explanation || '已成功建立空间计算逻辑链'}`);
         // 2 节点生成代码
+        if (effectiveAgentMode !== agentMode) {
+            emitStep(`执行路由已从 ${agentMode} 自动切换为 ${effectiveAgentMode}`);
+        }
+
         let rawCode = "";
         let endpointUrl = "";
+        let specialResultType: string | null = null;
+        let specialScoreRows: any[] = [];
+        let specialWeightRows: any[] = [];
+        let specialSummary: any = null;
 
-        if (agentMode === 'feature_calc') {
+        if (effectiveAgentMode === 'feature_calc') {
             console.log(`[Pipeline] 命中【特征计算】专属管线，节点2正在编写特征计算代码...`);
             emitStep('命中【特征计算】管线，正在生成空间算子代码...');
-            rawCode = await generateFeatureCalcCode(blueprint, fileIds);
+            rawCode = await generateFeatureCalcCode(blueprint, resolvedFileIds);
             pythonCode = FEATURE_CALC_SDK_INJECTION + "\n\n" + rawCode;
             endpointUrl = `${PYTHON_API_URL}/models/feature_calc_only`;
         }
-        else if (agentMode === 'pro_model') {
+        else if (effectiveAgentMode === 'pro_model') {
             console.log(`[Pipeline] 命中【专业模型】专属管线，正在构建底层模型调用代码...`);
             emitStep('命中【专业模型】管线，正在构建底层调度逻辑...');
-            rawCode = await generateProModelCode(blueprint);
+            rawCode = await generateProModelCode(blueprint, availableFiles);
             pythonCode = PRO_MODEL_SDK_INJECTION + "\n\n" + rawCode;
             endpointUrl = `${PYTHON_API_URL}/models/feature_calc_only`; 
         } 
@@ -1840,7 +3876,9 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
                 
                 emitStep(pivotDetails);
 
-                rawCode = await generatePivotCode(blueprint, availableFiles);
+                rawCode = blueprint.task_type === 'landslide_sensitivity_map'
+                    ? buildLandslideSensitivityMapPivotCode(blueprint)
+                    : await generatePivotCode(blueprint, availableFiles);
                 pythonCode = PYTHON_SDK_INJECTION + "\n\n" + rawCode;
             }
             endpointUrl = `${PYTHON_API_URL}/models/pivot_only`;
@@ -1849,6 +3887,10 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
         // 3 Python执行 (带自愈修复环)
         let aggregatedData: any = null;
         let validIds: any[] = []; // 🌟 【新增】：用于接收并暂存后端的有效网格 ID
+        specialResultType = null;
+        specialScoreRows = [];
+        specialWeightRows = [];
+        specialSummary = null;
         let lastErrorDetails = "";
         const MAX_RETRIES = 2;
         let retries = 0;
@@ -1880,6 +3922,7 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
         console.log(pythonCode);
         console.log(`======================python代码================================\n`);
 
+        let calculationSucceeded = false;
         while (retries <= MAX_RETRIES) {
             try {
                 console.log(`[Pipeline] 节点3正在执行沙盒运算... (尝试 ${retries + 1}/${MAX_RETRIES + 1})`);
@@ -1887,16 +3930,23 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
                 
                 const sandboxResponse = await axios.post<any>(endpointUrl, {
                     python_code: pythonCode,
-                    file_ids: fileIds,
+                    file_ids: resolvedFileIds,
                     parameters: sandboxParameters   // ✅ 传入参数，防御 parameters['key'] 模式
                 });
                 
-                aggregatedData = sandboxResponse.data.data;
+                const returnedData = sandboxResponse.data.data;
+                if (!Array.isArray(returnedData)) throw new Error("计算引擎返回了无效的结果格式");
+                aggregatedData = returnedData;
+                specialResultType = sandboxResponse.data.result_type || null;
+                specialScoreRows = Array.isArray(sandboxResponse.data.score_rows) ? sandboxResponse.data.score_rows : [];
+                specialWeightRows = Array.isArray(sandboxResponse.data.weight_rows) ? sandboxResponse.data.weight_rows : [];
+                specialSummary = sandboxResponse.data.summary || null;
                 validIds = sandboxResponse.data.valid_ids || []; // 🌟 【核心提取】：捕获 Python 传过来的巴中市网格 ID！
              
                 if (!aggregatedData || aggregatedData.length === 0) {
                     throw new Error("计算结果为空，请检查需求或数据是否匹配");
                 }
+                calculationSucceeded = true;
                 console.log(`[Pipeline] 沙盒计算成功，返回 ${aggregatedData.length} 条记录`);
                 emitStep(`计算成功，返回 ${aggregatedData.length} 条记录`);
                 break; 
@@ -1910,10 +3960,10 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
                 console.log(`[Pipeline] 节点发觉错误，启动自愈修复环 (第 ${retries} 次重试)...`);
                 emitStep(`捕捉到执行异常，启动自动修复 (第 ${retries} 次)...`);
                 try {
-                    if (agentMode === 'feature_calc') {
+                    if (effectiveAgentMode === 'feature_calc') {
                         rawCode = await fixFeatureCalcCode(blueprint, rawCode, lastErrorDetails);
                         pythonCode = FEATURE_CALC_SDK_INJECTION + "\n\n" + rawCode;
-                    } else if (agentMode === 'pro_model') {
+                    } else if (effectiveAgentMode === 'pro_model') {
                         rawCode = await fixProModelCode(blueprint, rawCode, lastErrorDetails);
                         pythonCode = PRO_MODEL_SDK_INJECTION + "\n\n" + rawCode;
                     } else {
@@ -1926,7 +3976,7 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
         }
 
         // 终局判定：如果重试已耗尽且依旧没有数据，走优雅降级方案
-        if (!aggregatedData) {
+        if (!calculationSucceeded) {
             console.log(`======================================================\n`);
             res.write(JSON.stringify({
                 type: 'result',
@@ -1934,35 +3984,90 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
                     status: "failed",
                     error_message: "AI 多次尝试修复代码失败，已切换至人工接管模式。",
                     traceback: lastErrorDetails,
-                    pythonCode: pythonCode 
+                    pythonCode: pythonCode,
+                    agentMode: effectiveAgentMode,
+                    sourceFileIds: resolvedFileIds
                 }
             }) + '\n');
             res.end();
             return;
         }
 
-        if (agentMode === 'feature_calc') {
+        if (effectiveAgentMode === 'pro_model' && specialResultType === 'sensitivity_score') {
+            console.log(`[Pipeline] Pro model returned sensitivity_score; writing scores back and exporting q weights...`);
+            emitStep(`专业模型已返回综合评分结果，正在回写图层并导出权重文件...`);
+
+            const targetFileId = blueprint.data_dependencies?.find((d: any) => typeof d.role === 'string' && d.role.includes('Target'))?.file_id || resolvedFileIds[0];
+            const updateRows = specialScoreRows
+                .filter((row: any) => row.id !== undefined && row.id !== null)
+                .map((row: any) => {
+                    const { id, ...newProps } = row;
+                    return { id, patch: newProps };
+                });
+
+            if (updateRows.length === 0) {
+                throw new Error('综合评分结果缺少可回写的 id 字段，无法更新目标图层');
+            }
+
+            const updatedCount = await Feature.updateFeaturePropertiesBatch(targetFileId, updateRows);
+
+            const timestamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+            const newFileName = `landslide_q_weights_${timestamp}.csv`;
+            const savedNode = await persistTabularRowsAsCsv(specialWeightRows, newFileName);
+
+            emitStep(`综合评分回写完成，并已生成 q 值权重文件`);
+            res.write(JSON.stringify({
+                type: 'result',
+                data: {
+                    code: 200,
+                    blueprint,
+                    tableData: specialWeightRows,
+                    engine: 'echarts',
+                    aiChartType: 'bar',
+                    chartHtml: null,
+                    chartOption: null,
+                    pythonCode,
+                    agentMode: effectiveAgentMode,
+                    sourceFileIds: resolvedFileIds,
+                    refreshSchema: true,
+                    targetFileId,
+                    newFileId: savedNode.id,
+                    weightFileName: newFileName,
+                    summary: { ...(specialSummary || {}), updatedCount },
+                    message: `综合评分计算完成，已回写目标图层评分字段，并导出权重结果文件 [${newFileName}]`
+                }
+            }) + '\n');
+            res.end();
+            return;
+        }
+
+        if (effectiveAgentMode === 'feature_calc') {
             console.log(`[Pipeline] 特征计算完成，正在将结果同步更新回原始数据层...`);
             emitStep(`特征计算完成，正在将结果同步...`);
-            const targetFileId = blueprint.data_dependencies?.find((d: any) => d.role.includes('Target'))?.file_id || fileIds[0];
-            const newCols = Object.keys(aggregatedData[0] || {}).filter(k => k !== 'id' && k !== 'rowKey');
+            const fallbackTargetFileId = blueprint.data_dependencies?.find((d: any) => d.role.includes('Target'))?.file_id || resolvedFileIds[0];
+            const newCols = Object.keys(aggregatedData[0] || {}).filter(
+                k => k !== 'id' && k !== 'rowKey' && k !== '__record_id__'
+            );
 
             console.log(`[Pipeline] 准备同步 ${aggregatedData.length} 条记录，采用分批并发策略...`);
-            const CHUNK_SIZE = 100; 
-            for (let i = 0; i < aggregatedData.length; i += CHUNK_SIZE) {
-                const chunk = aggregatedData.slice(i, i + CHUNK_SIZE);
-                await Promise.all(chunk.map(async (row: any) => {
-                    if (row.id) {
-                        const { id, rowKey, ...newProps } = row; 
-                        await Feature.updateFeatureProperty(targetFileId, id, newProps);
-                    }
-                }));
-
-                if ((i + CHUNK_SIZE) % 5000 === 0 || (i + CHUNK_SIZE) >= aggregatedData.length) {
-                    console.log(`[Pipeline] 数据库同步进度: ${Math.min(i + CHUNK_SIZE, aggregatedData.length)} / ${aggregatedData.length}`);
-                }
-            }
-            
+            console.log(`[Pipeline] 准备同步 ${aggregatedData.length} 条记录，采用批量 SQL 写回策略...`);
+            const updateRows = aggregatedData
+                .filter((row: any) => row.id)
+                .map((row: any) => {
+                    const { id, rowKey, __record_id__, ...newProps } = row;
+                    return { id, patch: newProps };
+                });
+            const { targetFileId, matchedCount } = await resolveFeatureCalcWriteTarget(
+                [
+                    ...(blueprint.data_dependencies || []).map((d: any) => d?.file_id),
+                    ...resolvedFileIds,
+                ],
+                updateRows,
+                fallbackTargetFileId
+            );
+            console.log(`[Pipeline] 自动匹配写回目标图层: ${targetFileId} (${matchedCount}/${updateRows.length})`);
+            const updatedCount = await Feature.updateFeaturePropertiesBatch(targetFileId, updateRows);
+            console.log(`[Pipeline] 数据库批量同步完成: ${updatedCount} / ${updateRows.length}`);
             console.log(`======================================================\n`);
             emitStep(`同步完成`);
             res.write(JSON.stringify({
@@ -1977,7 +4082,7 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
             return; 
         }
 
-        if (agentMode === 'pro_model') {
+        if (effectiveAgentMode === 'pro_model') {
             console.log(`[Pipeline] 专业模型计算完成，正在将结果导出为物理文件并挂载到文件树...`);
             emitStep(`模型计算完成，正在将结果导出为物理文件...`);
             
@@ -2017,7 +4122,9 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
                     code: 200, blueprint: blueprint, tableData: aggregatedData, 
                     engine: aiChartType ? 'echarts' : null, aiChartType: aiChartType,
                     message: ` 模型执行成功！分析结果已自动保存为文件：[${newFileName}]`,
-                    newFileId: savedNode.id, pythonCode: pythonCode
+                    newFileId: savedNode.id, pythonCode: pythonCode,
+                    agentMode: effectiveAgentMode,
+                    sourceFileIds: resolvedFileIds
                 }
             }) + '\n');
             res.end();
@@ -2030,6 +4137,9 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
         let chartCodeOrMetadata = "";
         let chartResponseData: any = null;
         let chartErrorDetails = "";
+        const clientTableData = blueprint.task_type === 'landslide_sensitivity_map'
+            ? buildLandslideSensitivityMapPreviewRows(aggregatedData)
+            : aggregatedData;
 
         if (blueprint.visualization_spec.engine === 'echarts') {
             console.log(`[Pipeline] 命中 ECharts 路由，【跳过】绘图代码生成，直接触发前端 TS 引擎接管渲染...`);
@@ -2048,8 +4158,9 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
         else {
             console.log(`[Pipeline] 命中 html_iframe 路由，进入 Node 4 呼叫 AI 编写 Plotly/Folium 制图代码...`);
             emitStep(`命中 HTML 渲染引擎，正在编写制图代码...`);
-            chartCodeOrMetadata = await generateChartCode(blueprint, aggregatedData.slice(0, 5));
-            const finalChartCode = CHART_SDK_INJECTION + "\n\n" + chartCodeOrMetadata;
+            chartCodeOrMetadata = blueprint.task_type === 'landslide_sensitivity_map'
+                ? buildLandslideSensitivityMapChartCode()
+                : await generateChartCode(blueprint, aggregatedData.slice(0, 5));
 
             const MAX_RETRIES = 2;
             let chartRetries = 0;
@@ -2057,8 +4168,11 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
             while (chartRetries <= MAX_RETRIES) {
                 try {
                     const chartResponse = await axios.post(`${PYTHON_API_URL}/models/chart_only`, {
-                        python_code: finalChartCode, data: aggregatedData
-                    });
+                        python_code: CHART_SDK_INJECTION + "\n\n" + chartCodeOrMetadata, data: aggregatedData
+                    }, {
+                        maxBodyLength: Infinity,
+                        maxContentLength: Infinity,
+                    } as any);
                     chartResponseData = chartResponse.data;
                     console.log(`[Pipeline] 图表渲染成功，渲染引擎: ${chartResponseData.engine}。`);
                     break;
@@ -2098,10 +4212,12 @@ export const executeDynamicPipeline = async (req: Request, res: Response): Promi
         res.write(JSON.stringify({
             type: 'result',
             data: {
-                code: 200, blueprint: blueprint, tableData: aggregatedData,
+                code: 200, blueprint: blueprint, tableData: clientTableData,
                 validIds: validIds, // 🌟 【完美闭环】：将 ID 塞进流式通道，发给前端的 GeoAIAgent！
                 engine: engine, aiChartType: chartResponseData?.ai_chart_type,
-                chartHtml: html_string, chartOption: chart_option, pythonCode: pythonCode 
+                chartHtml: html_string, chartOption: chart_option, pythonCode: pythonCode,
+                agentMode: effectiveAgentMode,
+                sourceFileIds: resolvedFileIds
             }
         }) + '\n');
         res.end();

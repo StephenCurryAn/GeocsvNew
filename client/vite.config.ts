@@ -8,4 +8,12 @@ export default defineConfig({
     react(),
     tailwindcss(), // 激活插件
   ],
+  server: {
+    proxy: {
+      '/api': {
+        target: 'http://127.0.0.1:3000',
+        changeOrigin: true,
+      },
+    },
+  },
 })

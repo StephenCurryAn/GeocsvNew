@@ -1,12 +1,15 @@
 import { Pool } from 'pg';
+import 'dotenv/config';
 
 // 1. 创建 PostgreSQL 连接池
 const pool = new Pool({
-  user: 'geocsv',             // 你在 Docker 中设置的用户名
-  host: '127.0.0.1',          // 本地地址 (避免 localhost 解析问题)
-  database: 'geocsv',         // 你在 Docker 中设置的数据库名
-  password: 'geocsv',         // 你在 Docker 中设置的密码
-  port: 5432,
+  ...(process.env.DATABASE_URL ? { connectionString: process.env.DATABASE_URL } : {
+    user: process.env.PGUSER || 'geocsv',
+    host: process.env.PGHOST || '127.0.0.1',
+    database: process.env.PGDATABASE || 'geocsv',
+    password: process.env.PGPASSWORD || 'geocsv',
+    port: Number(process.env.PGPORT || 5432),
+  }),
 
   // 连接池优化配置
   max: 20,                    // 最大并发连接数
@@ -21,7 +24,8 @@ pool.on('connect', () => {
 
 pool.on('error', (err) => {
   console.error('[Database] PostgreSQL 连接池发生意外错误', err);
-  process.exit(-1);
+  // pg removes the failed idle connection. Allow later requests and task recovery
+  // to reconnect instead of terminating the whole application.
 });
 
 // 2. 导出一个统一的 SQL 执行辅助函数 (防 SQL 注入)

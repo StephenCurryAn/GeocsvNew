@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { API_BASE_URL } from './apiConfig';
 
 /**
  * Axios 实例配置
@@ -10,7 +11,7 @@ const apiClient = axios.create({
    * 后端 API 基础 URL
    * 开发环境下指向本地服务
    */
-  baseURL: 'http://localhost:3000/api',
+  baseURL: API_BASE_URL,
   
   /**
    * 请求超时时间 (毫秒)

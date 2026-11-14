@@ -651,7 +651,7 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
         <Modal
             title={<span className="text-red-500 font-bold">批量删除列</span>}
             open={isDeleteModalVisible}
-            destroyOnClose
+            destroyOnHidden
             onCancel={() => setIsDeleteModalVisible(false)}
             footer={[
                 <Button key="cancel" onClick={() => setIsDeleteModalVisible(false)}>

@@ -5,6 +5,7 @@ import { FolderAddOutlined, CloudUploadOutlined, FileTextOutlined, GlobalOutline
          DownOutlined, DeleteOutlined, EditOutlined, ExclamationCircleOutlined,
          PictureOutlined} from '@ant-design/icons';
 import { geoService} from '../../../services/geoService';
+import { getApiUrl } from '../../../services/apiConfig';
 
 // FileTreeProps接口，实现子组件传导数据到父组件的接口
 export interface FileTreeProps {
@@ -54,7 +55,7 @@ const FileTree: React.FC<FileTreeProps> = ({ onDataLoaded, onSelectFiles }) => {
   // 从后端获取文件树数据
   const fetchFileTree = async () => {
     try {
-      const response = await fetch('http://localhost:3000/api/files/tree');
+      const response = await fetch(getApiUrl('/files/tree'));
       const result = await response.json();
 
       if (result.code === 200) {
@@ -381,7 +382,7 @@ const FileTree: React.FC<FileTreeProps> = ({ onDataLoaded, onSelectFiles }) => {
       }
 
       // 调用后端API创建文件夹
-      const response = await fetch('http://localhost:3000/api/files/folder', {
+      const response = await fetch(getApiUrl('/files/folder'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

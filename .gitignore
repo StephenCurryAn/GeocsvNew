@@ -22,6 +22,8 @@ pnpm-debug.log*
 .env.test.local
 .env.production.local
 .env.*
+!/client/.env.example
+!/server/.env.example
 
 # 编辑器文件
 .vscode/*

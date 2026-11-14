@@ -1,26 +1,4 @@
-import OpenAI from 'openai';
-import dotenv from 'dotenv';
-import { ProxyAgent, setGlobalDispatcher } from 'undici'; // 引入 ProxyAgent
-
-dotenv.config();
-
-// ================= [核心网络修复] =================
-// 强行把 Node.js 底层的请求路由到你 curl 跑通的那个代理端口上
-const proxyUrl = process.env.https_proxy || process.env.http_proxy || 'http://127.0.0.1:33210';
-const proxyAgent = new ProxyAgent(proxyUrl);
-setGlobalDispatcher(proxyAgent);
-// ==================================================
-
-const apiKey = process.env.ALIYUN_API_KEY;
-console.log(`\n[系统自检] 正在读取 .env 文件...`);
-console.log(`[系统自检] ALIYUN_API_KEY 加载状态: ${apiKey ? '成功 (以 ' + apiKey.substring(0, 5) + ' 开头)' : '【失败】未找到该变量！'}`);
-console.log(`[系统自检] 已强制挂载网络代理: ${proxyUrl}`); // 确认代理已注入
-
-const openai = new OpenAI({
-    baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-    apiKey: apiKey, 
-    timeout: 180 * 1000, 
-});
+import { getLLMClient } from '../integrations/llm/client';
 
 export interface AIGeneratedModel {
     modelName: string;
@@ -72,7 +50,7 @@ JSON 的结构必须严格如下：
 
 export const generateModelCodeFromAI = async (userPrompt: string): Promise<AIGeneratedModel> => {
     try {
-        const response = await openai.chat.completions.create({
+        const response = await getLLMClient().chat.completions.create({
             model: "deepseek-v3", 
             messages: [
                 { role: "system", content: SYSTEM_PROMPT },
@@ -232,7 +210,7 @@ ${contextPrompt}
 `;
 
     try {
-        const response = await openai.chat.completions.create({
+        const response = await getLLMClient().chat.completions.create({
             model: "deepseek-v3", // 统一修改为 deepseek-v3
             messages: [
                 { role: "system", content: PLANNER_PROMPT },
@@ -272,6 +250,14 @@ export const generatePivotCode = async (blueprint: WorkflowBlueprint, availableF
 系统底层已经为你内置了绝对安全的领域特定算子库 (GeoPivot SDK)。
 你的任务是：根据用户的【执行蓝图】，严格进行【5+1 意图映射】，并组合调用 SDK 完成计算。
 【执行蓝图】：
+3. safe_geodetector_weighted_sensitivity(gdf, y_col, x_cols, score_col='滑坡敏感性综合评分', level_col='滑坡敏感性等级', level_count=5)
+   - 作用：先计算各因子的 q 值，再将 q 值归一化为权重，并基于这些权重计算每个网格的综合敏感性评分与敏感性等级。
+   - 返回结构是一个 dict，包含 result_type='sensitivity_score'、score_rows、weight_rows 和 summary。
+   - 当用户需求出现“q值归一化为权重”“综合评分”“敏感性评分”时，必须优先调用这个算子，并直接 return 它的结果。
+
+【当前可用图层真实字段字典】：
+${filesInfoStr}
+
 ${JSON.stringify(blueprint, null, 2)}
 
 【当前可用的图层真实数据字典 (极其重要)】：
@@ -349,8 +335,8 @@ ${filesInfoStr}
 
 # 极致简洁的标准 Few-Shot 示例代码：
 def execute_pivot(gdf_dict, parameters):
-    target_gdf = gdf_dict['target_id'].copy().replace(['', 0], np.nan)
-    join_gdf = gdf_dict['join_id'].copy().replace(['', 0], np.nan)
+    target_gdf = gdf_dict['target_id'].copy()
+    join_gdf = gdf_dict['join_id'].copy()
     
     # 1. 空间拓扑 (例如：区县面 包含 风景名胜点)
     joined = safe_within_contains(target_gdf, join_gdf, relation='contains')
@@ -460,8 +446,8 @@ def execute_pivot(gdf_dict, parameters):
 
 # 示例代码：
 def execute_pivot(gdf_dict, parameters):
-    target_gdf = gdf_dict['target_id'].copy().replace(['', 0], np.nan)
-    join_gdf = gdf_dict['join_id'].copy().replace(['', 0], np.nan)
+    target_gdf = gdf_dict['target_id'].copy()
+    join_gdf = gdf_dict['join_id'].copy()
     
     # 提取真实的经纬度坐标用于绘图
     target_gdf = safe_get_centroid_coords(target_gdf, x_col='lon', y_col='lat')
@@ -488,10 +474,21 @@ def execute_pivot(gdf_dict, parameters):
 `;
 
     // 5. 动态路由组装 Prompt
-    const PIVOT_CODER_PROMPT = BASE_PROMPT + (engine === 'html_iframe' ? IFRAME_CONTRACT : ECHARTS_CONTRACT) + FINAL_INSTRUCTION;
+    const CROSS_LAYER_PIVOT_RULES = `
+【跨图层二维透视硬性规则】
+当用户要求“面图层行政区/县/街道 × 点图层分类字段”的二维统计，例如“统计各县在不同险情等级下的滑坡点数量”时：
+1. 行维度来自面图层，列维度来自点图层。空间连接后必须按 joined_gdf 中的真实字段直接 groupby。
+2. 正确写法：
+   agg_df = joined.groupby([row_dim_col, col_dim]).size().unstack(fill_value=0)
+   base_rows = join_gdf[[row_dim_col]].drop_duplicates()
+   final_df = base_rows.merge(agg_df.reset_index(), on=row_dim_col, how='left').fillna(0)
+   final_df.rename(columns={row_dim_col: 'rowKey'}, inplace=True)
+3. 绝对禁止在这种场景调用 safe_aggregate(joined, col_dim=...) 后再 join 到 join_gdf，因为 safe_aggregate 默认按 joined.index 聚合；点 within 面时 joined.index 是点索引，会把每个点统计成 0/1，而不是每个县的总数。
+`;
+    const PIVOT_CODER_PROMPT = BASE_PROMPT + CROSS_LAYER_PIVOT_RULES + (engine === 'html_iframe' ? IFRAME_CONTRACT : ECHARTS_CONTRACT) + FINAL_INSTRUCTION;
     
     try {
-        const response = await openai.chat.completions.create({
+        const response = await getLLMClient().chat.completions.create({
             model: "deepseek-v3", // 统一修改为 deepseek-v3
             messages: [
                 { role: "system", content: PIVOT_CODER_PROMPT },
@@ -529,14 +526,17 @@ ${errorTraceback}
 【修复红线 - 系统已内置 SDK】：
 沙盒中已全局注入了以下安全算子，你绝对不能手写底层 GeoPandas 方法（如 sjoin、buffer），必须直接调用：
 1. \`safe_buffer_intersects(target_gdf, join_gdf, radius)\` -> 返回相交后的 GeoDataFrame
-2. \`safe_aggregate(joined_gdf, agg_method, value_col=None)\` -> 返回安全聚合后的 Series
+2. \`safe_aggregate(joined_gdf, agg_method, value_col=None, col_dim=None)\` -> 返回安全聚合后的 Series / DataFrame
+3. 严禁传入不存在的参数名，例如 \`group_col\`、\`group_by\`、\`row_col\`；只允许使用 \`agg_method\`、\`value_col\`、\`col_dim\`。
+4. 严禁对整个 \`target_gdf\` / \`join_gdf\` 执行 \`.replace(['', 0], np.nan)\` 或整表 \`.fillna(...)\`；数据里可能含有 \`cp\` 这类 list 列，会触发 \`unhashable type: 'list'\`。只能逐列清洗真实参与透视的标量字段。
+5. 如果用户要求“总量”“总数”且目标字段本身是数值字段（如 \`Landslide_Count\`），必须用 \`.sum()\` 聚合该字段，不能误用 \`.size()\` 统计记录条数。
 
 请分析报错原因（如参数类型不对、字典键错误等），重新调用 SDK 编写完整的 \`def execute_pivot(gdf_dict, parameters):\` 函数。
 只输出纯 Python 代码，绝对不要包含 \`\`\`python 标签！
 `;
 
     try {
-        const response = await openai.chat.completions.create({
+        const response = await getLLMClient().chat.completions.create({
             model: "deepseek-v3",
             messages: [
                 { role: "system", content: CODE_FIXER_PROMPT },
@@ -624,7 +624,7 @@ ${activeSnippet}
 `;
 
     try {
-        const response = await openai.chat.completions.create({
+        const response = await getLLMClient().chat.completions.create({
             model: "deepseek-v3", 
             messages: [
                 { role: "system", content: CHART_CODER_PROMPT },
@@ -664,7 +664,7 @@ ${errorTraceback}
 `;
 
     try {
-        const response = await openai.chat.completions.create({
+        const response = await getLLMClient().chat.completions.create({
             model: "deepseek-v3",
             messages: [
                 { role: "system", content: CODE_FIXER_PROMPT },
@@ -777,6 +777,7 @@ export const generateFeatureCalcCode = async (blueprint: any, validFileIds: stri
    - 作用：将相交的客体要素（如滑坡点）的指定数值字段（agg_col）进行聚合（求和、均值等），并赋给目标面图层（如网格）。
    - agg_func 支持：'sum' (求和), 'mean' (求平均), 'max', 'min'。
    - 绝对指令：只要用户需求中包含“计算总和”、“求和”、“平均值”并涉及跨图层属性转移时，【必须使用本算子】，绝对不要使用 safe_spatial_join_attribute！
+   - Park accessibility hard rule: if the task asks for park accessibility from a distance field, first create a numeric score from the real distance column (for example distance_to_nearest_park), then aggregate that score. Never average a *_level / *_class / 等级 column as the accessibility score.
 12.safe_spatial_categorical_summary(target_gdf, join_gdf, cat_col, col_prefix='cat')
    - 功能：统计目标图层(面)内，客体图层(点/线/面)不同分类的数量、占比及占比最高的主导分类。
    - 适用场景：计算街道内不同建筑质量的占比、不同土地利用类型占比、寻找最主要的 POI 类型等。
@@ -826,7 +827,9 @@ ${dataLoadingSkeleton}
     
     
     # --- 收尾与返回 ---
-    if 'id' not in target_gdf.columns:
+    if '__record_id__' in target_gdf.columns:
+        target_gdf['id'] = target_gdf['__record_id__']
+    elif 'id' not in target_gdf.columns:
         target_gdf['id'] = target_gdf.index
         
     return target_gdf[['id', '此处填入你计算的所有新特征列名']].to_dict(orient='records')
@@ -844,7 +847,9 @@ def execute_feature_calc(gdf_dict, file_paths_dict, parameters):
         col_prefix='bldg_qual' # 自定义一个列前缀
     )
     
-    if 'id' not in result_gdf.columns:
+    if '__record_id__' in result_gdf.columns:
+        result_gdf['id'] = result_gdf['__record_id__']
+    elif 'id' not in result_gdf.columns:
         result_gdf['id'] = result_gdf.index
 
     # 绝对红线：原始数据中可能含有列表(如cp)等无法序列化的脏列，会导致 to_dict 抛出 真值报错！
@@ -856,7 +861,7 @@ def execute_feature_calc(gdf_dict, file_paths_dict, parameters):
 
     
     try {
-        const response = await openai.chat.completions.create({
+        const response = await getLLMClient().chat.completions.create({
             model: "deepseek-v3", // 你用的 deepseek 模型非常适合这种代码填空逻辑！
             messages: [{ role: "system", content: PROMPT }, { role: "user", content: "请开始编写特征计算Python代码" }],
             temperature: 0.1 // 保持 0.1 的低温度，让它严格遵守骨架
@@ -921,7 +926,7 @@ ${errorTraceback}
    说明你试图从 gdf_dict 获取栅格数据！栅格数据不存在于 gdf_dict，只存在于 file_paths_dict。
    ✅ 修复方案：删除 gdf_dict 的调用，改为 \`raster_path = file_paths_dict['出错的uuid']\`。
 `;
-    const response = await openai.chat.completions.create({
+    const response = await getLLMClient().chat.completions.create({
         model: "deepseek-v3",
         messages: [
             { role: "system", content: FIXER_PROMPT },
@@ -932,7 +937,10 @@ ${errorTraceback}
     return cleanCodeBlock(response.choices[0].message.content || "");
 };
 
-export const generateProModelCode = async (blueprint: any): Promise<string> => {
+export const generateProModelCode = async (blueprint: any, availableFiles: any[] = []): Promise<string> => {
+    const filesInfoStr = availableFiles && availableFiles.length > 0
+        ? availableFiles.map(f => `- 文件ID: ${f.fileId}, 真实可用字段: [${f.columns?.join(', ')}]`).join('\n')
+        : '暂无详细表结构';
     const PROMPT = `
 你是一位顶级 GeoAI 空间数据科学家。系统已内置专业模型 SDK。
 任务：根据用户的【执行蓝图】，编写 Python 代码调用专业模型。
@@ -943,6 +951,12 @@ export const generateProModelCode = async (blueprint: any): Promise<string> => {
 2. safe_geodetector_interaction(gdf, y_col, x_cols)
    - 作用：执行地理探测器（交互探测），计算自变量叠加后的 q(A∩B)，自动输出适合热力图的对称矩阵数据。
    - 返回列包含：'因子A', '因子B', '交互q值', '交互类型'。
+3. safe_geodetector_weighted_sensitivity(gdf, y_col, x_cols, score_col='滑坡敏感性综合评分', level_col='滑坡敏感性等级', level_count=5)
+   - 作用：先做地理探测器因子探测，计算各因子 q 值，再将 q 值归一化为权重，并计算每个网格的综合敏感性评分与等级。
+   - 返回结构必须原样 return：dict，包含 result_type='sensitivity_score'、score_rows、weight_rows 和 summary。
+
+【当前可用图层真实字段字典】：
+${filesInfoStr}
 
 【蓝图】：
 ${JSON.stringify(blueprint, null, 2)}
@@ -950,12 +964,18 @@ ${JSON.stringify(blueprint, null, 2)}
 【严格要求】：
 1. 必须写一个 \`def execute_pro_model(gdf_dict, file_paths_dict, parameters):\` 主函数。
 2. 【绝对禁令】：千万不要试图从 \`parameters\` 字典中读取变量！你必须直接在代码中写死真实的列名字符串。
-3. 【正确示范】：
+3. 【列名红线】：只能使用上方“真实字段字典”中已经存在的字段名，严禁自造英文列名，严禁把中文字段名翻译成英文后再使用。
+4. 【综合评分任务专门规则】：
+   - 如果需求涉及“q值归一化为权重”“综合评分”“敏感性评分”，禁止先调用 \`safe_geodetector_factor\` 再把返回值当 DataFrame 手工加工。
+   - 此类任务必须直接调用 \`safe_geodetector_weighted_sensitivity(...)\` 并原样 return。
+5. 【正确示范】：
    如果用户要求分析交互探测，只需这样写：
    \`return safe_geodetector_interaction(target_gdf, y_col='Landslide_Count', x_cols=['Elev_Class', 'Rain_Class'])\`
-4. 只输出纯 Python 代码，绝对不要包含 \`\`\`python 标签！
+   如果用户要求“将 q 值归一化为权重并计算综合评分”，只需这样写：
+   \`return safe_geodetector_weighted_sensitivity(target_gdf, y_col='滑坡发生情况', x_cols=['坡度等级', '高程等级'], score_col='滑坡敏感性综合评分', level_col='滑坡敏感性等级', level_count=5)\`
+6. 只输出纯 Python 代码，绝对不要包含 \`\`\`python 标签！
 `;
-    const response = await openai.chat.completions.create({
+    const response = await getLLMClient().chat.completions.create({
         model: "deepseek-v3", // 或你使用的模型
         messages: [{ role: "system", content: PROMPT }, { role: "user", content: "请编写专业模型执行代码" }],
         temperature: 0.1
@@ -964,8 +984,22 @@ ${JSON.stringify(blueprint, null, 2)}
 };
 
 export const fixProModelCode = async (blueprint: any, buggyCode: string, errorTraceback: string): Promise<string> => {
-    const FIXER_PROMPT = `代码运行崩溃：\n${errorTraceback}\n请修复以下 execute_pro_model 代码并返回纯Python：\n${buggyCode}`;
-    const response = await openai.chat.completions.create({
+    const FIXER_PROMPT = `代码运行崩溃：\n${errorTraceback}
+
+请修复以下 execute_pro_model 代码并返回纯Python。
+
+【专业模型 SDK 可用函数】：
+1. safe_geodetector_factor(gdf, y_col, x_cols)
+2. safe_geodetector_interaction(gdf, y_col, x_cols)
+3. safe_geodetector_weighted_sensitivity(gdf, y_col, x_cols, score_col='滑坡敏感性综合评分', level_col='滑坡敏感性等级', level_count=5)
+
+【修复红线】：
+- 禁止 import pygeodetector，沙箱没有这个模块。
+- 如果蓝图/需求涉及“q值归一化为权重”“综合评分”“敏感性评分”，必须直接 return safe_geodetector_weighted_sensitivity(...)。
+- 不要从 parameters 字典读取列名，必须使用代码中已有的真实字段名。
+
+${buggyCode}`;
+    const response = await getLLMClient().chat.completions.create({
         model: "deepseek-v3",
         messages: [{ role: "system", content: FIXER_PROMPT }],
         temperature: 0.1

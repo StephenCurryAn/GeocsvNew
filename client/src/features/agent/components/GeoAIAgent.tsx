@@ -2,12 +2,15 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Button, Input, Avatar, Badge, Segmented, App, Modal } from 'antd';
 import {
     SendOutlined, UserOutlined, ClearOutlined,
-    CloseOutlined, ThunderboltOutlined, CodeOutlined, SettingOutlined, CheckCircleOutlined,
+    CloseOutlined, CodeOutlined, SettingOutlined, CheckCircleOutlined,
     LoadingOutlined, DeploymentUnitOutlined, FullscreenOutlined
 } from '@ant-design/icons';
 import { geoService } from '../../../services/geoService';
+import { getApiUrl } from '../../../services/apiConfig';
+import { consumeNdjsonResponse } from '../../../services/pipelineStream';
 import ReactECharts from 'echarts-for-react';
 import { useAnalysisStore, type ChartType } from '../../../stores/useAnalysisStore';
+import UnifiedAnalysisAssistant from '../../analysis/components/UnifiedAnalysisAssistant';
 
 // ============================================================
 // 类型定义
@@ -17,6 +20,53 @@ interface PipelineStep {
     message: string;
     status: 'loading' | 'success' | 'error';
     timestamp: string;
+}
+
+interface LegacyPipelinePayload {
+    status?: string;
+    message?: string;
+    newFileId?: string;
+    tableData?: Record<string, unknown>[];
+    aiChartType?: string;
+    engine?: ChatMessage['engine'];
+    chartOption?: unknown;
+    chartHtml?: string;
+    blueprint?: { explanation?: string; [key: string]: unknown };
+    pythonCode?: string;
+    sourceFileIds?: string[];
+    agentMode?: 'pivot' | 'feature_calc' | 'pro_model';
+    error_message?: string;
+    traceback?: string;
+    refreshSchema?: boolean;
+    targetFileId?: string;
+    validIds?: unknown[];
+}
+
+interface InteractionPairSummary {
+    factorA: string;
+    factorB: string;
+    qValue: number;
+    interactionType?: string;
+}
+
+interface GeodetectorSpecSummary {
+    analysisType: 'interaction' | 'factor' | 'unknown';
+    yCol: string | null;
+    xCols: string[];
+}
+
+interface ConversationContextPayload {
+    lastBlueprint: any;
+    lastPythonCode: string;
+    lastTableData?: any[];
+    lastResultMeta: {
+        agentMode?: 'pivot' | 'feature_calc' | 'pro_model';
+        sourceFileIds: string[];
+        resultFileId?: string;
+        resultRowCount: number;
+        topInteractionPair: InteractionPairSummary | null;
+        geodetectorSpec: GeodetectorSpecSummary;
+    };
 }
 
 interface ChatMessage {
@@ -33,6 +83,9 @@ interface ChatMessage {
     traceback?: string;
     pipelineSteps?: PipelineStep[];
     agentMode?: 'pivot' | 'feature_calc' | 'pro_model';
+    tableData?: any[];
+    newFileId?: string;
+    sourceFileIds?: string[];
 }
 
 interface GeoAIAgentProps {
@@ -40,6 +93,84 @@ interface GeoAIAgentProps {
     isOpen?: boolean;
     onClose?: () => void;
 }
+
+const MAX_CONTEXT_ROWS = 100;
+const INTERACTION_FACTOR_A_KEY = '因子A';
+const INTERACTION_FACTOR_B_KEY = '因子B';
+const INTERACTION_Q_KEY = '交互q值';
+const INTERACTION_TYPE_KEY = '交互类型';
+
+const toFiniteNumber = (value: unknown): number | null => {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : null;
+};
+
+const extractTopInteractionPair = (tableData?: any[]): InteractionPairSummary | null => {
+    if (!Array.isArray(tableData) || tableData.length === 0) return null;
+
+    let bestPair: InteractionPairSummary | null = null;
+    for (const row of tableData) {
+        const factorA = row?.[INTERACTION_FACTOR_A_KEY];
+        const factorB = row?.[INTERACTION_FACTOR_B_KEY];
+        const qValue = toFiniteNumber(row?.[INTERACTION_Q_KEY]);
+        if (!factorA || !factorB || qValue === null || factorA === factorB) continue;
+
+        if (!bestPair || qValue > bestPair.qValue) {
+            bestPair = {
+                factorA: String(factorA),
+                factorB: String(factorB),
+                qValue,
+                interactionType: row?.[INTERACTION_TYPE_KEY] ? String(row[INTERACTION_TYPE_KEY]) : undefined,
+            };
+        }
+    }
+
+    return bestPair;
+};
+
+const extractGeodetectorSpec = (pythonCode?: string): GeodetectorSpecSummary => {
+    if (!pythonCode) {
+        return { analysisType: 'unknown', yCol: null, xCols: [] };
+    }
+
+    const analysisType = pythonCode.includes('safe_geodetector_interaction')
+        ? 'interaction'
+        : pythonCode.includes('safe_geodetector_factor')
+        ? 'factor'
+        : 'unknown';
+
+    const yMatch = pythonCode.match(/y_col\s*=\s*['"]([^'"]+)['"]/);
+    const xMatch = pythonCode.match(/x_cols\s*=\s*\[([^\]]*)\]/);
+    const xCols = xMatch
+        ? Array.from(xMatch[1].matchAll(/['"]([^'"]+)['"]/g)).map(match => match[1])
+        : [];
+
+    return {
+        analysisType,
+        yCol: yMatch?.[1] ?? null,
+        xCols,
+    };
+};
+
+const buildConversationContext = (lastAssistantMsg?: ChatMessage): ConversationContextPayload | undefined => {
+    if (!lastAssistantMsg?.blueprint || !lastAssistantMsg.pythonCode) return undefined;
+
+    return {
+        lastBlueprint: lastAssistantMsg.blueprint,
+        lastPythonCode: lastAssistantMsg.pythonCode,
+        lastTableData: Array.isArray(lastAssistantMsg.tableData)
+            ? lastAssistantMsg.tableData.slice(0, MAX_CONTEXT_ROWS)
+            : undefined,
+        lastResultMeta: {
+            agentMode: lastAssistantMsg.agentMode,
+            sourceFileIds: lastAssistantMsg.sourceFileIds || [],
+            resultFileId: lastAssistantMsg.newFileId,
+            resultRowCount: Array.isArray(lastAssistantMsg.tableData) ? lastAssistantMsg.tableData.length : 0,
+            topInteractionPair: extractTopInteractionPair(lastAssistantMsg.tableData),
+            geodetectorSpec: extractGeodetectorSpec(lastAssistantMsg.pythonCode),
+        },
+    };
+};
 
 const QUICK_PROMPTS = [
     '统计各图层的要素数量',
@@ -77,6 +208,7 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
     onClose,
 }) => {
     const { message } = App.useApp();
+    const [assistantMode, setAssistantMode] = useState<'operator' | 'legacy'>('operator');
     const [agentMode, setAgentMode] = useState<'pivot' | 'feature_calc' | 'pro_model'>('pivot');
     const [inputValue, setInputValue] = useState('');
     const [loading, setLoading] = useState(false);
@@ -109,22 +241,23 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
 
         if (!res.tableData || res.tableData.length === 0) return;
         let rawData = res.tableData;
-        let displayData = rawData;
-        if (rawData.length > 100) displayData = [...rawData.slice(0, 50), ...rawData.slice(-50)];
-        const columns = Object.keys(displayData[0] || {}).filter(k => k !== 'geometry');
+        const columns = Object.keys(rawData[0] || {}).filter(k => k !== 'geometry');
         if (columns.length === 0) return;
         const rowKeyName = columns[0];
         const valueColumns = columns.slice(1);
-        const formattedPivotData = displayData.map((row: any) => ({ rowKey: row[rowKeyName] ?? 'Unknown', ...row }));
+        const formattedPivotData = rawData.map((row: any) => ({ rowKey: row[rowKeyName] ?? 'Unknown', ...row }));
         setPivotResult(formattedPivotData, valueColumns);
 
         // 🌟 核心修复点：不要盲目使用 rowKeyName，尝试从蓝图中提取真实的原始透视字段（例如 "NAME"）
-        const realRowField = res.blueprint?.visualization_spec?.dimensions?.[0] || rowKeyName;
+        const blueprintDims = res.blueprint?.visualization_spec?.dimensions || [];
+        const realRowField = blueprintDims[0] || rowKeyName;
+        const realColField = blueprintDims[1] || (valueColumns.length > 1 ? '__matrix_column__' : null);
         // 动态推断透视方法（如果有的话，否则默认 sum/count）
         const realMethod = res.blueprint?.visualization_spec?.metrics?.[0] || 'sum';
 
         setPivotConfig({ 
             groupByRow: realRowField, // 🌟 传给地图真实的字段名 
+            groupByCol: realColField,
             method: realMethod.includes('count') ? 'count' : 'sum' 
         });
 
@@ -144,6 +277,14 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
             setChartVisible(true);
         }
         setPivotPanelOpen(true);
+    };
+
+    const handleSchemaRefresh = (res: any) => {
+        if (!res?.refreshSchema) return;
+        window.dispatchEvent(new CustomEvent('REFRESH_FILE_TREE'));
+        if (res.targetFileId) {
+            window.dispatchEvent(new CustomEvent('FORCE_RELOAD_FILE_DATA', { detail: { fileId: res.targetFileId } }));
+        }
     };
 
     const [messages, setMessages] = useState<ChatMessage[]>([
@@ -183,104 +324,79 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
         setMessages(prev => [...prev, { id: thinkingId, role: 'system', content: 'thinking', timestamp: Date.now() }]);
 
         const lastAssistantMsg = [...messages].reverse().find(m => m.role === 'assistant' && m.blueprint && m.pythonCode);
-        const context = lastAssistantMsg ? { lastBlueprint: lastAssistantMsg.blueprint, lastPythonCode: lastAssistantMsg.pythonCode } : undefined;
+        const context = buildConversationContext(lastAssistantMsg);
 
         try {
-            const response = await fetch('http://localhost:3000/api/analysis/dynamic-pipeline', {
+            const response = await fetch(getApiUrl('/analysis/dynamic-pipeline'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ userPrompt: currentInput, fileIds: selectedFileIds, context, agentMode })
             });
 
-            if (!response.body) throw new Error('ReadableStream not supported.');
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder('utf-8');
             let stepCounter = 0;
-            let buffer = '';
-
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                buffer += decoder.decode(value, { stream: true });
-                let newlineIndex = buffer.indexOf('\n');
-                while (newlineIndex !== -1) {
-                    const line = buffer.slice(0, newlineIndex).trim();
-                    buffer = buffer.slice(newlineIndex + 1);
-                    newlineIndex = buffer.indexOf('\n');
-                    if (!line) continue;
-                    try {
-                        const parsedData = JSON.parse(line);
-                        if (parsedData.type === 'step') {
-                            localPipelineSteps = [
-                                ...localPipelineSteps.map(p => ({ ...p, status: 'success' as const })),
-                                { id: stepCounter++, message: parsedData.message, status: 'loading', timestamp: getTimeString() }
-                            ];
-                            setPipelineSteps(localPipelineSteps);
-                        } else if (parsedData.type === 'result') {
-                            const resData = parsedData.data;
-                            localPipelineSteps = localPipelineSteps.map(p => ({ ...p, status: 'success' as const }));
-                            setPipelineSteps(localPipelineSteps);
-                            if (agentMode === 'pro_model' && resData.newFileId) {
-                                message.success(resData.message || "模型运算完成！");
-                                window.dispatchEvent(new CustomEvent('REFRESH_FILE_TREE'));
-                                
-                                // 🌟 【核心修复】：专业模型也需要将结果推给图表引擎！
-                                // 智能探测：如果发现是地理探测器的矩阵数据，强制指令系统使用 Heatmap 渲染
-                                if (resData.tableData && resData.tableData.length > 0 && '因子A' in resData.tableData[0]) {
-                                    resData.aiChartType = 'heatmap'; // 强制激活热力图
-                                    resData.engine = 'echarts';      // 采用 ECharts 本地渲染引擎
-                                }
-                                
-                                // 同步数据到全局 Store，唤醒图表弹窗！
-                                syncToGlobalStore(resData);
-
-                                setMessages(oldMsgs => {
-                                    const filtered = oldMsgs.filter(m => m.id !== thinkingId);
-                                    return [...filtered, {
-                                        id: Date.now().toString(), role: 'assistant',
-                                        content: resData.message || `运算完成！分析结果已保存为独立文件，可在左侧资源树中预览或下载。`,
-                                        timestamp: Date.now(), 
-                                        engine: resData.engine,           // 补充缺失的元数据
-                                        chartOption: resData.chartOption, // 补充缺失的元数据
-                                        chartHtml: resData.chartHtml,     // 补充缺失的元数据
-                                        blueprint: resData.blueprint,     // 补充缺失的元数据
-                                        pythonCode: resData.pythonCode,
-                                        pipelineSteps: localPipelineSteps,
-                                        agentMode: agentMode
-                                    }];
-                                });
-                            } else if (resData.status === 'failed') {
-                                setMessages(oldMsgs => {
-                                    const filtered = oldMsgs.filter(m => m.id !== thinkingId);
-                                    return [...filtered, {
-                                        id: `err-${Date.now()}`, role: 'assistant',
-                                        content: resData.error_message || 'AI 多次尝试修复代码失败，已切换至人工接管模式。',
-                                        timestamp: Date.now(), status: 'failed', traceback: resData.traceback,
-                                        pythonCode: resData.pythonCode, blueprint: context?.lastBlueprint,
-                                        pipelineSteps: localPipelineSteps,
-                                        agentMode: agentMode
-                                    }];
-                                });
-                            } else {
-                                syncToGlobalStore(resData);
-                                setMessages(oldMsgs => {
-                                    const filtered = oldMsgs.filter(m => m.id !== thinkingId);
-                                    return [...filtered, {
-                                        id: `a-${Date.now()}`, role: 'assistant',
-                                        content: resData.blueprint?.explanation || resData.message || '分析完成！请查看分析结果和生成的执行代码。',
-                                        timestamp: Date.now(), engine: resData.engine, chartOption: resData.chartOption,
-                                        chartHtml: resData.chartHtml, pythonCode: resData.pythonCode, blueprint: resData.blueprint,
-                                        pipelineSteps: localPipelineSteps,
-                                        agentMode: agentMode
-                                    }];
-                                });
-                            }
-                        } else if (parsedData.type === 'error') {
-                            throw parsedData.data;
+            await consumeNdjsonResponse<LegacyPipelinePayload>(response, parsedData => {
+                if (parsedData.type === 'step') {
+                    localPipelineSteps = [
+                        ...localPipelineSteps.map(p => ({ ...p, status: 'success' as const })),
+                        { id: stepCounter++, message: parsedData.message ?? '', status: 'loading', timestamp: getTimeString() }
+                    ];
+                    setPipelineSteps(localPipelineSteps);
+                } else if (parsedData.type === 'result') {
+                    const resData = parsedData.data ?? {};
+                    localPipelineSteps = localPipelineSteps.map(p => ({ ...p, status: 'success' as const }));
+                    setPipelineSteps(localPipelineSteps);
+                    handleSchemaRefresh(resData);
+                    if (agentMode === 'pro_model' && resData.newFileId) {
+                        message.success(resData.message || "模型运算完成！");
+                        window.dispatchEvent(new CustomEvent('REFRESH_FILE_TREE'));
+                        if (resData.tableData && resData.tableData.length > 0 && '因子A' in resData.tableData[0]) {
+                            resData.aiChartType = 'heatmap';
+                            resData.engine = 'echarts';
                         }
-                    } catch (e) {}
+                        syncToGlobalStore(resData);
+                        setMessages(oldMsgs => {
+                            const filtered = oldMsgs.filter(m => m.id !== thinkingId);
+                            return [...filtered, {
+                                id: Date.now().toString(), role: 'assistant',
+                                content: resData.message || `运算完成！分析结果已保存为独立文件，可在左侧资源树中预览或下载。`,
+                                timestamp: Date.now(), engine: resData.engine,
+                                chartOption: resData.chartOption, chartHtml: resData.chartHtml,
+                                blueprint: resData.blueprint, pythonCode: resData.pythonCode,
+                                pipelineSteps: localPipelineSteps,
+                                agentMode: resData.agentMode || agentMode,
+                                tableData: resData.tableData, newFileId: resData.newFileId,
+                                sourceFileIds: resData.sourceFileIds || selectedFileIds
+                            }];
+                        });
+                    } else if (resData.status === 'failed') {
+                        setMessages(oldMsgs => {
+                            const filtered = oldMsgs.filter(m => m.id !== thinkingId);
+                            return [...filtered, {
+                                id: `err-${Date.now()}`, role: 'assistant',
+                                content: resData.error_message || 'AI 多次尝试修复代码失败，已切换至人工接管模式。',
+                                timestamp: Date.now(), status: 'failed', traceback: resData.traceback,
+                                pythonCode: resData.pythonCode, blueprint: context?.lastBlueprint,
+                                pipelineSteps: localPipelineSteps, agentMode: agentMode
+                            }];
+                        });
+                    } else {
+                        syncToGlobalStore(resData);
+                        setMessages(oldMsgs => {
+                            const filtered = oldMsgs.filter(m => m.id !== thinkingId);
+                            return [...filtered, {
+                                id: `a-${Date.now()}`, role: 'assistant',
+                                content: resData.blueprint?.explanation || resData.message || '分析完成！请查看分析结果和生成的执行代码。',
+                                timestamp: Date.now(), engine: resData.engine, chartOption: resData.chartOption,
+                                chartHtml: resData.chartHtml, pythonCode: resData.pythonCode, blueprint: resData.blueprint,
+                                pipelineSteps: localPipelineSteps,
+                                agentMode: resData.agentMode || agentMode,
+                                tableData: resData.tableData, newFileId: resData.newFileId,
+                                sourceFileIds: resData.sourceFileIds || selectedFileIds
+                            }];
+                        });
+                    }
                 }
-            }
+            });
         } catch (error: any) {
             localPipelineSteps = localPipelineSteps.map(p => p.status === 'loading' ? { ...p, status: 'error' as const } : p);
             setPipelineSteps(localPipelineSteps);
@@ -592,8 +708,8 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
                                     <iframe
                                         srcDoc={msg.chartHtml}
                                         title="Spatial Chart"
-                                        style={{ width: '100%', height: '100%', border: 'none' }}
-                                        sandbox="allow-scripts"
+                                        style={{ width: '100%', height: '100%', border: 'none', background: '#020617' }}
+                                        sandbox="allow-scripts allow-same-origin"
                                     />
                                 </div>
                             )}
@@ -680,7 +796,7 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
                                                 setRerunLoadingMap(prev => ({ ...prev, [msg.id]: true }));
                                                 try {
                                                     const res = await geoService.rerunCode({ 
-                                                        pythonCode: codeToRun, 
+                                                        pythonCode: codeToRun,
                                                         fileIds: selectedFileIds, 
                                                         blueprint: msg.blueprint,
                                                         agentMode: msg.agentMode 
@@ -706,6 +822,10 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
                                                         chartOption: res.chartOption, 
                                                         chartHtml: res.chartHtml, 
                                                         pythonCode: codeToRun,
+                                                        tableData: res.tableData ?? m.tableData,
+                                                        newFileId: res.newFileId ?? m.newFileId,
+                                                        sourceFileIds: res.sourceFileIds ?? m.sourceFileIds,
+                                                        agentMode: res.agentMode ?? m.agentMode,
                                                         content: res.message || '重跑成功！数据已更新。'
                                                     }));
                                                 } catch (err: any) {
@@ -779,13 +899,13 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
                             <span style={{ fontSize: 12, color: '#64748b', fontWeight: 600 }}>已载入</span>
                         </Badge>
                     )}
-                    <Button
+                    {assistantMode === 'legacy' && <Button
                         type="text" size="small"
                         icon={<ClearOutlined style={{ fontSize: 15 }} />}
                         onClick={handleClear}
                         title="清空对话"
                         style={{ color: '#64748b' }}
-                    />
+                    />}
                     <Button
                         type="text" size="small"
                         icon={<CloseOutlined style={{ fontSize: 15 }} />}
@@ -797,7 +917,7 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
             </div>
 
             {/* ── 警告条 ── */}
-            {selectedFileIds.length === 0 && (
+            {selectedFileIds.length === 0 && assistantMode === 'legacy' && (
                 <div style={{
                     margin: '12px 16px 0',
                     padding: '10px 14px',
@@ -807,18 +927,22 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
                     display: 'flex', alignItems: 'center', gap: 10,
                     fontSize: 13, color: '#fbbf24', fontWeight: 600,
                 }}>
-                    <ThunderboltOutlined style={{ fontSize: 15, flexShrink: 0 }} />
+                    {/* <ThunderboltOutlined style={{ fontSize: 15, flexShrink: 0 }} /> */}
                     请先在左侧资源树中勾选需要分析的数据集
                 </div>
             )}
 
             {/* ── 消息列表 ── */}
+            <div className={`min-h-0 flex-1 overflow-hidden ${assistantMode === 'operator' ? 'flex' : 'hidden'}`}>
+                <UnifiedAnalysisAssistant selectedFileIds={selectedFileIds} onSwitchToLegacy={() => setAssistantMode('legacy')} />
+            </div>
             <div
                 ref={scrollRef}
                 style={{
                     flex: 1, overflowY: 'auto', overflowX: 'hidden',
                     padding: '16px',
-                    display: 'flex', flexDirection: 'column', gap: 16,
+                    display: assistantMode === 'legacy' ? 'flex' : 'none',
+                    flexDirection: 'column', gap: 16,
                     scrollbarWidth: 'thin',
                     scrollbarColor: '#1e293b transparent',
                 }}
@@ -827,7 +951,7 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
             </div>
 
             {/* ── 快捷指令 ── */}
-            {messages.length <= 2 && selectedFileIds.length > 0 && (
+            {assistantMode === 'legacy' && messages.length <= 2 && selectedFileIds.length > 0 && (
                 <div style={{ padding: '0 16px 12px' }}>
                     <p style={{ fontSize: 11, color: '#475569', fontWeight: 700, letterSpacing: '0.1em', marginBottom: 8, fontFamily: 'monospace' }}>
                         快捷指令
@@ -868,62 +992,66 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
                 background: 'rgba(10,14,22,0.9)',
                 backdropFilter: 'blur(12px)',
             }}>
-                {/* 模式切换 */}
                 <Segmented
-                    options={[
-                        { label: '数据透视', value: 'pivot' },
-                        { label: '空间推算', value: 'feature_calc' },
-                        { label: '专业模型', value: 'pro_model' },
-                    ]}
-                    value={agentMode}
-                    onChange={(val) => setAgentMode(val as 'pivot' | 'feature_calc' | 'pro_model')}
-                    style={{ marginBottom: 10, width: '100%', fontSize: 12 }}
+                    options={[{ label: '自然语言（算子优先）', value: 'operator' }, { label: '原有实验流程', value: 'legacy' }]}
+                    value={assistantMode}
+                    onChange={value => setAssistantMode(value as 'operator' | 'legacy')}
+                    style={{ marginBottom: assistantMode === 'legacy' ? 8 : 0, width: '100%', fontSize: 12 }}
                     block
                 />
 
-                {/* 输入框 + 发送按钮 */}
-                <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end' }}>
-                    <Input.TextArea
-                        ref={inputRef}
-                        value={inputValue}
-                        onChange={e => setInputValue(e.target.value)}
-                        onKeyDown={e => {
-                            if (e.key === 'Enter' && !e.shiftKey) {
-                                e.preventDefault();
-                                handleSend();
-                            }
-                        }}
-                        placeholder={
-                            selectedFileIds.length > 0
-                                ? '输入分析需求（Enter 发送，Shift+Enter 换行）'
-                                : '等待接入地理图层...'
-                        }
-                        disabled={loading}
-                        autoSize={{ minRows: 2, maxRows: 5 }}
-                        style={{
-                            flex: 1, fontSize: 14, lineHeight: 1.6,
-                            background: '#0f1822', border: '1px solid #1e293b',
-                            borderRadius: 10, padding: '10px 13px',
-                            color: '#f1f5f9', resize: 'none',
-                            boxShadow: 'inset 0 1px 4px rgba(0,0,0,0.3)',
-                        }}
+                {assistantMode === 'legacy' && <>
+                    <div style={{ marginBottom: 6, color: '#94a3b8', fontSize: 11 }}>原有实验流程（保留旧交互与代码执行能力）</div>
+                    <Segmented
+                        options={[
+                            { label: '数据透视', value: 'pivot' },
+                            { label: '空间推算', value: 'feature_calc' },
+                            { label: '专业模型', value: 'pro_model' },
+                        ]}
+                        value={agentMode}
+                        onChange={(val) => setAgentMode(val as 'pivot' | 'feature_calc' | 'pro_model')}
+                        style={{ marginBottom: 10, width: '100%', fontSize: 12 }}
+                        block
                     />
-                    <Button
-                        type="primary"
-                        icon={<SendOutlined style={{ fontSize: 16 }} />}
-                        loading={loading}
-                        onClick={handleSend}
-                        disabled={!inputValue.trim() || loading}
-                        style={{
-                            width: 44, height: 44, borderRadius: 10,
-                            flexShrink: 0, marginBottom: 1,
-                            background: 'linear-gradient(135deg, #0369a1, #0ea5e9)',
-                            border: 'none',
-                            boxShadow: '0 4px 14px rgba(14,165,233,0.35)',
-                            display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        }}
-                    />
-                </div>
+                    <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end' }}>
+                        <Input.TextArea
+                            ref={inputRef}
+                            value={inputValue}
+                            onChange={e => setInputValue(e.target.value)}
+                            onKeyDown={e => {
+                                if (e.key === 'Enter' && !e.shiftKey) {
+                                    e.preventDefault();
+                                    handleSend();
+                                }
+                            }}
+                            placeholder={selectedFileIds.length > 0 ? '输入分析需求（Enter 发送，Shift+Enter 换行）' : '等待接入地理图层...'}
+                            disabled={loading}
+                            autoSize={{ minRows: 2, maxRows: 5 }}
+                            style={{
+                                flex: 1, fontSize: 14, lineHeight: 1.6,
+                                background: '#0f1822', border: '1px solid #1e293b',
+                                borderRadius: 10, padding: '10px 13px',
+                                color: '#f1f5f9', resize: 'none',
+                                boxShadow: 'inset 0 1px 4px rgba(0,0,0,0.3)',
+                            }}
+                        />
+                        <Button
+                            type="primary"
+                            icon={<SendOutlined style={{ fontSize: 16 }} />}
+                            loading={loading}
+                            onClick={handleSend}
+                            disabled={!inputValue.trim() || loading}
+                            style={{
+                                width: 44, height: 44, borderRadius: 10,
+                                flexShrink: 0, marginBottom: 1,
+                                background: 'linear-gradient(135deg, #0369a1, #0ea5e9)',
+                                border: 'none',
+                                boxShadow: '0 4px 14px rgba(14,165,233,0.35)',
+                                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            }}
+                        />
+                    </div>
+                </>}
             </div>
 
             {/* 动画注入 */}
@@ -960,12 +1088,14 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
                 open={codeModalVisible} // ⚠️ 如果这里报错，请把它改成 visible={codeModalVisible}
                 width={900}
                 centered
-                destroyOnClose
-                bodyStyle={{ 
-                    padding: '20px 24px', 
-                    background: '#0f172a',
-                    borderBottom: '1px solid #334155',
-                    borderTop: '1px solid #334155'
+                destroyOnHidden
+                styles={{
+                    body: {
+                        padding: '20px 24px',
+                        background: '#0f172a',
+                        borderBottom: '1px solid #334155',
+                        borderTop: '1px solid #334155'
+                    }
                 }}
                 okText="保存修改"
                 cancelText="取消"

@@ -4,7 +4,6 @@ import { Button, Segmented, Switch, Select } from 'antd';
 import { 
     CloseOutlined, BarChartOutlined, RadarChartOutlined, 
     DotChartOutlined, EnvironmentOutlined, HeatMapOutlined,
-    BoxPlotOutlined, DeploymentUnitOutlined,
     PieChartOutlined, LineChartOutlined // [新增] 折线图与饼图图标
 } from '@ant-design/icons';
 import { useAnalysisStore, type ChartType, type ColorThemeType } from '../../../stores/useAnalysisStore';
@@ -40,11 +39,13 @@ export const CONTRAST_PALETTES = [
 export const NEON_PALETTE = CONTRAST_PALETTES;
 
 const HEATMAP_PALETTES: Record<string, string[]> = {
-    magma: ['#000004', '#3b0f70', '#8c2981', '#de4968', '#fe9f6d', '#fcfdbf'],
-    cyber: ['#0b1121', '#1e3a8a', '#0ea5e9', '#22d3ee', '#34d399', '#a7f3d0'],
-    inferno: ['#000004', '#420a68', '#932667', '#dd513a', '#fca50a', '#fcffa4'],
-    ocean: ['#081d58', '#253494', '#225ea8', '#1d91c0', '#41b6c4', '#7fcdbb', '#c7e9b4', '#edf8b1'],
-    matrix: ['#000000', '#0a2f0a', '#1a5e1a', '#2ea82e', '#45f045', '#aaffaa']
+    viridis: ['#440154', '#414487', '#2a788e', '#22a884', '#7ad151', '#fde725'],
+    ocean: ['#12355b', '#1f5f8b', '#1984a5', '#2fb7a4', '#87d180', '#eef8a4'],
+    magma: ['#180f2f', '#4b1d6f', '#8f2d72', '#d84c62', '#f88d52', '#f7e967'],
+    cyber: ['#10213f', '#1c4f83', '#167d95', '#21a99a', '#74c476', '#d9ef8b'],
+    fire_ice: ['#31527a', '#4381b4', '#83bddb', '#f2d0a7', '#e88c64', '#bf4d4a'],
+    inferno: ['#1b1128', '#4d1b63', '#872e70', '#c8445f', '#ed7449', '#f4c95d'],
+    matrix: ['#10251c', '#17412d', '#20623f', '#2e8b57', '#63bd75', '#c9e78a']
 };
 
 const ChartOverlay: React.FC = () => {
@@ -71,19 +72,27 @@ const ChartOverlay: React.FC = () => {
 
     // 监听列变化，自动选取第一列作为饼图默认维度
     useEffect(() => {
+        if (pivotConfig.groupByCol && pivotData && pivotData.length > 0) {
+            const rowKeys = pivotData.map(item => String(item.rowKey ?? 'Unknown'));
+            if (rowKeys.length > 0 && (!activePieSeries || !rowKeys.includes(activePieSeries))) {
+                setActivePieSeries(rowKeys[0]);
+            }
+            return;
+        }
+
         const is2D = generatedColumns.length > 1 || (generatedColumns[0] !== 'value');
         const seriesFields = is2D ? generatedColumns : ['value'];
         if (seriesFields.length > 0 && (!activePieSeries || !seriesFields.includes(activePieSeries))) {
             setActivePieSeries(seriesFields[0]);
         }
-    }, [generatedColumns, activePieSeries]);
+    }, [generatedColumns, pivotData, pivotConfig.groupByCol, activePieSeries]);
 
     const { containerWidth, containerHeight } = useMemo(() => {
         if (!isChartVisible) return { containerWidth: 0, containerHeight: 0 };
         let w = 500, h = 450; 
         const len = pivotData?.length || 0;
 
-        if (chartMode === 'ai') { w = 550; h = 420; } 
+        if (chartMode === 'ai') { w = 680; h = 540; }
         else if (chartType === 'Bar' || chartType === 'Line') { w = Math.min(650, Math.max(450, len * 70 + 100)); } 
         else if (['Scatter', 'Heatmap', 'Pie'].includes(chartType)) { w = 550; h = 520; } 
         else if (chartType === 'Radar') { w = 500; h = 520; }
@@ -229,11 +238,21 @@ const ChartOverlay: React.FC = () => {
                 break;
 
             case 'Pie':
-                const targetField = activePieSeries || seriesFields[0]; 
+                const targetField = activePieSeries || (isPivot2D ? xAxisData[0] : seriesFields[0]);
+                const selectedPieRow = isPivot2D
+                    ? (pivotData.find(item => String(item.rowKey ?? 'Unknown') === targetField) || pivotData[0])
+                    : null;
                 let pieData = pivotData.map(item => ({
                     name: String(item.rowKey ?? '未分类'),
                     value: Number(item[targetField]) || 0
                 })).sort((a, b) => b.value - a.value);
+
+                if (isPivot2D) {
+                    pieData = seriesFields.map(field => ({
+                        name: field,
+                        value: Number(selectedPieRow?.[field]) || 0
+                    }));
+                }
 
                 if (pieData.length > 14) {
                     const top13 = pieData.slice(0, 13);
@@ -263,14 +282,15 @@ const ChartOverlay: React.FC = () => {
                     return { ...item, _total: total };
                 }).sort((a, b) => b._total - a._total).slice(0, 12);
 
-                const indicators = radarSorted.map(item => String(item.rowKey)).map(name => {
-                    let maxVal = 0;
-                    seriesFields.forEach(f => {
-                        const matched = radarSorted.find(d => String(d.rowKey) === name);
-                        if (matched && Number(matched[f]) > maxVal) maxVal = Number(matched[f]);
-                    });
-                    return { name, max: maxVal * 1.2 || 100 };
-                });
+                const radarValues = radarSorted.flatMap(item => seriesFields.map(f => Number(item[f]) || 0));
+                const radarMax = Math.max(...radarValues, 0);
+                const sharedRadarMax = radarMax > 0 ? radarMax * 1.15 : 100;
+                const indicators = radarSorted.map(item => ({
+                    name: String(item.rowKey),
+                    min: 0,
+                    max: sharedRadarMax,
+                    alignTicks: false
+                }));
 
                 baseOption = {
                     backgroundColor: 'transparent',
@@ -279,6 +299,7 @@ const ChartOverlay: React.FC = () => {
                     radar: {
                         indicator: indicators, shape: 'polygon', center: ['50%', '55%'], radius: '60%', splitNumber: 4,
                         axisName: { color: !is2D ? theme.primary : '#22d3ee', fontSize: 11, fontWeight: 'bold' },
+                        axisTick: { show: false },
                         splitLine: { lineStyle: { color: ['rgba(255,255,255,0.1)', 'rgba(255,255,255,0.05)'] } },
                         splitArea: { show: true, areaStyle: { color: ['rgba(255,255,255,0.02)', 'rgba(255,255,255,0.05)'] } },
                         axisLine: { lineStyle: { color: 'rgba(255,255,255,0.1)' } }
@@ -356,7 +377,15 @@ const ChartOverlay: React.FC = () => {
                         }
                     }
     
-                    const hColors = HEATMAP_PALETTES[HEATMAP_PALETTES[mapColorTheme] ? mapColorTheme : 'magma'];
+                    const heatmapPaletteKey = HEATMAP_PALETTES[mapColorTheme] ? mapColorTheme : 'viridis';
+                    const hColors = HEATMAP_PALETTES[heatmapPaletteKey];
+                    const formatVisualValue = (value: number) => {
+                        if (!Number.isFinite(value)) return '-';
+                        if (Math.abs(value) >= 1000) return value.toLocaleString();
+                        if (Math.abs(value) < 1) return value.toFixed(3).replace(/\.?0+$/, '');
+                        return Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/\.?0+$/, '');
+                    };
+                    const visualMapLength = Math.min(360, Math.max(260, hXData.length * 54));
     
                     baseOption = {
                         backgroundColor: 'transparent',
@@ -377,23 +406,33 @@ const ChartOverlay: React.FC = () => {
                                 }
                             }
                         },
-                        grid: { top: '10%', bottom: '20%', left: '15%', right: '10%', containLabel: true },
+                        grid: { top: 40, bottom: 112, left: 112, right: 34, containLabel: true },
                         xAxis: { 
                             type: 'category', data: hXData, splitArea: { show: true }, 
-                            axisLabel: { color: axisLabelColor, rotate: hXData.length > 3 ? 45 : 0 },
-                            axisLine: { show: false }, axisTick: { show: false } 
+                            axisLabel: { color: '#cbd5e1', rotate: hXData.length > 3 ? 35 : 0, margin: 14, hideOverlap: true, fontSize: 12, fontWeight: 600 },
+                            axisLine: { show: false }, axisTick: { show: false },
+                            splitLine: { show: false }
                         },
                         yAxis: { 
                             type: 'category', data: hYData, splitArea: { show: true }, 
-                            axisLabel: { color: axisLabelColor }, axisLine: { show: false }, axisTick: { show: false } 
+                            axisLabel: { color: '#cbd5e1', margin: 14, width: 96, overflow: 'truncate', fontSize: 12, fontWeight: 600 },
+                            axisLine: { show: false }, axisTick: { show: false },
+                            splitLine: { show: false }
                         },
                         visualMap: { 
                             // 🌟 【核心修复 3】：应用动态的下限和上限！
                             min: hMin, 
                             max: hMax, 
                             calculable: true, orient: 'horizontal', 
-                            left: 'center', bottom: '0%', textStyle: { color: '#fff' }, 
-                            inRange: { color: hColors }, itemWidth: 15, itemHeight: 120,
+                            left: 'center', bottom: 22,
+                            formatter: formatVisualValue,
+                            textStyle: { color: '#e5e7eb', fontSize: 12, fontWeight: 600 },
+                            textGap: 12,
+                            inRange: { color: hColors },
+                            itemWidth: 16, itemHeight: visualMapLength,
+                            borderColor: 'rgba(226,232,240,0.22)',
+                            borderWidth: 1,
+                            handleStyle: { color: '#f8fafc', borderColor: 'rgba(15,23,42,0.75)', borderWidth: 1, shadowBlur: 8, shadowColor: 'rgba(0,0,0,0.35)' },
                             dimension: 2
                         },
                         series: [{ 
@@ -404,8 +443,8 @@ const ChartOverlay: React.FC = () => {
                                 color: '#fff',
                                 fontSize: 11
                             },
-                            itemStyle: { borderColor: '#1f2937', borderWidth: 1, borderRadius: 4 }, 
-                            emphasis: { itemStyle: { shadowBlur: 10, shadowColor: 'rgba(255,255,255,0.5)', borderColor: '#fff', borderWidth: 2 } } 
+                            itemStyle: { borderColor: 'rgba(15,23,42,0.72)', borderWidth: 1, borderRadius: 3 },
+                            emphasis: { itemStyle: { shadowBlur: 14, shadowColor: 'rgba(125,211,252,0.32)', borderColor: '#f8fafc', borderWidth: 1.5 } }
                         }]
                     };
                     break
@@ -474,9 +513,6 @@ const ChartOverlay: React.FC = () => {
 
     if (!isChartVisible) return null;
 
-    const is2DAnalysis = pivotData && pivotConfig.groupByRow && pivotConfig.groupByCol;
-    const isBoxPlotAvailable = pivotConfig.method === 'boxplot' && !pivotConfig.groupByCol;
-    const isRidgelineAvailable = (pivotConfig.method === 'ridgeline') || (is2DAnalysis && pivotConfig.method !== 'boxplot');
     const showHeatmapPalette = chartType === 'Heatmap';
     const showThemeSelect = isMapLinkageEnabled && pivotData && !pivotConfig.groupByCol && pivotConfig.groupByRow;
     
@@ -517,11 +553,12 @@ const ChartOverlay: React.FC = () => {
                             <Select
                                 size="small"
                                 variant="borderless"
-                                value={HEATMAP_PALETTES[mapColorTheme] ? mapColorTheme : 'magma'}
+                                value={HEATMAP_PALETTES[mapColorTheme] ? mapColorTheme : 'viridis'}
                                 onChange={setMapColorTheme}
                                 popupMatchSelectWidth={false}
                                 className="w-32 ml-2"
                                 options={[
+                                    { value: 'viridis', label: 'Viridis' },
                                     { value: 'magma', label: '混合 (Magma)' },
                                     { value: 'cyber', label: '青蓝 (Cyber)' },
                                     { value: 'inferno', label: '炽热 (Inferno)' },
@@ -571,13 +608,16 @@ const ChartOverlay: React.FC = () => {
                         <Select 
                             size="small" variant="borderless" className="w-28 text-cyan-400"
                             value={activePieSeries} onChange={setActivePieSeries}
-                            options={generatedColumns.map(f => ({ label: f, value: f }))}
+                            options={(pivotConfig.groupByCol && pivotData
+                                ? pivotData.map(item => String(item.rowKey ?? 'Unknown'))
+                                : generatedColumns
+                            ).map(f => ({ label: f, value: f }))}
                         />
                     </div>
                 )}
 
                 {chartMode === 'ai' && aiChartHtml ? (
-                    <iframe srcDoc={aiChartHtml} className="w-full h-full bg-white rounded" sandbox="allow-scripts"/>
+                    <iframe srcDoc={aiChartHtml} className="w-full h-full rounded bg-slate-950" sandbox="allow-scripts allow-same-origin"/>
                 ) : chartMode === 'ai' && aiChartOption ? (
                     <ReactECharts option={aiChartOption} style={{ height: '100%', width: '100%' }} theme="dark" notMerge autoResize />
                 ) : (

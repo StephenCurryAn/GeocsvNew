@@ -25,6 +25,7 @@ import {
     FilterOutlined
 } from '@ant-design/icons';
 import { useAnalysisStore } from '../../../stores/useAnalysisStore'
+import { getApiUrl } from '../../../services/apiConfig';
 
 const { Option, OptGroup } = Select;
 
@@ -47,9 +48,62 @@ const LAYER_PALETTE = [
     '#84cc16', // 荧光绿
 ];
 
+const SYSTEM_FIELD_NAMES = new Set(['_id', 'id', 'fid', 'ObjectId', 'geometry', 'geom', 'cp']);
+
+const isNumericLike = (value: any) => {
+    if (typeof value === 'number') return Number.isFinite(value);
+    if (typeof value !== 'string') return false;
+    const normalized = value.trim().replace(/,/g, '');
+    if (!normalized || ['null', 'undefined', 'nan'].includes(normalized.toLowerCase())) return false;
+    return Number.isFinite(Number(normalized));
+};
+
+const toMapNumberExpression = (field: string) => ([
+    'to-number',
+    ['coalesce', ['get', field], 0],
+    0
+] as any);
+
 // MVT 大数据阈值：超过此数量自动启用 MVT 瓦片模式
 const MVT_THRESHOLD = 5000;
-const MVT_TILE_URL_BASE = 'http://localhost:3000/api/files';
+const toMapLibreTileUrl = (path: string): string => {
+    const apiUrl = getApiUrl(path);
+    // Keep {z}/{x}/{y} intact while resolving relative URLs against this app's origin.
+    return /^https?:\/\//i.test(apiUrl) ? apiUrl : `${window.location.origin}${apiUrl.startsWith('/') ? '' : '/'}${apiUrl}`;
+};
+const FEATURE_ID_FIELDS = ['id', 'Id', 'ID', 'fid', 'FID', '_id', 'ObjectId', 'OBJECTID', 'objectid'];
+const PRIMARY_MAP_LAYERS = [
+    'geo-fill-layer',
+    'geo-polygon-border',
+    'geo-linestring-main',
+    'geo-point-layer',
+    'geo-highlight-fill',
+    'geo-highlight-line',
+    'geo-highlight-point'
+];
+
+const buildFeatureIdFilter = (ids: Array<string | number>) => {
+    const rawIds = ids.filter((id) => id !== undefined && id !== null && id !== '');
+    const stringIds = rawIds.map(String);
+    const checks: any[] = [];
+
+    FEATURE_ID_FIELDS.forEach((field) => {
+        checks.push((['in', field] as any[]).concat(rawIds));
+        checks.push((['in', field] as any[]).concat(stringIds));
+    });
+    checks.push((['in', '$id'] as any[]).concat(rawIds));
+    checks.push((['in', '$id'] as any[]).concat(stringIds));
+
+    return ['any', ...checks];
+};
+
+const bringPrimaryLayersToFront = (map: maplibregl.Map) => {
+    PRIMARY_MAP_LAYERS.forEach((layerId) => {
+        if (map.getLayer(layerId)) {
+            map.moveLayer(layerId);
+        }
+    });
+};
 
 interface MapViewProps {
     data: any;        // GeoJSON 数据（当前激活文件）
@@ -153,12 +207,12 @@ const COLOR_SCHEMES = {
     discrete_contrast: {
         name: '离散-高对比',
         // 参考"冷暖双向渐变"，冷暖色对比强烈
-        colors: ['#d53e4f', '#fc8d59', '#fee08b', '#91bfdb', '#4575b4']
+        colors: ['#4575b4', '#d53e4f', '#91bfdb', '#fc8d59', '#fee08b']
     },
     discrete_contrast4: {
         name: '离散-高对比4色',
         // 参考"冷暖双向渐变"，冷暖色对比强烈
-        colors: ['#d53e4f', '#fc8d59', '#91bfdb', '#4575b4']
+        colors: ['#4575b4', '#fc8d59','#d53e4f', '#91bfdb']
     },
     discrete_contrast3: {
         name: '离散-高对比3色',
@@ -227,54 +281,69 @@ const BASEMAPS = [
     {
         key: 'dark',
         name: 'Dark',
-        style: {
-            version: 8,
-            sources: {
-                'carto-dark': {
-                    type: 'raster',
-                    tiles: ['https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png'],
-                    tileSize: 256,
-                    attribution: '&copy; CARTO'
-                }
-            },
-            layers: [{ id: 'carto-dark-layer', type: 'raster', source: 'carto-dark' }]
+        sourceId: 'carto-dark',
+        layerId: 'carto-dark-layer',
+        source: {
+            type: 'raster',
+            tiles: ['https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png'],
+            tileSize: 256,
+            attribution: '&copy; CARTO'
         }
     },
     {
         key: 'light',
         name: 'Light',
-        style: {
-            version: 8,
-            sources: {
-                'carto-light': {
-                    type: 'raster',
-                    tiles: ['https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png'],
-                    tileSize: 256,
-                    attribution: '&copy; CARTO'
-                }
-            },
-            layers: [{ id: 'carto-light-layer', type: 'raster', source: 'carto-light' }]
+        sourceId: 'carto-light',
+        layerId: 'carto-light-layer',
+        source: {
+            type: 'raster',
+            tiles: ['https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png'],
+            tileSize: 256,
+            attribution: '&copy; CARTO'
         }
     },
     {
         key: 'satellite',
         name: '卫星图',
-        style: {
-            version: 8,
-            sources: {
-                'tianditu-sat': {
-                    type: 'raster',
-                    tiles: [
-                        'http://t0.tianditu.gov.cn/img_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=img&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&tk=2f10b6f61571dbb1f5c8199c813fea4d'
-                    ], 
-                    tileSize: 256,
-                    attribution: '&copy; 天地图'
-                }
-            },
-            layers: [{ id: 'tianditu-sat-layer', type: 'raster', source: 'tianditu-sat' }]
+        sourceId: 'tianditu-sat',
+        layerId: 'tianditu-sat-layer',
+        source: {
+            type: 'raster',
+            tiles: [
+                'http://t0.tianditu.gov.cn/img_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=img&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&tk=2f10b6f61571dbb1f5c8199c813fea4d'
+            ],
+            tileSize: 256,
+            attribution: '&copy; 天地图'
         }
     }
-];
+] as const;
+
+const createMapStyle = (activeBasemapKey: string) => ({
+    version: 8,
+    sources: Object.fromEntries(
+        BASEMAPS.map((basemap) => [basemap.sourceId, basemap.source])
+    ),
+    layers: BASEMAPS.map((basemap) => ({
+        id: basemap.layerId,
+        type: 'raster',
+        source: basemap.sourceId,
+        layout: {
+            visibility: basemap.key === activeBasemapKey ? 'visible' : 'none'
+        }
+    }))
+});
+
+const setBasemapVisibility = (map: maplibregl.Map, activeBasemapKey: string) => {
+    BASEMAPS.forEach((basemap) => {
+        if (!map.getLayer(basemap.layerId)) return;
+
+        map.setLayoutProperty(
+            basemap.layerId,
+            'visibility',
+            basemap.key === activeBasemapKey ? 'visible' : 'none'
+        );
+    });
+};
 
 const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeature, onFeatureClick, selectedFilesInfo = [] }) => {
     //     2: 获取上下文感知的 message 实例
@@ -304,7 +373,6 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
     const [loading, setLoading] = useState(false);
 
     // 多图层：当前激活的操作目标文件 ID（普通渲染/网格聚合的操作对象）
-    const [activeLayerFileId, setActiveLayerFileId] = useState<string>('');
     // 多图层使用的 ref（记录当前已渲染的图层 IDs，用于清理）
     const renderedExtraLayersRef = useRef<string[]>([]);
 
@@ -405,11 +473,9 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
         // （初始值是这个div）
         if (mapContainer.current) {
             // 默认使用第一个底图配置
-            const defaultStyle = BASEMAPS.find(b => b.key === 'dark')?.style || BASEMAPS[0].style;
-
             mapInstance.current = new maplibregl.Map({
                 container: mapContainer.current,
-                style: defaultStyle as any, // 类型强转，只要符合 Mapbox Style Spec 即可
+                style: createMapStyle(activeBasemap) as any, // 类型强转，只要符合 Mapbox Style Spec 即可
                 center: [118.7969, 32.0603],
                 zoom: 7
             });
@@ -468,7 +534,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                 // MVT 矢量瓦片模式
                 map.addSource(srcId, {
                     type: 'vector',
-                    tiles: [`${MVT_TILE_URL_BASE}/${fileInfo.fileId}/tiles/{z}/{x}/{y}`],
+                    tiles: [toMapLibreTileUrl(`/files/${fileInfo.fileId}/tiles/{z}/{x}/{y}`)],
                     minzoom: 0,
                     maxzoom: 14,
                 });
@@ -539,6 +605,8 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
             renderedExtraLayersRef.current.push(layerIdBase);
         });
 
+        bringPrimaryLayersToFront(map);
+
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [selectedFilesInfo, isMapLoaded, fileId, layerColors]);
 
@@ -548,13 +616,28 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
     // 1. numericFields (数值): 从 displayData 提取，用于当前地图的颜色渲染（支持网格的 value 字段）
     // 2. stringFields (文本): 始终从 原始数据(data/allData) 提取，用于导出时的分类拆分
     useEffect(() => {
+        let renderNumericFields: string[] = [];
+
         // --- A. 处理渲染字段 (随视图变化) ---
         if (displayData && displayData.features && displayData.features.length > 0) {
-            const firstProps = displayData.features[0].properties;
-            const numFields = Object.keys(firstProps).filter(key => {
-                const val = firstProps[key];
-                return typeof val === 'number';
+            const fieldStats = new Map<string, { numeric: number; string: number; total: number }>();
+            displayData.features.slice(0, 1000).forEach((feature: any) => {
+                Object.entries(feature.properties || {}).forEach(([key, value]) => {
+                    if (SYSTEM_FIELD_NAMES.has(key) || key.startsWith('_')) return;
+                    if (value === undefined || value === null || value === '') return;
+
+                    const stats = fieldStats.get(key) || { numeric: 0, string: 0, total: 0 };
+                    stats.total += 1;
+                    if (isNumericLike(value)) stats.numeric += 1;
+                    else if (typeof value === 'string') stats.string += 1;
+                    fieldStats.set(key, stats);
+                });
             });
+
+            const numFields = Array.from(fieldStats.entries())
+                .filter(([, stats]) => stats.numeric > 0 && stats.numeric >= stats.string)
+                .map(([key]) => key);
+            renderNumericFields = numFields;
             setNumericFields(numFields);
             
             // 如果切回了网格模式，且有 value 字段，自动选上
@@ -570,14 +653,23 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
         const sourceData = (showAll && allData) ? allData : data;
         
         if (sourceData && sourceData.features && sourceData.features.length > 0) {
-            const rawProps = sourceData.features[0].properties;
-            
-            //   [ 修复] 从原始数据中提取分类字段
-            const strFields = Object.keys(rawProps).filter(key => {
-                const val = rawProps[key];
-                // 排除系统字段和非字符串字段
-                return typeof val === 'string' && !['_id', 'id', 'fid', 'ObjectId'].includes(key);
+            const fieldStats = new Map<string, { numeric: number; string: number; total: number }>();
+            sourceData.features.slice(0, 1000).forEach((feature: any) => {
+                Object.entries(feature.properties || {}).forEach(([key, value]) => {
+                    if (SYSTEM_FIELD_NAMES.has(key) || key.startsWith('_')) return;
+                    if (value === undefined || value === null || value === '') return;
+
+                    const stats = fieldStats.get(key) || { numeric: 0, string: 0, total: 0 };
+                    stats.total += 1;
+                    if (isNumericLike(value)) stats.numeric += 1;
+                    else if (typeof value === 'string') stats.string += 1;
+                    fieldStats.set(key, stats);
+                });
             });
+
+            const strFields = Array.from(fieldStats.entries())
+                .filter(([key, stats]) => stats.string > 0 && stats.string > stats.numeric && !renderNumericFields.includes(key))
+                .map(([key]) => key);
             setStringFields(strFields);
         } else {
             setStringFields([]);
@@ -636,19 +728,13 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
             let baseFilterConditions: any[] = [];
 
             // A. 巴中市 validIds 过滤
-            if (validIds && validIds.length > 0) {
-                const validIdsStr = validIds.map(String);
-                const idExp = [
-                    'any',
-                    (['in', 'id'] as any[]).concat(validIds),
-                    (['in', 'id'] as any[]).concat(validIdsStr),
-                    (['in', '$id'] as any[]).concat(validIds),
-                    (['in', '$id'] as any[]).concat(validIdsStr)
-                ];
+            const shouldApplyValidIdMask = validIds && validIds.length > 0 && !(isMapLinkageEnabled && pivotConfig.groupByCol);
+            if (shouldApplyValidIdMask) {
+                const idExp = buildFeatureIdFilter(validIds);
                 
                 // 【绝杀逻辑】：只对带有分析字段(如Slope_C)的图层应用遮罩！其他图层直接放行(true)
                 if (pivotConfig?.groupByRow) {
-                    baseFilterConditions.push(['case', ['has', pivotConfig.groupByRow], idExp, true]);
+                    baseFilterConditions.push(['any', ['!has', pivotConfig.groupByRow], idExp]);
                 } else {
                     baseFilterConditions.push(idExp);
                 }
@@ -663,7 +749,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                     ['==', pivotConfig.groupByRow, Number(highlightedCategory)]
                 ];
                 // 同样，只针对包含该分析字段的图层生效
-                baseFilterConditions.push(['case', ['has', pivotConfig.groupByRow], highlightExp, true]);
+                baseFilterConditions.push(['any', ['!has', pivotConfig.groupByRow], highlightExp]);
             }
 
             // C. 侧边栏基础属性过滤
@@ -690,7 +776,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
 
         syncAllFilters();
     }, [
-        validIds, highlightedCategory, isMapLinkageEnabled, pivotConfig.groupByRow, 
+        validIds, highlightedCategory, isMapLinkageEnabled, pivotConfig.groupByRow, pivotConfig.groupByCol,
         activeFilterValues, activeField, stringFields, isGridMode, isMapLoaded
     ]);
 
@@ -782,7 +868,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
             map.addSource(sourceId, {
                 type: 'vector',
                 //     核心修复：在 URL 尾部加上 ?t=${Date.now()} 作为缓存爆破器    
-                tiles: [`http://localhost:3000/api/tiles/${fileId}/{z}/{x}/{y}?t=${Date.now()}`],
+                tiles: [toMapLibreTileUrl(`/tiles/${fileId}/{z}/{x}/{y}?t=${Date.now()}`)],
                 //     修复结束    
                 minzoom: 0,
                 maxzoom: 22
@@ -800,7 +886,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
             map.addLayer({
                 id: 'geo-polygon-border', type: 'line', source: sourceId, 'source-layer': 'default_layer',
                 paint: { 
-                    'line-color': 'rgba(255, 255, 255, 0.08)', 
+                    'line-color': activeBasemap === 'light' ? '#666' : '#a5f3fc',
                     'line-width': isGridMode ? 0 : 1,
                     'line-opacity': 0.5
                 },
@@ -841,7 +927,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
             map.addLayer({
                 id: 'geo-polygon-border', type: 'line', source: sourceId,
                 paint: { 
-                    'line-color': 'rgba(255, 255, 255, 0.08)', 
+                    'line-color': activeBasemap === 'light' ? '#666' : '#a5f3fc',
                     'line-width': isGridMode ? 0 : 1,
                     'line-opacity': 0.5
                 },
@@ -866,6 +952,8 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
             map.addLayer({ id: 'geo-highlight-line', type: 'line', source: sourceId, paint: { 'line-color': '#ffffff', 'line-width': 3 }, filter: ['==', 'id', 'nothing-selected'] });
             map.addLayer({ id: 'geo-highlight-point', type: 'circle', source: sourceId, paint: { 'circle-radius': 8, 'circle-color': '#ffffff', 'circle-stroke-width': 2, 'circle-stroke-color': '#ff0000' }, filter: ['==', 'id', 'nothing-selected'] });
         }
+
+        bringPrimaryLayersToFront(map);
 
         if (fileName !== lastFileNameRef.current) {
             lastFileNameRef.current = fileName; 
@@ -951,7 +1039,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
             let gradEnd = '#fff';
             let singleColor = '#00e5ff';
             
-            const themeConfig = THEME_COLORS[mapColorTheme];
+            const themeConfig = THEME_COLORS[mapColorTheme] || THEME_COLORS.cyan;
 
             if (isScenario1) {
                 targetValues = pivotData!.map(d => Number(d.value));
@@ -979,6 +1067,20 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                 console.log(`🔗 联动渲染: Col=${targetCol}, Mode=${useGradient ? 'Gradient' : 'Single'}`);
             }
 
+            const rowValueMap = new Map<string, { rowKey: any; value: number }>();
+            pivotData!.forEach((item, index) => {
+                const matchKey = String(item.rowKey);
+                const currentValue = Number(targetValues[index]) || 0;
+                const existing = rowValueMap.get(matchKey);
+                if (existing) {
+                    existing.value += currentValue;
+                } else {
+                    rowValueMap.set(matchKey, { rowKey: item.rowKey, value: currentValue });
+                }
+            });
+            const linkageRows = Array.from(rowValueMap.values());
+            targetValues = linkageRows.map(item => item.value);
+
             const minVal = Math.min(...targetValues);
             const maxVal = Math.max(...targetValues);
             const range = maxVal - minVal;
@@ -1001,8 +1103,8 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
             const pointStrokeColorMatch: any[] = ['match', ['to-string', ['get', rowField]]];
             const pointRadiusMatch: any[] = ['match', ['to-string', ['get', rowField]]];
 
-            pivotData!.forEach((item, index) => {
-                const val = targetValues[index]; 
+            linkageRows.forEach((item) => {
+                const val = item.value;
                 let normalized = 0.5;
                 if (range > 0) normalized = (val - minVal) / range;
 
@@ -1089,10 +1191,12 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                 pointStrokeColorMatch.push(matchKey, finalPointStrokeColor);
             });
 
-            //         ：让未参与透视的脏点彻底隐形      
-            // Defaults (回退默认值)
-            // 无论有没有选中柱子，未参与分析的数据一律透明、尺寸为0，保持地图绝对干净
-            
+            // 面图层未命中的行政单元仍要作为空间上下文保留；点/线未命中则退隐。
+            const areaColorMatch = [...colorMatch, 'rgba(100, 116, 139, 0.34)'];
+            const areaOpacityMatch = [...opacityMatch, 0.48];
+            const areaBorderStrokeWidthMatch = [...borderStrokeWidthMatch, 1];
+            const areaBorderStrokeColorMatch = [...borderStrokeColorMatch, 'rgba(148, 163, 184, 0.38)'];
+
             // 基础颜色和透明度
             colorMatch.push('transparent'); 
             opacityMatch.push(0.0); //   永远为0，彻底透明
@@ -1118,15 +1222,17 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                 const pointLayers = ['geo-point-layer', ...renderedExtraLayersRef.current.map(id => `extra-${id}-point`)];
 
                 // 【绝杀逻辑】：用 case 语句保护背景图层。如果没有分析字段，使用备用颜色(如偏暗的背景色)
+                const safeAreaColorMatch = ['case', ['has', rowField], areaColorMatch, 'rgba(100, 116, 139, 0.3)'];
+                const safeAreaOpacityMatch = ['case', ['has', rowField], areaOpacityMatch, 0.5];
                 const safeColorMatch = ['case', ['has', rowField], colorMatch, 'rgba(100, 116, 139, 0.3)'];
                 const safeOpacityMatch = ['case', ['has', rowField], opacityMatch, 0.5];
-                const safeBorderColor = ['case', ['has', rowField], borderStrokeColorMatch, 'rgba(148, 163, 184, 0.3)'];
-                const safeBorderWidth = ['case', ['has', rowField], borderStrokeWidthMatch, 1];
+                const safeBorderColor = ['case', ['has', rowField], areaBorderStrokeColorMatch, 'rgba(148, 163, 184, 0.3)'];
+                const safeBorderWidth = ['case', ['has', rowField], areaBorderStrokeWidthMatch, 1];
 
                 fillLayers.forEach(l => {
                     if (map.getLayer(l)) {
-                        map.setPaintProperty(l, 'fill-color', safeColorMatch as any);
-                        map.setPaintProperty(l, 'fill-opacity', safeOpacityMatch as any);
+                        map.setPaintProperty(l, 'fill-color', safeAreaColorMatch as any);
+                        map.setPaintProperty(l, 'fill-opacity', safeAreaOpacityMatch as any);
                     }
                 });
 
@@ -1271,9 +1377,10 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                 let max = -Infinity;
                 currentDisplayData.features.forEach((f: any) => {
                     const val = f.properties[activeField];
-                    if (typeof val === 'number') {
-                        if (val < min) min = val;
-                        if (val > max) max = val;
+                    if (isNumericLike(val)) {
+                        const numericVal = typeof val === 'number' ? val : Number(String(val).trim().replace(/,/g, ''));
+                        if (numericVal < min) min = numericVal;
+                        if (numericVal > max) max = numericVal;
                     }
                 });
 
@@ -1285,7 +1392,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                 } else {
                     const stepCount = colors.length;
                     const stepSize = (max - min) / stepCount;
-                    baseColorExpression = ['step', ['get', activeField]];
+                    baseColorExpression = ['step', toMapNumberExpression(activeField)];
                     baseColorExpression.push(colors[0]);
                     for (let i = 1; i < stepCount; i++) {
                         const stopValue = min + (stepSize * i);
@@ -1304,7 +1411,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
             isMatched = ['in', ['get', activeField], ['literal', safeFilterValues]];
         } else {
             //   数值字段：构造一个永远为 True 的表达式（只要值不为空），彻底抛弃庞大的 In 数组判断！
-            isMatched = ['!=', ['get', activeField], null];
+            isMatched = ['has', activeField];
         }
 
         // 利用 ['case', 条件, 满足时的值, 不满足时的值] 动态分配属性
@@ -1377,65 +1484,29 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
         }
     }, [activeField, activeScheme, activeFilterValues, isMapLoaded]);
     
-    // 用来记录上一次的底图，初始化为当前的 activeBasemap
-    const prevBasemapRef = useRef(activeBasemap);
-    // 监听样式数据加载，确保图层在切换底图后不丢失
     useEffect(() => {
         const map = mapInstance.current;
-        if (!map) return;
+        if (!map || !isMapLoaded) return;
 
-        const onStyleData = () => {
-            if (activeBasemap !== prevBasemapRef.current) {
-                console.log(`底图改变触发: ${prevBasemapRef.current} -> ${activeBasemap}`);
-                // 立即更新 Ref，防止后续的 styledata 事件重复打印
-                prevBasemapRef.current = activeBasemap;
-            }
-            //  这里全部改成使用 displayDataRef.current
-            const currentData = displayDataRef.current;
-            // 只有当地图样式完全加载，且我们需要的数据存在时才执行
-            if (map.getStyle() && currentData) {
-                // console.log('地图样式完全加载，重新渲染');
-                
-                //  判断：如果数据源不见了（说明刚切换了底图），则重新渲染
-                if (!map.getSource('uploaded-geo-data')) {
-                    console.log('检测到底图切换，正在恢复 GeoJSON 图层...');
-                    
-                    // 加上 try-catch 防止极少数情况下的竞态错误
-                    try {
-                        renderGeoJSON(currentData);
-                        // 稍微延迟一点点应用颜色，确保图层已经注册到 map 中
-                        setTimeout(() => {
-                            updateChoroplethColors();
-                        }, 10);
-                    } catch (err) {
-                        console.warn('恢复图层失败，等待下一次事件:', err);
-                    }
-                }
-            }
-        };
+        setBasemapVisibility(map, activeBasemap);
 
-        map.on('styledata', onStyleData);
+        if (map.getLayer('geo-polygon-border')) {
+            map.setPaintProperty(
+                'geo-polygon-border',
+                'line-color',
+                activeBasemap === 'light' ? '#666' : '#a5f3fc'
+            );
+        }
+    }, [activeBasemap, isMapLoaded]);
 
-        return () => {
-            map.off('styledata', onStyleData);
-        };
-    // 这里加入 activeBasemap 依赖，是为了确保 renderGeoJSON 内部取到的边框颜色是基于新底图的
-    }, [activeBasemap, activeField, activeScheme]);
-
-    // handleBasemapChange只需要负责两件事：更新 React 状态、告诉地图切换样式
+    // handleBasemapChange只需要负责两件事：更新 React 状态、切换底图可见性
     // basemapKey 是从 UI 界面上的下拉菜单（Select 组件）传过来的
     const handleBasemapChange = (basemapKey: string) => {
         const map = mapInstance.current;
         if (!map) return;
 
-        const targetStyle = BASEMAPS.find(b => b.key === basemapKey)?.style;
-        if (targetStyle) {
-            // 更新 React 状态 (用于 UI 显示)
-            setActiveBasemap(basemapKey);
-            
-            // 切换地图样式 (这会触发 styledata 事件，进而触发上面的 useEffect)
-            map.setStyle(targetStyle as any);
-        }
+        setBasemapVisibility(map, basemapKey);
+        setActiveBasemap(basemapKey);
     };
     
     // 监听 selectedFeature 高亮 (保持原有逻辑)

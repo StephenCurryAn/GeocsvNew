@@ -421,6 +421,50 @@ class GeoService {
   };
 
   // 沙盒重跑：跳过 LLM，直接把用户修改的代码发给 Python 引擎重跑
+  async computeLandslideSensitivityScore(data: {
+    targetFileId: string;
+    yField: string;
+    factorFields: string[];
+    scoreFieldName?: string;
+    levelFieldName?: string;
+    levelCount?: number;
+  }) {
+    const response = await apiClient.post('/analysis/landslide-sensitivity-score', data);
+    return response.data;
+  };
+
+  async computeParkAccessibilityScore(data: {
+    gridFileId: string;
+    streetFileId: string;
+    distanceField: string;
+    streetNameField?: string | null;
+    normalizationMethod?: 'linear_reverse' | 'log_reverse';
+    gridScoreFieldName?: string;
+    streetScoreFieldName?: string;
+  }) {
+    const response = await apiClient.post('/analysis/park-accessibility-score', data);
+    return response.data;
+  };
+
+  async computeSpatialAutocorrelation(data: {
+    targetFileId: string;
+    valueField: string;
+    nameField?: string | null;
+    contiguity?: 'queen' | 'rook';
+    permutations?: number;
+    significanceLevel?: number;
+    localIFieldName?: string;
+    pValueFieldName?: string;
+    clusterFieldName?: string;
+    hotspotFieldName?: string;
+    spatialLagFieldName?: string;
+    zScoreFieldName?: string;
+    neighborCountFieldName?: string;
+  }) {
+    const response = await apiClient.post('/analysis/spatial-autocorrelation', data);
+    return response.data;
+  };
+
   async rerunCode(data: { pythonCode: string; fileIds: string[]; blueprint?: any;agentMode?: string; }) {
     const response = await apiClient.post('/analysis/agent/rerun-code', data);
     return response.data;
