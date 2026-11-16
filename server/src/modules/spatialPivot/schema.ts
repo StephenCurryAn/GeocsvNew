@@ -39,4 +39,11 @@ CREATE TABLE IF NOT EXISTS geocsv_analysis_artifact_rows (
   geom GEOMETRY(Geometry,4326),
   PRIMARY KEY (artifact_id, feature_id)
 );
+ALTER TABLE geocsv_analysis_runs
+  ADD COLUMN IF NOT EXISTS request_actor TEXT,
+  ADD COLUMN IF NOT EXISTS request_scope TEXT,
+  ADD COLUMN IF NOT EXISTS request_key TEXT,
+  ADD COLUMN IF NOT EXISTS request_hash TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS geocsv_runs_request_key
+  ON geocsv_analysis_runs(request_actor, request_scope, request_key);
 `;

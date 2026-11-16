@@ -2,10 +2,20 @@ import { Router, type Request, type Response } from 'express';
 import type { Pool } from 'pg';
 import { readDataset } from './datasets';
 import { AnalysisInputError, SPATIAL_PIVOT_OPERATOR } from './plan';
-import { SpatialPivotService } from './service';
+import { RequestKeyConflict, SpatialPivotService } from './service';
 import { NaturalAnalysisPlanner } from '../analysisPlanner/service';
 import { completeNaturalPlan } from '../analysisPlanner/provider';
 import { isLLMConfigured } from '../../integrations/llm/client';
+
+const submissionKey = (req: Request, scope: string) => {
+  const key = req.headers['idempotency-key'];
+  if (key === undefined) return undefined;
+  if (typeof key !== 'string' || !/^[A-Za-z0-9._~-]{1,128}$/.test(key)) {
+    throw new AnalysisInputError('请求键必须为 1–128 个字母、数字或 . _ ~ -');
+  }
+  // No client-supplied identity is trusted in the current single-user deployment.
+  return { actor: 'local', scope, key };
+};
 
 const uuid = (value: unknown): string => {
   if (typeof value !== 'string' || !/^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i.test(value)) {
@@ -38,8 +48,12 @@ export const createSpatialPivotRouter = (db: Pool, service = new SpatialPivotSer
     try { await service.initialize(); await handler(req, res); }
     catch (error) {
       if (res.headersSent) { res.destroy(error instanceof Error ? error : undefined); return; }
-      const status = error instanceof AnalysisInputError ? 400 : 500;
-      res.status(status).json({ code: status, message: error instanceof Error ? error.message : '分析服务失败' });
+      const status = error instanceof RequestKeyConflict ? 409 : error instanceof AnalysisInputError ? 400 : 500;
+      res.status(status).json({
+        code: status,
+        message: error instanceof Error ? error.message : '分析服务失败',
+        ...(error instanceof RequestKeyConflict ? { errorCode: 'IDEMPOTENCY_KEY_CONFLICT' } : {}),
+      });
     }
   };
   const artifact = async (id: string) => {
@@ -56,7 +70,9 @@ export const createSpatialPivotRouter = (db: Pool, service = new SpatialPivotSer
   router.post('/analysis-plans/natural-language', route(async (req, res) => {
     res.json({ code: 200, data: await naturalPlanner.plan(req.body) });
   }));
-  router.post('/runs', route(async (req, res) => res.status(202).json({ code: 202, data: await service.create(req.body?.spec) })));
+  router.post('/runs', route(async (req, res) => res.status(202).json({
+    code: 202, data: await service.create(req.body?.spec, null, submissionKey(req, 'runs:create')),
+  })));
   router.get('/runs', route(async (req, res) => res.json({ code: 200, data: await service.history(integer(req.query.limit, 20, 100)) })));
   router.get('/runs/:id', route(async (req, res) => {
     const run = await service.get(uuid(req.params.id));
@@ -70,7 +86,7 @@ export const createSpatialPivotRouter = (db: Pool, service = new SpatialPivotSer
     const run = await service.get(uuid(req.params.id));
     if (!run) { res.status(404).json({ code: 404, message: '执行记录不存在' }); return; }
     if (!run.inputVersions) throw new AnalysisInputError('此执行没有可重放的输入版本');
-    res.status(202).json({ code: 202, data: await service.create(run.spec, run.inputVersions) });
+    res.status(202).json({ code: 202, data: await service.create(run.spec, run.inputVersions, submissionKey(req, `runs:replay:${run.id}`)) });
   }));
   router.get('/artifacts/:id', route(async (req, res) => {
     const row = await artifact(uuid(req.params.id));

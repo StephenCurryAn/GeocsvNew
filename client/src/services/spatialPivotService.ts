@@ -120,8 +120,21 @@ export const createNaturalLanguagePlan = async (
   return unwrap(response.data);
 };
 
+// Both analysis panels retry with the same confirmed plan object. A new plan
+// object represents a new submission, even when its parameters are identical.
+const requestKeys = new WeakMap<SpatialPivotSpec, string>();
+const requestKeyFor = (spec: SpatialPivotSpec): string => {
+  const existing = requestKeys.get(spec);
+  if (existing) return existing;
+  const key = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
+  requestKeys.set(spec, key);
+  return key;
+};
+
 export const createRun = async (spec: SpatialPivotSpec, signal?: AbortSignal): Promise<Run> => {
-  const response = await apiClient.post<ApiEnvelope<Run>>('/runs', { spec }, { signal });
+  const response = await apiClient.post<ApiEnvelope<Run>>('/runs', { spec }, {
+    signal, headers: { 'Idempotency-Key': requestKeyFor(spec) },
+  });
   if (response.status !== 202 && response.data.code !== 202) {
     throw new Error(response.data.message || '服务器未接受分析任务');
   }

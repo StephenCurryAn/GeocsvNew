@@ -12,7 +12,7 @@ const { queryAttributePivot } = require('../src/modules/attributePivot');
 const databaseUrl = process.env.TEST_DATABASE_URL;
 
 test('PostGIS: plan -> persisted run -> table/map/CSV artifact; boundaries, replay and source isolation',
-  { skip: !databaseUrl, timeout: 90000 }, async () => {
+  { skip: !databaseUrl, timeout: 90000 }, async t => {
   const databaseName = new URL(databaseUrl).pathname;
   assert.match(databaseName, /test|tmp/i, 'Use an explicitly named test database, never the application database');
   const admin = new Pool({ connectionString: databaseUrl });
@@ -23,14 +23,21 @@ test('PostGIS: plan -> persisted run -> table/map/CSV artifact; boundaries, repl
   const service = new SpatialPivotService(db, 10000);
   const app = express();
   app.use(express.json());
+  app.use((req, res, next) => {
+    if (req.get('X-Test-Drop-Response') === 'yes') {
+      res.json = () => { res.destroy(); return res; };
+    }
+    next();
+  });
   app.use('/api', createSpatialPivotRouter(db, service));
   const server = app.listen(0, '127.0.0.1');
   await new Promise(resolve => server.once('listening', resolve));
   const base = `http://127.0.0.1:${server.address().port}/api`;
-  const request = async (path, body, expected = 200) => {
-    const response = await fetch(base + path, body === undefined ? {} : {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-    });
+  const submit = (body, headers = {}, path = '/runs') => fetch(base + path, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body),
+  });
+  const request = async (path, body, expected = 200, headers = {}) => {
+    const response = await (body === undefined ? fetch(base + path) : submit(body, headers, path));
     const data = await response.json();
     assert.equal(response.status, expected, JSON.stringify(data));
     return data.data;
@@ -76,7 +83,30 @@ test('PostGIS: plan -> persisted run -> table/map/CSV artifact; boundaries, repl
     assert.equal(natural.source, 'rules');
     assert.deepEqual(natural.spec, spec, 'Form and natural language produce the same validated protocol');
     assert.equal(Number((await db.query('SELECT count(*) FROM geocsv_analysis_runs')).rows[0].count), beforePlanning, 'Planning never creates a run');
-    const naturalRun = await terminal((await request('/runs', { spec: natural.spec }, 202)).id);
+    const header = { 'Idempotency-Key': randomUUID() };
+    const submitRun = (specification, headers = header) => request('/runs', { spec: specification }, 202, headers);
+    const [first, concurrent] = await Promise.all([
+      submitRun(natural.spec),
+      submitRun({ boundaryPolicy: spec.boundaryPolicy, ...spec }),
+    ]);
+    assert.equal(concurrent.id, first.id);
+    assert.equal((await db.query('SELECT count(*) FROM geocsv_analysis_runs')).rows[0].count, '1');
+    const naturalRun = await terminal(first.id);
+    const conflict = await submit({ spec: { ...spec, boundaryPolicy: 'include' } }, header);
+    assert.equal(conflict.status, 409);
+    assert.equal((await conflict.json()).errorCode, 'IDEMPOTENCY_KEY_CONFLICT');
+    const invalidKey = await submit({ spec }, { 'Idempotency-Key': 'invalid key' });
+    assert.equal(invalidKey.status, 400);
+    const recomputeKey = { 'Idempotency-Key': randomUUID() };
+    await assert.rejects(submit({ spec }, { ...recomputeKey, 'X-Test-Drop-Response': 'yes' }), /fetch failed/);
+    const persisted = (await db.query('SELECT id FROM geocsv_analysis_runs WHERE request_key=$1',
+      [recomputeKey['Idempotency-Key']])).rows[0];
+    assert.ok(persisted, 'The server accepted the request before the socket closed');
+    const recomputed = await submitRun(spec, recomputeKey);
+    assert.equal(recomputed.id, persisted.id);
+    assert.notEqual(recomputed.id, naturalRun.id);
+    assert.equal((await db.query('SELECT count(*) FROM geocsv_analysis_runs')).rows[0].count, '2');
+    t.diagnostic(`concurrent/replay IDs: ${naturalRun.id}, ${recomputed.id} (new key, dropped response)`);
     assert.equal(naturalRun.status, 'succeeded', naturalRun.error);
     assert.deepEqual((await request(`/artifacts/${naturalRun.artifactId}/rows`)).rows.map(row => row.total), [2, 1, 0]);
     const beforeView = Number((await db.query('SELECT count(*) FROM geocsv_analysis_runs')).rows[0].count);
@@ -113,7 +143,9 @@ test('PostGIS: plan -> persisted run -> table/map/CSV artifact; boundaries, repl
     await request(`/artifacts/${run.artifactId}/rows?page=-1`, undefined, 400);
     await request('/runs/not-a-uuid', undefined, 400);
 
-    const replay = await terminal((await request(`/runs/${run.id}/replay`, {}, 202)).id);
+    const replay = await terminal((await request(`/runs/${run.id}/replay`, {}, 202, header)).id);
+    assert.notEqual(replay.id, naturalRun.id, 'Replay and create have separate scopes');
+    assert.equal((await request(`/runs/${run.id}/replay`, {}, 202, header)).id, replay.id);
     assert.equal(replay.status, 'succeeded', replay.error);
     const replayRows = await request(`/artifacts/${replay.artifactId}/rows`);
     assert.deepEqual(replayRows.rows, page.rows);
@@ -138,6 +170,7 @@ test('PostGIS: plan -> persisted run -> table/map/CSV artifact; boundaries, repl
     assert.equal(missing.data.find(row => row.rowKey === '未分类（空值）').value, 1);
 
     await db.query(`UPDATE spatial_features SET properties=properties || '{"changed":true}'::jsonb WHERE file_id='pois'`);
+    assert.equal((await submitRun(spec)).id, naturalRun.id, 'A retry returns its accepted Run after inputs change');
     const changed = await terminal((await request(`/runs/${run.id}/replay`, {}, 202)).id);
     assert.equal(changed.status, 'failed');
     assert.match(changed.error, /数据已改变/);

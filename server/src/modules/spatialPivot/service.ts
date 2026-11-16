@@ -4,6 +4,16 @@ import { AnalysisInputError, buildSpatialPivotQuery, formatSpatialCounts, parseS
 import { fingerprintDataset, validateDatasets } from './datasets';
 import { SPATIAL_PIVOT_SCHEMA } from './schema';
 
+export interface SubmissionKey {
+  actor: string;
+  scope: string;
+  key: string;
+}
+
+export class RequestKeyConflict extends Error {
+  constructor() { super('此请求键已用于不同的分析请求，请使用新请求键重新提交'); }
+}
+
 export type RunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 export interface AnalysisRun {
   id: string; definitionId: string; status: RunStatus; spec: SpatialPivotSpec;
@@ -13,6 +23,7 @@ export interface AnalysisRun {
 
 interface RunRow {
   id: string; definition_id: string; status: RunStatus; spec: SpatialPivotSpec;
+  request_hash: string | null;
   input_versions: unknown; artifact_id: string | null; error: string | null;
   created_at: Date | string; completed_at: Date | string | null;
 }
@@ -67,26 +78,61 @@ export class SpatialPivotService {
     return spec;
   }
 
-  async create(input: unknown, expectedVersions: unknown = null): Promise<AnalysisRun> {
+  async create(input: unknown, expectedVersions: unknown = null, submission?: SubmissionKey): Promise<AnalysisRun> {
     await this.initialize();
     const spec = parseSpatialPivotSpec(input);
     const json = JSON.stringify(spec);
     const hash = createHash('sha256').update(json).digest('hex');
+    const requestHash = submission
+      ? createHash('sha256').update(JSON.stringify({ spec, expectedVersions })).digest('hex')
+      : null;
+    for (let retry = 0; ; retry++) {
+      try {
+        return await this.createRun(spec, json, hash, expectedVersions, submission, requestHash);
+      } catch (error) {
+        // Repeatable Read detects concurrent inserts that become visible after our snapshot.
+        const dbError = error as { code?: string; constraint?: string };
+        const concurrentInsert = dbError.code === '40001'
+          || (dbError.code === '23505' && dbError.constraint === 'geocsv_runs_request_key');
+        if (!concurrentInsert || retry >= 3) throw error;
+      }
+    }
+  }
+
+  private async createRun(
+    spec: SpatialPivotSpec, json: string, hash: string, expectedVersions: unknown,
+    submission: SubmissionKey | undefined, requestHash: string | null,
+  ): Promise<AnalysisRun> {
     const connection = await connectSafely(this.db);
     const { client } = connection;
     try {
       await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ');
+      if (submission) {
+        const existing = await client.query<RunRow>(`SELECT * FROM geocsv_analysis_runs
+          WHERE request_actor=$1 AND request_scope=$2 AND request_key=$3`,
+          [submission.actor, submission.scope, submission.key]);
+        const row = existing.rows[0];
+        if (row) {
+          if (row.request_hash !== requestHash) throw new RequestKeyConflict();
+          await client.query('COMMIT');
+          return runFromRow(row);
+        }
+      }
       await validateDatasets(client, spec);
       const inputVersions = expectedVersions || {
         target: await fingerprintDataset(client, spec.target.fileId),
         join: await fingerprintDataset(client, spec.join.fileId),
       };
-      const definition = await client.query(`
+      const existingDefinition = await client.query('SELECT id FROM geocsv_analysis_definitions WHERE spec_hash=$1', [hash]);
+      const definitionId = existingDefinition.rows[0]?.id ?? (await client.query(`
         INSERT INTO geocsv_analysis_definitions(id, spec_hash, spec) VALUES($1,$2,$3)
-        ON CONFLICT(spec_hash) DO UPDATE SET spec_hash = EXCLUDED.spec_hash RETURNING id`, [randomUUID(), hash, json]);
-      const result = await client.query(`
-        INSERT INTO geocsv_analysis_runs(id, definition_id, spec, input_versions)
-        VALUES($1,$2,$3,$4) RETURNING *`, [randomUUID(), definition.rows[0].id, json, inputVersions]);
+        ON CONFLICT(spec_hash) DO UPDATE SET spec_hash = EXCLUDED.spec_hash RETURNING id`,
+        [randomUUID(), hash, json])).rows[0].id;
+      const result = await client.query<RunRow>(`
+        INSERT INTO geocsv_analysis_runs(id, definition_id, spec, input_versions,
+          request_actor, request_scope, request_key, request_hash)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+        [randomUUID(), definitionId, json, inputVersions, submission?.actor, submission?.scope, submission?.key, requestHash]);
       await client.query('COMMIT');
       setImmediate(() => void this.drain());
       return runFromRow(result.rows[0]);
