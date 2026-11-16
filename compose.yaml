@@ -38,7 +38,11 @@ services:
     build:
       context: .
       dockerfile: deploy/docker/server.Dockerfile
+      additional_contexts:
+        python_runtime: service:python
+    init: true
     environment:
+      ANALYSIS_WORKER_DIR: /app/server/analysis-worker
       DATABASE_URL: postgresql://geocsv:geocsv_local_dev@db:5432/geocsv
       PYTHON_API_URL: http://python:8000/api
       ALIYUN_API_KEY: ${ALIYUN_API_KEY:-}
@@ -48,6 +52,7 @@ services:
     volumes:
       - uploads:/app/server/uploads
       - models:/app/python_engine/models
+      - analysis-worker:/app/server/analysis-worker
     ports:
       # Nginx shares this network namespace so the local-only basemap routes see loopback.
       - "127.0.0.1:${GEOCSV_WEB_PORT:-8080}:8080"
@@ -83,3 +88,4 @@ volumes:
   database:
   uploads:
   models:
+  analysis-worker:

@@ -8,6 +8,7 @@
 // 这样，shpjs 等库在访问 self 时，就能正确地引用到 global 对象，避免报错
 (global as any).self = global;
 
+import { once } from 'node:events';
 import express, { Request, Response } from 'express';
 import cors from 'cors'; // 跨域资源共享
 import sceneRoutes from './routes/sceneRoutes';
@@ -17,6 +18,7 @@ import analysisRoutes from './routes/analysisRoutes';
 import tileRoutes from './routes/tileRoutes';
 import { connectDB } from './config/db'; // 导入数据库连接函数
 import pool from './config/db';
+import { AnalysisService } from './modules/analysis/service';
 import { createSpatialPivotRouter } from './modules/spatialPivot/router';
 import { createBasemapRouter } from './modules/basemaps/router';
 
@@ -52,7 +54,8 @@ app.use('/api/analysis', analysisRoutes);
 // 注册矢量瓦片路由
 app.use('/api/tiles', tileRoutes);
 app.use('/api', createBasemapRouter());
-app.use('/api', createSpatialPivotRouter(pool));
+const analysis = new AnalysisService(pool);
+app.use('/api', createSpatialPivotRouter(pool, analysis));
 
 // 3. 测试路由
 app.get('/api/health', (req: Request, res: Response) => {
@@ -68,13 +71,36 @@ app.get('/api/health', (req: Request, res: Response) => {
 const start = async () => {
     await connectDB();
     await migrateScenes(pool);
-    app.listen(PORT, () => {
-        console.log("GeoCSV 后端已启动，端口 " + PORT);
-    });
+    await analysis.start();
+
+    const server = app.listen(PORT);
+    await once(server, 'listening');
+
+    let closing = false;
+    const shutdown = async () => {
+        if (closing) return;
+        closing = true;
+        const stopped = analysis.stop();
+        const closed = new Promise<void>((resolve, reject) => {
+            server.close(error => error ? reject(error) : resolve());
+        });
+        await Promise.all([stopped, closed]);
+        await pool.end();
+    };
+    const onSignal = () => {
+        void shutdown().catch(error => {
+            console.error('[GeoCSV shutdown]', error);
+            process.exit(1);
+        });
+    };
+    process.once('SIGINT', onSignal);
+    process.once('SIGTERM', onSignal);
+
+    console.log('GeoCSV 后端已启动，端口 ' + PORT);
 };
 
 void start().catch(error => {
-    console.error('场景数据库迁移失败:', error);
+    console.error('[GeoCSV startup]', error);
     process.exit(1);
 });
 

@@ -38,6 +38,51 @@
     },
     "boundaryPolicy": "exclude"
   },
+  "MoranLisaSpec": {
+    "schemaVersion": 1,
+    "kind": "spatial_autocorrelation",
+    "operatorVersion": 2,
+    "target": {
+      "fileId": "four-faces",
+      "valueField": "value"
+    },
+    "contiguity": "queen",
+    "permutations": 0,
+    "seed": 42
+  },
+  "MoranLisaSummary": {
+    "algorithmVersion": "moran-lisa/2.0.0",
+    "dependencyLockDigest": "2222222222222222222222222222222222222222222222222222222222222222",
+    "executionId": "d080198a-56f8-40a4-980c-34e85b14bc0e",
+    "inputDigest": "3333333333333333333333333333333333333333333333333333333333333333",
+    "globalI": 0.2,
+    "expectedI": -0.3333333333333333,
+    "pValue": null,
+    "s0": 3,
+    "excludedValueIds": [],
+    "crs": "EPSG:4326",
+    "valueField": "value",
+    "contiguity": "queen",
+    "permutations": 0,
+    "seed": 42
+  },
+  "MoranLisaPage": {
+    "rows": [
+      {
+        "featureId": 4,
+        "localI": 0,
+        "expectedI": 0,
+        "z": 1.3416407864998738,
+        "lagZ": 0,
+        "neighborCount": 0,
+        "pValue": null,
+        "quadrant": null
+      }
+    ],
+    "total": 4,
+    "page": 4,
+    "pageSize": 1
+  },
   "CreatePlan": {
     "spec": {
       "schemaVersion": 1,

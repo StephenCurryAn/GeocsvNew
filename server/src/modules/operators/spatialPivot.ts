@@ -19,6 +19,7 @@ export const spatialPivot: Operator = {
     const spec = parseSpatialPivotSpec(input);
     return {
       spec,
+      executor: 'postgis',
       async validate(client) { await validateDatasets(client, spec); },
       async fingerprint(client) {
         return {
