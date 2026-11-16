@@ -2,6 +2,7 @@ import React, { useEffect, useState, useRef } from 'react';
 import { createPortal } from 'react-dom'; //    ：引入传送门技术
 import type { ColDef, GridApi } from 'ag-grid-community';
 import type { AgGridReact } from 'ag-grid-react';
+import { pointOnFeature } from '@turf/turf';
 import { App, Empty, Button, Space, Popconfirm, Pagination, Modal, Select } from 'antd'; // ... 引入 antd 组件
 import { PlusOutlined, DeleteOutlined, TableOutlined, MinusSquareOutlined, DownloadOutlined } from '@ant-design/icons';
 import { geoService } from '../../../services/geoService';
@@ -29,6 +30,7 @@ interface DataPivotProps {
     onPageChange?: (page: number, pageSize: number) => void;
     onRowClick?: (record: any) => void;
     selectedFeature?: { id?: string | number; name?: string } | null;
+    scrollToSelectedFeature?: boolean;
     onDataChange?: (recordId: string | number, newData: any) => void;
     onAddRow?: () => void;
     onDeleteRow?: (recordId: string | number) => void;
@@ -41,7 +43,7 @@ interface DataPivotProps {
     onFileTabChange?: (fileId: string, fileName: string) => void;
 }
 
-function syncSelectedFeature(api: GridApi | undefined, selectedFeature: DataPivotProps['selectedFeature']) {
+function syncSelectedFeature(api: GridApi | undefined, selectedFeature: DataPivotProps['selectedFeature'], scroll = false) {
     if (!api) return;
     if (!selectedFeature) {
         api.deselectAll();
@@ -56,8 +58,8 @@ function syncSelectedFeature(api: GridApi | undefined, selectedFeature: DataPivo
         });
     }
     if (match) {
-        match.setSelected(true, true, 'api');
-        api.ensureNodeVisible(match, 'middle');
+        if (!match.isSelected()) match.setSelected(true, true, 'api');
+        if (scroll) api.ensureNodeVisible(match);
     } else {
         api.deselectAll();
     }
@@ -294,7 +296,7 @@ const FormulaCellEditor = (props: any) => {
 };
 
 const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, pagination, emptyMessage, onPageChange,
-    onRowClick, selectedFeature, onDataChange, 
+    onRowClick, selectedFeature, scrollToSelectedFeature, onDataChange,
     onAddRow, onDeleteRow, onAddColumn, onDeleteColumn, onRenameColumn,
     onDeleteColumns,
     selectedFilesData, onFileTabChange }) => {
@@ -364,8 +366,8 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
     }, [data, fileName, modelList]);
 
     useEffect(() => {
-        syncSelectedFeature(gridRef.current?.api, selectedFeature);
-    }, [selectedFeature]);
+        syncSelectedFeature(gridRef.current?.api, selectedFeature, scrollToSelectedFeature);
+    }, [selectedFeature, scrollToSelectedFeature]);
 
     /**
      * 通用列定义生成函数 (修复 Warning #48)
@@ -378,7 +380,7 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
 
         // 1. 生成基于数据的真实列
         const baseCols = keys
-            .filter(k => !['_cp'].includes(k) && !k.startsWith('__empty_col_'))
+            .filter(k => !['cp', '_cp'].includes(k) && !k.startsWith('__empty_col_'))
             .map(key => {
                 //   判断当前列是否为那个包含超级长字符串的“几何坐标列”
                 const isGeomCoordsCol = (key === '_geom_coords');
@@ -450,7 +452,7 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
         }
 
         //   终极防死修复：如果后端没传 id，强行生成一个唯一 ID，绝不允许出现 undefined！
-        let uniqueId = feature.properties?.id ?? feature._id ?? feature.id;
+        let uniqueId = feature.id ?? feature._id ?? feature.properties?.id;
         if (uniqueId === undefined || uniqueId === null) {
             uniqueId = `tmp_${Math.random().toString(36).substr(2, 9)}`;
         }
@@ -473,6 +475,10 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
                 row['_lat'] = coords[1];
             } else {
                 row['_geom_coords'] = JSON.stringify(coords);
+                if (!Array.isArray(row.cp)) {
+                    try { row.cp = pointOnFeature(feature).geometry.coordinates; }
+                    catch { /* Empty or invalid geometries have no map location. */ }
+                }
             }
         }
         return row;
@@ -713,7 +719,8 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
 
             // 绑定 ref
             ref={gridRef}
-            onFirstDataRendered={({ api }) => syncSelectedFeature(api, selectedFeature)}
+            onFirstDataRendered={({ api }) => syncSelectedFeature(api, selectedFeature, scrollToSelectedFeature)}
+            onRowDataUpdated={({ api }) => syncSelectedFeature(api, selectedFeature, scrollToSelectedFeature)}
 
             // 解决 Error #239
             // 加上这个属性，允许你继续使用 ag-theme-alpine.css 和你的自定义样式
@@ -752,7 +759,9 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
             onSelectionChanged={(event) => {
                 const record = event.api.getSelectedRows()[0];
                 setSelectedRecordId(record?.id ?? null);
-                if (event.source !== 'api') onRowClick?.(record ?? null);
+                if (event.source === 'rowClicked' || event.source === 'spaceKey' || event.source === 'checkboxSelected') {
+                    onRowClick?.(record ?? null);
+                }
             }}
 
             //    ：升级单元格 事件，拦截公式输入并触发微服务计算

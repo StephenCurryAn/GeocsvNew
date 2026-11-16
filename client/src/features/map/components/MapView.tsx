@@ -22,6 +22,10 @@ import {
 import { useAnalysisStore } from '../../../stores/useAnalysisStore'
 import { API_BASE_URL, getApiUrl } from '../../../services/apiConfig';
 import { BASEMAP_OPTIONS, BasemapController, initialMapStyle, loadBasemap } from '../basemaps';
+import {
+    addFileLayers, defaultLayerColor, drawingLayers, EMPTY_SELECTION, geometryLayers, highlightLayers,
+    layerIds, LAYER_PALETTE, paintFileLayers, removeFileLayers, setFileVisibility, updateGridGeometry, updateVectorTiles,
+} from '../fileLayers';
 
 const PROTOMAPS_KEY = (import.meta.env.VITE_PROTOMAPS_API_KEY || '').trim();
 
@@ -33,12 +37,18 @@ export interface FileLayerInfo {
     fileName: string;
     totalFeatures?: number;
     loadFailed?: boolean;
+    tileVersion?: number;
 }
 
 type DrawStatus = 'loading' | 'ready' | 'empty' | 'error';
-const PRIMARY_SOURCE = 'uploaded-geo-data';
-const EXTRA_SUFFIXES = ['fill', 'line', 'point'];
-const EMPTY_SELECTION: maplibregl.FilterSpecification = ['==', 1, 0];
+const fileLayers = (fileId: string) => layerIds('file-' + fileId);
+const gridLayers = layerIds('grid');
+const defaultBasemap = PROTOMAPS_KEY ? 'protomaps-light' : 'blank';
+const DENSE_LAYER_SIZE = 5000;
+
+function tileUrls(fileId: string, version: number) {
+    return [toMapLibreTileUrl('/tiles/' + fileId + '/{z}/{x}/{y}?v=' + version)];
+}
 
 function watchLayerSource(map: maplibregl.Map, sourceId: string, update: (status: DrawStatus) => void) {
     const onData = (event: maplibregl.MapSourceDataEvent) => {
@@ -54,24 +64,6 @@ function watchLayerSource(map: maplibregl.Map, sourceId: string, update: (status
         map.off('error', onError);
     };
 }
-
-function removePrimaryLayers(map: maplibregl.Map) {
-    PRIMARY_MAP_LAYERS.forEach(id => { if (map.getLayer(id)) map.removeLayer(id); });
-    if (map.getSource(PRIMARY_SOURCE)) map.removeSource(PRIMARY_SOURCE);
-}
-
-
-// 多图层颜色调色板（每个图层分配一个主题色）
-const LAYER_PALETTE = [
-    '#00e5ff', // 科技青 (主文件)
-    '#ff6b35', // 暖橙
-    '#7c3aed', // 深紫
-    '#10b981', // 翠绿
-    '#f59e0b', // 琥珀
-    '#ec4899', // 玫瑰粉
-    '#06b6d4', // 天蓝
-    '#84cc16', // 荧光绿
-];
 
 const SYSTEM_FIELD_NAMES = new Set(['_id', 'id', 'fid', 'ObjectId', 'geometry', 'geom', 'cp']);
 
@@ -89,24 +81,12 @@ const toMapNumberExpression = (field: string) => ([
     0
 ] as any);
 
-// MVT 大数据阈值：超过此数量自动启用 MVT 瓦片模式
-const MVT_THRESHOLD = 5000;
 const toMapLibreTileUrl = (path: string): string => {
     const apiUrl = getApiUrl(path);
     // Keep {z}/{x}/{y} intact while resolving relative URLs against this app's origin.
     return /^https?:\/\//i.test(apiUrl) ? apiUrl : `${window.location.origin}${apiUrl.startsWith('/') ? '' : '/'}${apiUrl}`;
 };
 const FEATURE_ID_FIELDS = ['id', 'Id', 'ID', 'fid', 'FID', '_id', 'ObjectId', 'OBJECTID', 'objectid'];
-const PRIMARY_MAP_LAYERS = [
-    'geo-fill-layer',
-    'geo-polygon-border',
-    'geo-linestring-main',
-    'geo-point-layer',
-    'geo-highlight-fill',
-    'geo-highlight-line',
-    'geo-highlight-point'
-];
-
 const buildFeatureIdFilter = (ids: Array<string | number>) => {
     const rawIds = ids.filter((id) => id !== undefined && id !== null && id !== '');
     const stringIds = rawIds.map(String);
@@ -122,20 +102,14 @@ const buildFeatureIdFilter = (ids: Array<string | number>) => {
     return ['any', ...checks];
 };
 
-const bringPrimaryLayersToFront = (map: maplibregl.Map) => {
-    PRIMARY_MAP_LAYERS.forEach((layerId) => {
-        if (map.getLayer(layerId)) {
-            map.moveLayer(layerId);
-        }
-    });
-};
-
 interface MapViewProps {
     data: any;        // GeoJSON 数据（当前激活文件）
-    fileName: string; // 当前文件名
     fileId?: string;  // 当前选中的文件ID
     selectedFeature?: any;
-    onFeatureClick?: (feature: any) => void;
+    onFeatureClick?: (fileId: string, feature: Record<string, unknown> | null) => void;
+    selectionOrigin?: 'map' | 'table';
+    focusFileId?: string;
+    onFileTabChange?: (fileId: string, fileName: string) => void;
     // 多图层支持
     selectedFilesInfo?: FileLayerInfo[];
 }
@@ -301,7 +275,7 @@ function interpolateColor(color1: string, color2: string, factor: number) {
     return rgbToHex(r, g, b);
 }
 
-const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeature, onFeatureClick, selectedFilesInfo = [] }) => {
+const MapView: React.FC<MapViewProps> = ({ data, fileId, selectedFeature, onFeatureClick, selectionOrigin, focusFileId, onFileTabChange, selectedFilesInfo = [] }) => {
     //     2: 获取上下文感知的 message 实例
     // 注意：MapView 必须被包裹在 <App> 组件中（通常在 main.tsx 或 App.tsx 已经包了）
     const { message } = App.useApp();
@@ -312,13 +286,17 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
     const [basemapLoading, setBasemapLoading] = useState(false);
     const [tiandituStatus, setTiandituStatus] = useState<'checking' | 'available' | 'unconfigured' | 'unavailable'>('checking');
     const lastFramedFile = useRef('');
+    const openFiles = useRef(new Map<string, { version: number; stop: () => void }>());
+    const initialTileVersion = useRef(Date.now());
+    const mapSelection = useRef(onFeatureClick);
+    mapSelection.current = onFeatureClick;
     const activeFileRef = useRef(fileId);
     activeFileRef.current = fileId;
     const fullDataRequest = useRef(0);
     const [hiddenFileIds, setHiddenFileIds] = useState<string[]>([]);
     const [legendOpen, setLegendOpen] = useState(true);
-    const [primaryStatus, setPrimaryStatus] = useState<{ fileId?: string; status: DrawStatus }>();
-    const [extraStatuses, setExtraStatuses] = useState<Record<string, DrawStatus>>({});
+    const [drawStatuses, setDrawStatuses] = useState<Record<string, DrawStatus>>({});
+    const [gridSelection, setGridSelection] = useState<Record<string, unknown> | null>(null);
     const activeHidden = Boolean(fileId && hiddenFileIds.includes(fileId));
 
     const [isMapLoaded, setIsMapLoaded] = useState(false);
@@ -327,9 +305,11 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
     //   [新增] 存储文本型字段，用于分类拆分
     const [stringFields, setStringFields] = useState<string[]>([]);
 
-    const [activeField, setActiveField] = useState<string | null>(null); // 当前选中的映射字段
+    const [fieldSelection, setFieldSelection] = useState<{ fileId?: string; field: string | null }>();
+    const activeField = fieldSelection?.fileId === fileId ? fieldSelection?.field ?? null : null;
+    const setActiveField = (field: string | null) => setFieldSelection({ fileId, field });
     const [activeScheme, setActiveScheme] = useState<string>('viridis'); // 当前颜色方案
-    const [activeBasemap, setActiveBasemap] = useState<string>('dark'); // 当前底图
+    const [activeBasemap, setActiveBasemap] = useState('blank');
     
     const [uniqueFieldValues, setUniqueFieldValues] = useState<(string | number)[]>([]); // 存放当前字段所有的唯一值
     const [activeFilterValues, setActiveFilterValues] = useState<(string | number)[]>([]); // 存放当前勾选的值
@@ -340,15 +320,11 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
     const showAll = Boolean(allData);
     const [loading, setLoading] = useState(false);
 
-    // 多图层：当前激活的操作目标文件 ID（普通渲染/网格聚合的操作对象）
-    // 多图层使用的 ref（记录当前已渲染的图层 IDs，用于清理）
-    const renderedExtraLayersRef = useRef<string[]>([]);
-
-
     //   [新增] 空间网格相关状态
     const [gridResult, setGridResult] = useState<{ fileId: string; data: any } | null>(null);
     const isGridMode = Boolean(fileId && gridResult?.fileId === fileId);
     const gridData = isGridMode ? gridResult?.data : null;
+    const primary = isGridMode ? gridLayers : fileLayers(fileId || '');
     const [gridLoading, setGridLoading] = useState(false);
 
     //   [ ] 状态初始化
@@ -378,7 +354,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
         isMapLinkageEnabled, highlightedCategory, mapColorTheme,// 联动状态
         //   [新增] 获取 activeColumn
         activeColumn , 
-        layerColors, setLayerColor,
+        layerColors, setLayerColor, assignLayerColors,
         validIds // 新增：获取 validIds 用于地图过滤
     } = useAnalysisStore();
 
@@ -386,20 +362,20 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
         ++fullDataRequest.current;
         setFullLayer(null);
         setLoading(false);
-        setActiveField(gridResult?.fileId === fileId ? 'value' : null);
+        setGridSelection(null);
     }, [fileId]);
 
     useEffect(() => {
+        assignLayerColors(selectedFilesInfo.map(file => file.fileId));
         setHiddenFileIds(prev => {
             const remaining = prev.filter(id => selectedFilesInfo.some(file => file.fileId === id));
             return remaining.length === prev.length ? prev : remaining;
         });
-    }, [selectedFilesInfo]);
+    }, [selectedFilesInfo, assignLayerColors]);
 
     const colorForFile = (id?: string) => {
         if (!id) return LAYER_PALETTE[0];
-        const index = selectedFilesInfo.findIndex(file => file.fileId === id);
-        return layerColors[id] || LAYER_PALETTE[Math.max(index, 0) % LAYER_PALETTE.length];
+        return layerColors[id] || defaultLayerColor(id);
     };
 
     const handleShowAllChange = async (e: { target: { checked: boolean } }) => {
@@ -461,6 +437,8 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
             ++basemapRequest.current;
             basemapController.current?.dispose();
             basemapController.current = null;
+            for (const { stop } of openFiles.current.values()) stop();
+            openFiles.current.clear();
             if (mapInstance.current) {
                 mapInstance.current.remove();
                 mapInstance.current = null;
@@ -468,79 +446,53 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
         };
     }, []);
 
-    // 每次切换主文件时，其他已选文件继续作为独立图层显示。
+    // File sources belong to the selected files, independently of the active attribute tab.
     useEffect(() => {
         const map = mapInstance.current;
         if (!map || !isMapLoaded) return;
-
-        let disposed = false;
-        const stopWatching: (() => void)[] = [];
-        const extraFiles = selectedFilesInfo.filter(file => file.fileId !== fileId && (file.totalFeatures ?? 0) > 0);
-        renderedExtraLayersRef.current = extraFiles.map(file => file.fileId);
-        setExtraStatuses({});
-
-        for (const file of extraFiles) {
-            const source = 'extra-src-' + file.fileId;
-            const color = colorForFile(file.fileId);
-            const useMVT = (file.totalFeatures ?? 0) > MVT_THRESHOLD;
-            const update = (status: DrawStatus) => {
-                if (disposed) return;
-                setExtraStatuses(prev => {
-                    const current = prev[file.fileId];
-                    if (current === status || (current === 'error' && status === 'ready')) return prev;
-                    return { ...prev, [file.fileId]: status };
-                });
-            };
-
-            if (useMVT) stopWatching.push(watchLayerSource(map, source, update));
-            map.addSource(source, useMVT ? {
-                type: 'vector',
-                tiles: [toMapLibreTileUrl('/files/' + file.fileId + '/tiles/{z}/{x}/{y}')],
-                minzoom: 0,
-                maxzoom: 14,
-            } : {
-                type: 'geojson',
-                data: { type: 'FeatureCollection', features: [] },
+        const visibleFiles = selectedFilesInfo.filter(file => (file.totalFeatures ?? 0) > 0);
+        const selected = new Set(visibleFiles.map(file => file.fileId));
+        let added = false;
+        for (const [id, { stop }] of openFiles.current) {
+            if (selected.has(id)) continue;
+            stop();
+            removeFileLayers(map, fileLayers(id));
+            openFiles.current.delete(id);
+            setDrawStatuses(prev => {
+                const next = { ...prev };
+                delete next[id];
+                return next;
             });
-
-            const vectorLayer = useMVT ? { 'source-layer': 'features' } : {};
-            map.addLayer({
-                id: 'extra-' + file.fileId + '-fill', type: 'fill', source, ...vectorLayer,
-                paint: { 'fill-color': color, 'fill-opacity': 0.5 },
-                filter: ['==', '$type', 'Polygon'],
-            });
-            map.addLayer({
-                id: 'extra-' + file.fileId + '-line', type: 'line', source, ...vectorLayer,
-                paint: { 'line-color': color, 'line-width': 2.5, 'line-opacity': 0.9 },
-                filter: ['==', '$type', 'LineString'],
-            });
-            map.addLayer({
-                id: 'extra-' + file.fileId + '-point', type: 'circle', source, ...vectorLayer,
-                paint: { 'circle-radius': 5, 'circle-color': color, 'circle-stroke-width': 1, 'circle-stroke-color': '#fff' },
-                filter: ['==', '$type', 'Point'],
-            });
-
-            if (!useMVT) {
-                geoService.getAllFileData(file.fileId).then(result => {
-                    if (disposed) return;
-                    const features = result.features;
-                    (map.getSource(source) as maplibregl.GeoJSONSource).setData({ type: 'FeatureCollection', features });
-                    update(features.length ? 'ready' : 'empty');
-                }).catch(() => update('error'));
-            }
         }
 
-        bringPrimaryLayersToFront(map);
-        return () => {
-            disposed = true;
-            stopWatching.forEach(stop => stop());
-            if (mapInstance.current !== map) return;
-            for (const file of extraFiles) {
-                for (const suffix of EXTRA_SUFFIXES) map.removeLayer('extra-' + file.fileId + '-' + suffix);
-                map.removeSource('extra-src-' + file.fileId);
+        for (const file of visibleFiles) {
+            const ids = fileLayers(file.fileId);
+            const version = file.tileVersion ?? initialTileVersion.current;
+            const current = openFiles.current.get(file.fileId);
+            if (current) {
+                if (version !== current.version) {
+                    updateVectorTiles(map, ids, tileUrls(file.fileId, version));
+                    current.version = version;
+                }
+                continue;
             }
-        };
-    }, [selectedFilesInfo, isMapLoaded, fileId, layerColors]);
+            const update = (status: DrawStatus) => setDrawStatuses(prev =>
+                prev[file.fileId] === status ? prev : { ...prev, [file.fileId]: status });
+            const stop = watchLayerSource(map, ids.source, update);
+            addFileLayers(map, ids, tileUrls(file.fileId, version));
+            paintFileLayers(map, ids, colorForFile(file.fileId), { dense: (file.totalFeatures ?? 0) > DENSE_LAYER_SIZE });
+            openFiles.current.set(file.fileId, { version, stop });
+            added = true;
+        }
+        if (added) {
+            // Draw points above areas regardless of the active table tab.
+            const groups = [...openFiles.current.keys()].map(id => drawingLayers(fileLayers(id)));
+            if (map.getSource(gridLayers.source)) groups.push(drawingLayers(gridLayers));
+            for (const index of groups[0].keys()) {
+                for (const group of groups) map.moveLayer(group[index]);
+            }
+        }
+    }, [selectedFilesInfo, isMapLoaded]);
 
     //   [ ] 字段提取逻辑分离：
     // 1. numericFields (数值): 从 displayData 提取，用于当前地图的颜色渲染（支持网格的 value 字段）
@@ -680,182 +632,66 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
     //   [新增] 重置网格，切回原始数据
     const handleResetGrid = () => {
         setGridResult(null);
+        setGridSelection(null);
         setActiveField(null); // 清空字段，让用户重新选
         message.info("已切换回原始图层");
     };
 
-    /**
-     *   [ ]  渲染逻辑：只负责 Geometry 和基础图层架构
-     * (移除了底部的 map.on 事件绑定，防止重复)
-     */
-    const renderGeoJSON = (geoJSON: any) => {
-        const map = mapInstance.current;
-        if (!map || !map.getStyle()) return;
-
-        const sourceId = PRIMARY_SOURCE;
-
-        // 判断是否应该使用 MVT 矢量瓦片模式
-        const useMVT = fileId && !isGridMode;
-        const mainLayerColor = colorForFile(fileId);
-        if (useMVT) {
-            console.log(`[MapView] 启用 MVT 极速矢量瓦片渲染模式: ${fileId}`);
-            map.addSource(sourceId, {
-                type: 'vector',
-                //     核心修复：在 URL 尾部加上 ?t=${Date.now()} 作为缓存爆破器    
-                tiles: [toMapLibreTileUrl(`/tiles/${fileId}/{z}/{x}/{y}?t=${Date.now()}`)],
-                //     修复结束    
-                minzoom: 0,
-                maxzoom: 22
-            });
-            // 当使用 MVT 瓦片源时，必须在每一个图层配置中指定 'source-layer' (对应 ST_AsMVT 中设定的图层名 'default_layer')
-            map.addLayer({
-                id: 'geo-fill-layer', type: 'fill', source: sourceId, 'source-layer': 'default_layer',
-                paint: { 
-                    'fill-color': mainLayerColor, 
-                    'fill-opacity': 0.6,
-                    'fill-outline-color': isGridMode ? 'rgba(0,0,0,0)' : 'rgba(0,0,0,0.1)' 
-                },
-                filter: ['==', '$type', 'Polygon']
-            });
-            map.addLayer({
-                id: 'geo-polygon-border', type: 'line', source: sourceId, 'source-layer': 'default_layer',
-                paint: { 
-                    'line-color': activeBasemap === 'light' ? '#666' : '#a5f3fc',
-                    'line-width': isGridMode ? 0 : 1,
-                    'line-opacity': 0.5
-                },
-                filter: ['==', '$type', 'Polygon']
-            });
-            map.addLayer({
-                id: 'geo-linestring-main', type: 'line', source: sourceId, 'source-layer': 'default_layer',
-                paint: { 
-                    'line-color': mainLayerColor, 
-                    'line-width': 3, 
-                    'line-opacity': 0.8,
-                    'line-blur': 1   
-                },
-                filter: ['==', '$type', 'LineString']
-            });
-            map.addLayer({
-                id: 'geo-point-layer', type: 'circle', source: sourceId, 'source-layer': 'default_layer',
-                paint: { 'circle-radius': 6, 'circle-color': '#00e5ff', 'circle-stroke-width': 1, 'circle-stroke-color': '#ffffff' },
-                filter: ['==', '$type', 'Point']
-            });
-            map.addLayer({ id: 'geo-highlight-fill', type: 'fill', source: sourceId, 'source-layer': 'default_layer', paint: { 'fill-color': '#ffffff', 'fill-opacity': 0.2 }, filter: ['==', 'id', 'nothing-selected'] });
-            map.addLayer({ id: 'geo-highlight-line', type: 'line', source: sourceId, 'source-layer': 'default_layer', paint: { 'line-color': '#ffffff', 'line-width': 3 }, filter: ['==', 'id', 'nothing-selected'] });
-            map.addLayer({ id: 'geo-highlight-point', type: 'circle', source: sourceId, 'source-layer': 'default_layer', paint: { 'circle-radius': 8, 'circle-color': '#ffffff', 'circle-stroke-width': 2, 'circle-stroke-color': '#ff0000' }, filter: ['==', 'id', 'nothing-selected'] });
-
-        } else {
-            console.log(`[MapView] 启用普通 GeoJSON 渲染模式: ${fileName}`);
-            map.addSource(sourceId, { type: 'geojson', data: geoJSON });
-
-            map.addLayer({
-                id: 'geo-fill-layer', type: 'fill', source: sourceId,
-                paint: { 
-                    'fill-color': '#00e5ff', 
-                    'fill-opacity': 0.6,
-                    'fill-outline-color': isGridMode ? 'rgba(0,0,0,0)' : 'rgba(0,0,0,0.1)' 
-                },
-                filter: ['==', '$type', 'Polygon']
-            });
-            map.addLayer({
-                id: 'geo-polygon-border', type: 'line', source: sourceId,
-                paint: { 
-                    'line-color': activeBasemap === 'light' ? '#666' : '#a5f3fc',
-                    'line-width': isGridMode ? 0 : 1,
-                    'line-opacity': 0.5
-                },
-                filter: ['==', '$type', 'Polygon']
-            });
-            map.addLayer({
-                id: 'geo-linestring-main', type: 'line', source: sourceId,
-                paint: { 
-                    'line-color': '#00e5ff', 
-                    'line-width': 3, 
-                    'line-opacity': 0.8,
-                    'line-blur': 1   
-                },
-                filter: ['==', '$type', 'LineString']
-            });
-            map.addLayer({
-                id: 'geo-point-layer', type: 'circle', source: sourceId,
-                paint: { 'circle-radius': 6, 'circle-color': '#00e5ff', 'circle-stroke-width': 1, 'circle-stroke-color': '#ffffff' },
-                filter: ['==', '$type', 'Point']
-            });
-            map.addLayer({ id: 'geo-highlight-fill', type: 'fill', source: sourceId, paint: { 'fill-color': '#ffffff', 'fill-opacity': 0.2 }, filter: ['==', 'id', 'nothing-selected'] });
-            map.addLayer({ id: 'geo-highlight-line', type: 'line', source: sourceId, paint: { 'line-color': '#ffffff', 'line-width': 3 }, filter: ['==', 'id', 'nothing-selected'] });
-            map.addLayer({ id: 'geo-highlight-point', type: 'circle', source: sourceId, paint: { 'circle-radius': 8, 'circle-color': '#ffffff', 'circle-stroke-width': 2, 'circle-stroke-color': '#ff0000' }, filter: ['==', 'id', 'nothing-selected'] });
-        }
-
-        bringPrimaryLayersToFront(map);
-
-        if (fileId && fileId !== lastFramedFile.current && geoJSON.features.some((feature: any) => feature.geometry)) {
-            lastFramedFile.current = fileId;
-            const bounds = bbox(geoJSON) as [number, number, number, number];
-            if (bounds.every(Number.isFinite)) {
-                map.fitBounds(bounds, { padding: 42, maxZoom: 14, duration: 600 });
-            }
-        }
-    };
-
-/**
-     *   [新增] 专门的 Effect 处理事件绑定 (只运行一次或当 isMapLoaded 变时)
-     * 解决了重复绑定导致的性能问题
-     */
     useEffect(() => {
         const map = mapInstance.current;
         if (!map || !isMapLoaded) return;
 
-        // 监听列表更新
-        const interactiveLayers = [
-            'geo-fill-layer', 
-            'geo-polygon-border', 
-            'geo-linestring-main', //  
-            'geo-point-layer'
-        ];
-
-        const handleClick = (e: any) => {
-            if (e.features && e.features.length > 0) {
-                const feature = e.features[0];
-                const props = { ...feature.properties, id: feature.properties.id ?? feature.id };
-                // ... (props.cp 处理逻辑保持不变)
-                if (typeof props.cp === 'string') { try { props.cp = JSON.parse(props.cp); } catch (err) {} }
-                if (!props.cp || !Array.isArray(props.cp)) {
-                    if (feature.geometry.type === 'Point') {
-                         // @ts-ignore
-                        props.cp = feature.geometry.coordinates;
-                    } else { props.cp = [e.lngLat.lng, e.lngLat.lat]; }
+        const findFeature = (event: maplibregl.MapMouseEvent) => {
+            const layerOwners = new Map<string, string | null>();
+            for (const id of openFiles.current.keys()) {
+                for (const layer of geometryLayers(fileLayers(id))) {
+                    if (map.getLayoutProperty(layer.id, 'visibility') !== 'none') layerOwners.set(layer.id, id);
                 }
-                if (onFeatureClick) onFeatureClick(props);
             }
+            for (const layer of geometryLayers(gridLayers)) {
+                if (map.getLayer(layer.id) && map.getLayoutProperty(layer.id, 'visibility') !== 'none') layerOwners.set(layer.id, null);
+            }
+            if (!layerOwners.size) return;
+            const hits = map.queryRenderedFeatures(event.point, { layers: [...layerOwners.keys()] });
+            const feature = hits.find(hit => layerOwners.get(hit.layer.id) === null)
+                ?? hits.find(hit => layerOwners.get(hit.layer.id) === activeFileRef.current)
+                ?? hits[0];
+            const owner = feature && layerOwners.get(feature.layer.id);
+            return owner !== undefined ? { feature, owner } : undefined;
         };
-
-        const handleMouseEnter = () => map.getCanvas().style.cursor = 'pointer';
-        const handleMouseLeave = () => map.getCanvas().style.cursor = '';
-
-        // 绑定
-        interactiveLayers.forEach(layerId => {
-            map.on('click', layerId, handleClick);
-            map.on('mouseenter', layerId, handleMouseEnter);
-            map.on('mouseleave', layerId, handleMouseLeave);
-        });
-
-        // 清理
+        const handleClick = (event: maplibregl.MapMouseEvent) => {
+            const hit = findFeature(event);
+            if (hit?.owner === null) {
+                setGridSelection({ ...hit.feature.properties, id: hit.feature.id ?? hit.feature.properties.id,
+                    cp: [event.lngLat.lng, event.lngLat.lat] });
+                return;
+            }
+            setGridSelection(null);
+            if (!hit) {
+                mapSelection.current?.('', null);
+                return;
+            }
+            const { feature, owner } = hit;
+            const id = feature.id;
+            if (id == null) return;
+            mapSelection.current?.(owner, { ...feature.properties, id, cp: [event.lngLat.lng, event.lngLat.lat] });
+        };
+        const handleMove = (event: maplibregl.MapMouseEvent) => {
+            map.getCanvas().style.cursor = findFeature(event) ? 'pointer' : '';
+        };
+        map.on('click', handleClick);
+        map.on('mousemove', handleMove);
         return () => {
-            interactiveLayers.forEach(layerId => {
-                map.off('click', layerId, handleClick);
-                map.off('mouseenter', layerId, handleMouseEnter);
-                map.off('mouseleave', layerId, handleMouseLeave);
-            });
+            map.off('click', handleClick);
+            map.off('mousemove', handleMove);
         };
-    }, [isMapLoaded]); // 只依赖 isMapLoaded
-
+    }, [isMapLoaded]);
 
     //   [ ]  联动着色逻辑：增强高亮对比度
     const updateLinkageColors = () => {
         const map = mapInstance.current;
         // 卫兵：只要没有 图层就退出
-        if (!map || (!map.getLayer('geo-fill-layer') && !map.getLayer('geo-linestring-main'))) return;
+        if (!map || (!map.getLayer(primary.fill) && !map.getLayer(primary.line))) return;
         
         const isPivotMode = isMapLinkageEnabled && pivotData && pivotData.length > 0;
         const isScenario1 = isPivotMode && !pivotConfig.groupByCol && pivotConfig.groupByRow; 
@@ -1047,10 +883,11 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
             // ============ 应用属性 (增强版：全图层智能着色) ============
             try { 
                 // 提取所有可能的图层ID
-                const fillLayers = ['geo-fill-layer', ...renderedExtraLayersRef.current.map(id => `extra-${id}-fill`)];
-                const borderLayers = ['geo-polygon-border'];
-                const lineLayers = ['geo-linestring-main', ...renderedExtraLayersRef.current.map(id => `extra-${id}-line`)];
-                const pointLayers = ['geo-point-layer', ...renderedExtraLayersRef.current.map(id => `extra-${id}-point`)];
+                const otherLayers = [...openFiles.current.keys()].filter(id => id !== fileId).map(fileLayers);
+                const fillLayers = [primary.fill, ...otherLayers.map(ids => ids.fill)];
+                const borderLayers = [primary.border];
+                const lineLayers = [primary.line, ...otherLayers.map(ids => ids.line)];
+                const pointLayers = [primary.point, ...otherLayers.map(ids => ids.point)];
 
                 // 【绝杀逻辑】：用 case 语句保护背景图层。如果没有分析字段，使用备用颜色(如偏暗的背景色)
                 const safeAreaColorMatch = ['case', ['has', rowField], areaColorMatch, 'rgba(100, 116, 139, 0.3)'];
@@ -1096,39 +933,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
             }
 
         } else {
-            //   [修复] 回退逻辑 (保持不变)
-            // 1. 先尝试执行普通分级渲染 (如果用户选了字段)
             updateChoroplethColors();
-            
-            // 2. 恢复默认状态
-            // 面图层
-            if (map.getLayer('geo-fill-layer')) {
-                map.setPaintProperty('geo-fill-layer', 'fill-opacity', 0.6);
-                //   [ ] 恢复时也看模式
-                map.setPaintProperty('geo-fill-layer', 'fill-outline-color', isGridMode ? 'rgba(0,0,0,0)' : 'rgba(0,0,0,0)');
-            }
-            
-            // 面边框 (Polygon Border)
-            if (map.getLayer('geo-polygon-border')) {
-                //   [ ] 恢复时也看模式
-                map.setPaintProperty('geo-polygon-border', 'line-width', isGridMode ? 0 : 1);
-                map.setPaintProperty('geo-polygon-border', 'line-color', activeBasemap === 'light' ? '#666' : '#a5f3fc');
-            }
-
-            // 线实体 (LineString Main)
-            if (map.getLayer('geo-linestring-main')) {
-                map.setPaintProperty('geo-linestring-main', 'line-width', 2);
-                map.setPaintProperty('geo-linestring-main', 'line-color', '#00e5ff');
-                map.setPaintProperty('geo-linestring-main', 'line-opacity', 0.8);
-            }
-            // 点图层
-            if (map.getLayer('geo-point-layer')) {
-                map.setPaintProperty('geo-point-layer', 'circle-color', '#00e5ff');
-                map.setPaintProperty('geo-point-layer', 'circle-opacity', 1);
-                map.setPaintProperty('geo-point-layer', 'circle-radius', 6);
-                map.setPaintProperty('geo-point-layer', 'circle-stroke-width', 1);
-                map.setPaintProperty('geo-point-layer', 'circle-stroke-color', '#ffffff');
-            }
         }
     };
 
@@ -1146,30 +951,9 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
         const map = mapInstance.current;
         const currentDisplayData = displayDataRef.current;
         
-        if (!map || !map.getLayer('geo-fill-layer') || !currentDisplayData) return;
+        if (!map || !map.getLayer(primary.fill) || !currentDisplayData) return;
 
-        // 1. 如果没有选字段，恢复默认颜色 (全部全亮显示)
-        if (!activeField || activeField === 'none') {
-            const mainLayerColor = colorForFile(fileId);
-            if (map.getLayer('geo-fill-layer')) {
-                map.setPaintProperty('geo-fill-layer', 'fill-color', mainLayerColor);
-                map.setPaintProperty('geo-fill-layer', 'fill-outline-color', 'rgba(0,0,0,0)'); 
-                map.setPaintProperty('geo-fill-layer', 'fill-opacity', 0.6);
-            }
-            if (map.getLayer('geo-linestring-main')) {
-                map.setPaintProperty('geo-linestring-main', 'line-color', mainLayerColor);
-                map.setPaintProperty('geo-linestring-main', 'line-opacity', 0.8);
-                map.setPaintProperty('geo-linestring-main', 'line-width', 3);
-            }
-            if (map.getLayer('geo-point-layer')) {
-                map.setPaintProperty('geo-point-layer', 'circle-color', mainLayerColor);
-                map.setPaintProperty('geo-point-layer', 'circle-opacity', 1);
-                map.setPaintProperty('geo-point-layer', 'circle-radius', 6);
-                map.setPaintProperty('geo-point-layer', 'circle-stroke-width', 1);
-                map.setPaintProperty('geo-point-layer', 'circle-stroke-color', '#ffffff');
-            }
-            return;
-        }
+        if (!activeField || activeField === 'none') return;
 
         // 2. 获取配色方案
         // @ts-ignore
@@ -1265,63 +1049,61 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
         const finalPointStrokeColor = ['case', isMatched, 'rgba(255,255,255,0.3)', 'rgba(0,0,0,0)'];
 
         // 6. 应用到地图
-        if (map.getLayer('geo-fill-layer')) {
-            map.setPaintProperty('geo-fill-layer', 'fill-color', finalFillColor);
-            map.setPaintProperty('geo-fill-layer', 'fill-opacity', finalFillOpacity); 
-            map.setPaintProperty('geo-fill-layer', 'fill-outline-color', finalFillOutline);
+        if (map.getLayer(primary.fill)) {
+            map.setPaintProperty(primary.fill, 'fill-color', finalFillColor);
+            map.setPaintProperty(primary.fill, 'fill-opacity', finalFillOpacity);
+            map.setPaintProperty(primary.fill, 'fill-outline-color', finalFillOutline);
         }
         
-        if (map.getLayer('geo-linestring-main')) {
-            map.setPaintProperty('geo-linestring-main', 'line-color', finalLineColor);
-            map.setPaintProperty('geo-linestring-main', 'line-opacity', finalLineOpacity);
-            map.setPaintProperty('geo-linestring-main', 'line-width', finalLineWidth);
+        if (map.getLayer(primary.line)) {
+            map.setPaintProperty(primary.line, 'line-color', finalLineColor);
+            map.setPaintProperty(primary.line, 'line-opacity', finalLineOpacity);
+            map.setPaintProperty(primary.line, 'line-width', finalLineWidth);
         }
         
-        if (map.getLayer('geo-point-layer')) {
-            map.setPaintProperty('geo-point-layer', 'circle-color', finalPointColor);
-            map.setPaintProperty('geo-point-layer', 'circle-opacity', finalPointOpacity);
-            map.setPaintProperty('geo-point-layer', 'circle-radius', finalPointRadius);
-            map.setPaintProperty('geo-point-layer', 'circle-stroke-width', finalPointStrokeWidth);
-            map.setPaintProperty('geo-point-layer', 'circle-stroke-color', finalPointStrokeColor);
+        if (map.getLayer(primary.point)) {
+            map.setPaintProperty(primary.point, 'circle-color', finalPointColor);
+            map.setPaintProperty(primary.point, 'circle-opacity', finalPointOpacity);
+            map.setPaintProperty(primary.point, 'circle-radius', finalPointRadius);
+            map.setPaintProperty(primary.point, 'circle-stroke-width', finalPointStrokeWidth);
+            map.setPaintProperty(primary.point, 'circle-stroke-color', finalPointStrokeColor);
         }
     };
 
-//   [ ] Effect 1: 仅处理“数据几何渲染” (Geometry)
-    // 只有当文件数据变化时，重绘
     const activeTotal = selectedFilesInfo.find(file => file.fileId === fileId)?.totalFeatures;
+
     useEffect(() => {
         const map = mapInstance.current;
         if (!map || !isMapLoaded) return;
-        removePrimaryLayers(map);
-        if (!displayData || (!isGridMode && activeTotal === 0)) {
-            lastFramedFile.current = '';
+        if (!gridData) {
+            removeFileLayers(map, gridLayers);
             return;
         }
-
-        setPrimaryStatus({ fileId, status: isGridMode && !displayData.features.length ? 'empty' : 'loading' });
-        const stopWatching = watchLayerSource(map, PRIMARY_SOURCE, status => {
-            setPrimaryStatus(prev => {
-                if (prev?.fileId === fileId && (prev?.status === 'empty' || prev?.status === status || (prev?.status === 'error' && status === 'ready'))) return prev;
-                return { fileId, status };
-            });
-        });
-        renderGeoJSON(displayData);
-        updateLinkageColors();
-        updateChoroplethColors();
-        return stopWatching;
-    }, [displayData, fileId, activeTotal, isGridMode, isMapLoaded]);
+        if (!map.getSource(gridLayers.source)) addFileLayers(map, gridLayers);
+        updateGridGeometry(map, gridLayers, gridData);
+    }, [gridData, isMapLoaded]);
 
     useEffect(() => {
         const map = mapInstance.current;
         if (!map || !isMapLoaded) return;
-        const setVisibility = (id: string, hidden: boolean) => {
-            if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', hidden ? 'none' : 'visible');
-        };
-        PRIMARY_MAP_LAYERS.forEach(id => setVisibility(id, activeHidden));
-        for (const id of renderedExtraLayersRef.current) {
-            EXTRA_SUFFIXES.forEach(suffix => setVisibility('extra-' + id + '-' + suffix, hiddenFileIds.includes(id)));
+        for (const id of openFiles.current.keys()) {
+            setFileVisibility(map, fileLayers(id), !hiddenFileIds.includes(id) && !(isGridMode && id === fileId));
         }
-    }, [isMapLoaded, fileId, displayData, activeTotal, isGridMode, selectedFilesInfo, layerColors, hiddenFileIds, activeHidden]);
+        if (isGridMode) setFileVisibility(map, gridLayers, !activeHidden);
+    }, [isMapLoaded, fileId, gridData, isGridMode, selectedFilesInfo, hiddenFileIds, activeHidden]);
+
+    useEffect(() => {
+        const map = mapInstance.current;
+        if (!map || !isMapLoaded) return;
+        if (!focusFileId) lastFramedFile.current = '';
+        if (!data || !fileId || focusFileId !== fileId || fileId === lastFramedFile.current
+            || !data.features.some((feature: any) => feature.geometry)) return;
+        const bounds = bbox(data) as [number, number, number, number];
+        if (bounds.every(Number.isFinite)) {
+            lastFramedFile.current = fileId;
+            map.fitBounds(bounds, { padding: 42, maxZoom: 14, duration: 500 });
+        }
+    }, [data, fileId, focusFileId, isMapLoaded]);
 
 // =========================================================================
     // 🌟 核心修复一：全图层覆盖 + 语义化智能遮罩 (不误伤背景边界图层)
@@ -1331,22 +1113,13 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
         if (!map || !isMapLoaded) return;
 
         const syncAllFilters = () => {
-            // 1. 获取当前地图上所有的图层 ID（主图层 + 所有的副图层）
-            const allLayers: { id: string, type: 'Polygon' | 'LineString' | 'Point' }[] = [
-                { id: 'geo-fill-layer', type: 'Polygon' },
-                { id: 'geo-polygon-border', type: 'Polygon' },
-                { id: 'geo-linestring-main', type: 'LineString' },
-                { id: 'geo-point-layer', type: 'Point' }
-            ];
-
-            renderedExtraLayersRef.current.forEach(baseId => {
-                allLayers.push({ id: `extra-${baseId}-fill`, type: 'Polygon' });
-                allLayers.push({ id: `extra-${baseId}-line`, type: 'LineString' });
-                allLayers.push({ id: `extra-${baseId}-point`, type: 'Point' });
-            });
+            const allLayers = [...openFiles.current.keys()].flatMap(id =>
+                geometryLayers(fileLayers(id)).map(layer => ({ ...layer, active: id === fileId && !isGridMode })));
+            if (isGridMode) allLayers.push(...geometryLayers(gridLayers).map(layer => ({ ...layer, active: true })));
 
             // 2. 构建智能的基础条件数组
-            let baseFilterConditions: any[] = [];
+            const baseFilterConditions: any[] = [];
+            const fieldConditions: any[] = [];
 
             // A. 巴中市 validIds 过滤
             const shouldApplyValidIdMask = validIds && validIds.length > 0 && !(isMapLinkageEnabled && pivotConfig.groupByCol);
@@ -1377,9 +1150,9 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
             const isStringField = activeField ? stringFields.includes(activeField) : false;
             if (!isGridMode && activeField && activeField !== 'none' && isStringField) {
                 if (activeFilterValues.length === 0) {
-                    baseFilterConditions.push(['==', 'id', 'nothing_selected']);
+                    fieldConditions.push(['==', '$id', -1]);
                 } else {
-                    baseFilterConditions.push((['in', activeField] as any[]).concat(activeFilterValues));
+                    fieldConditions.push((['in', activeField] as any[]).concat(activeFilterValues));
                 }
             }
 
@@ -1387,7 +1160,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
         allLayers.forEach(layerInfo => {
             if (map.getLayer(layerInfo.id)) {
                 // 拼接基础的图层几何类型判断 + 我们上面的动态条件
-                const finalFilter = ['all', ['==', '$type', layerInfo.type], ...baseFilterConditions];
+                const finalFilter = ['all', ['==', '$type', layerInfo.geometry], ...baseFilterConditions, ...(layerInfo.active ? fieldConditions : [])];
 
                 // 🌟 【核心修复】：直接使用 as any，彻底强制闭嘴！
                 map.setFilter(layerInfo.id, finalFilter as any);
@@ -1399,40 +1172,22 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
     }, [
         validIds, highlightedCategory, isMapLinkageEnabled, pivotConfig.groupByRow, pivotConfig.groupByCol,
         activeFilterValues, activeField, stringFields, isGridMode, isMapLoaded,
-        displayData, fileId, selectedFilesInfo, layerColors
+        gridData, fileId, selectedFilesInfo
     ]);
 
-    //   [ ] Effect 2: 仅处理“样式/颜色更新” (Paint)
-    // 当联动开关、高亮状态、透视数据、或主题色变化时，只更新颜色
-    useEffect(() => {
-        if (isMapLoaded && displayData) {
-            updateLinkageColors();
-        }
-    }, [
-        isMapLinkageEnabled, pivotData, pivotConfig, 
-        highlightedCategory, mapColorTheme, //   依赖新状态
-        activeField, activeScheme, layerColors
-    ]);
-    
-    // 监听可视化配置变化（字段、配色），只更新 Paint Property，不重绘 Geometry
-    useEffect(() => {
-        if (isMapLoaded && data) {
-            updateChoroplethColors();
-        }
-    }, [activeField, activeScheme, activeFilterValues, isMapLoaded, layerColors, selectedFilesInfo]);
-    
     useEffect(() => {
         const map = mapInstance.current;
         if (!map || !isMapLoaded) return;
-
-        if (map.getLayer('geo-polygon-border')) {
-            map.setPaintProperty(
-                'geo-polygon-border',
-                'line-color',
-                activeBasemap === 'light' ? '#666' : '#a5f3fc'
-            );
+        for (const file of selectedFilesInfo) {
+            if (file.fileId !== fileId || isGridMode) paintFileLayers(map, fileLayers(file.fileId), colorForFile(file.fileId),
+                { dense: (file.totalFeatures ?? 0) > DENSE_LAYER_SIZE });
         }
-    }, [activeBasemap, isMapLoaded]);
+        if (!map.getSource(primary.source)) return;
+        paintFileLayers(map, primary, colorForFile(fileId), { grid: isGridMode, dense: (activeTotal ?? 0) > DENSE_LAYER_SIZE });
+        updateLinkageColors();
+    }, [isMapLoaded, fileId, isGridMode, selectedFilesInfo, displayData, layerColors,
+        isMapLinkageEnabled, pivotData, pivotConfig, highlightedCategory, mapColorTheme,
+        activeField, activeScheme, activeFilterValues, uniqueFieldValues]);
 
     const handleBasemapChange = async (basemapKey: string) => {
         const controller = basemapController.current;
@@ -1447,6 +1202,12 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
             if (request === basemapRequest.current) setBasemapLoading(false);
         }
     };
+
+    useEffect(() => {
+        if (!isMapLoaded) return;
+        if (defaultBasemap !== 'blank') void handleBasemapChange(defaultBasemap);
+        else if (tiandituStatus === 'available') void handleBasemapChange('tianditu-vector');
+    }, [isMapLoaded, defaultBasemap === 'blank' ? tiandituStatus : null]);
 
     useEffect(() => {
         const abort = new AbortController();
@@ -1464,37 +1225,45 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
         return () => { disposed = true; clearTimeout(timeout); abort.abort(); };
     }, []);
 
-    // 重建主图层（如分页或切换网格）后也要恢复当前选中的描边。
     useEffect(() => {
         const map = mapInstance.current;
         if (!map || !isMapLoaded) return;
-        let filter: maplibregl.FilterSpecification = EMPTY_SELECTION;
-        if (selectedFeature?.id != null) {
-            const id = String(selectedFeature.id);
-            filter = ['any',
-                ['==', ['to-string', ['id']], id],
-                ...FEATURE_ID_FIELDS.map<maplibregl.ExpressionSpecification>(field => ['==', ['to-string', ['get', field]], id]),
-            ];
-        } else if (selectedFeature?.name) {
-            filter = ['==', 'name', selectedFeature.name];
+        for (const id of openFiles.current.keys()) {
+            const filter: maplibregl.FilterSpecification = id === fileId && !isGridMode && selectedFeature?.id != null
+                ? ['==', ['id'], Number(selectedFeature.id)] : EMPTY_SELECTION;
+            for (const layer of highlightLayers(fileLayers(id))) map.setFilter(layer, filter);
         }
-        for (const id of ['geo-highlight-fill', 'geo-highlight-line', 'geo-highlight-point']) {
-            if (map.getLayer(id)) map.setFilter(id, filter);
+        if (isGridMode) {
+            const id = gridSelection?.id;
+            const filter: maplibregl.FilterSpecification = id == null ? EMPTY_SELECTION : ['any',
+                ['==', ['to-string', ['id']], String(id)], ['==', ['to-string', ['get', 'id']], String(id)]];
+            for (const layer of highlightLayers(gridLayers)) if (map.getLayer(layer)) map.setFilter(layer, filter);
         }
-    }, [selectedFeature, isMapLoaded, displayData, fileId, activeTotal, isGridMode]);
+    }, [selectedFeature?.id, isMapLoaded, fileId, selectedFilesInfo, isGridMode, gridData, gridSelection]);
 
     useEffect(() => {
         const map = mapInstance.current;
-        const cp = selectedFeature?.cp;
-        if (!map || !isMapLoaded || activeHidden || !Array.isArray(cp) || !cp.slice(0, 2).every(Number.isFinite) || cp.length < 2) return;
+        const feature = isGridMode ? gridSelection : selectedFeature;
+        const cp = feature?.cp;
+        if (!map || !isMapLoaded || activeHidden || !Array.isArray(cp)
+            || !cp.slice(0, 2).every(Number.isFinite) || cp.length < 2) return;
         const center: [number, number] = [cp[0], cp[1]];
+        if (!isGridMode && selectionOrigin === 'table') {
+            const point = map.project(center);
+            const canvas = map.getContainer();
+            if (point.x < 24 || point.y < 24 || point.x > canvas.clientWidth - 24 || point.y > canvas.clientHeight - 24) {
+                map.easeTo({ center, duration: 320 });
+            }
+            return;
+        }
         const content = document.createElement('div');
         content.className = 'map-feature-details';
         const heading = document.createElement('strong');
-        heading.textContent = String(selectedFeature.name ?? '要素') + (selectedFeature.id == null ? '' : ' · #' + selectedFeature.id);
+        heading.textContent = String(feature.name ?? feature.community ?? (isGridMode ? '网格' : '要素'))
+            + (feature.id == null ? '' : ' · #' + feature.id);
         content.append(heading);
         const attributes = document.createElement('dl');
-        for (const [key, value] of Object.entries(selectedFeature)) {
+        for (const [key, value] of Object.entries(feature)) {
             if (key === 'id' || key === 'cp' || key.startsWith('_')) continue;
             const name = document.createElement('dt');
             name.textContent = key;
@@ -1503,13 +1272,11 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
             attributes.append(name, definition);
         }
         content.append(attributes);
-
         const popup = new maplibregl.Popup({
-            closeOnClick: false, className: 'workbench-map-popup', maxWidth: '260px', offset: 12,
+            closeOnClick: false, focusAfterOpen: false, className: 'workbench-map-popup', maxWidth: '260px', offset: 12,
         }).setLngLat(center).setDOMContent(content).addTo(map);
-        map.easeTo({ center, zoom: Math.max(14, map.getZoom()), duration: 380 });
         return () => { popup.remove(); };
-    }, [selectedFeature, isMapLoaded, activeHidden]);
+    }, [selectedFeature, selectionOrigin, isMapLoaded, activeHidden, isGridMode, gridSelection]);
 
     //   [新增] 导出处理函数
     const handleExport = async () => {
@@ -1682,6 +1449,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                     loading={basemapLoading}
                     disabled={!isMapLoaded}
                 >
+                    <Option value="blank">浅色背景</Option>
                     {BASEMAP_OPTIONS.map(option => {
                         const reason = option.key.startsWith('protomaps-') && !PROTOMAPS_KEY ? '未配置'
                             : option.key.startsWith('tianditu-') && tiandituStatus !== 'available'
@@ -1765,7 +1533,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                     />
                 )}
                 <Checkbox checked={showAll} onChange={handleShowAllChange} disabled={!activeTotal || loading || isGridMode}>
-                    全量
+                    全量属性
                 </Checkbox>
                 {!isChartVisible && pivotData && pivotData.length > 0 && (
                     <Tooltip title="显示透视分析图表">
@@ -1794,11 +1562,11 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                     {!selectedFilesInfo.length && <p className="map-layer-empty">未选择图层</p>}
                     {selectedFilesInfo.map(file => {
                         const primary = file.fileId === fileId;
-                        const vector = primary ? !isGridMode : (file.totalFeatures ?? 0) > MVT_THRESHOLD;
+                        const vector = !(primary && isGridMode);
                         const hidden = hiddenFileIds.includes(file.fileId);
-                        const drawStatus = primary
-                            ? (primaryStatus?.fileId === file.fileId ? primaryStatus.status : undefined)
-                            : extraStatuses[file.fileId];
+                        const drawStatus = primary && isGridMode
+                            ? (gridData?.features.length ? 'ready' : 'empty')
+                            : drawStatuses[file.fileId];
                         let status = '加载中…';
                         if (file.loadFailed) status = '数据加载失败';
                         else if (file.totalFeatures === undefined) status = '加载中…';
@@ -1820,12 +1588,18 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                                 <ColorPicker
                                     size="small"
                                     value={colorForFile(file.fileId)}
+                                    defaultFormat="rgb"
+                                    disabledAlpha
+                                    presets={[{ label: '柔和主题色', colors: LAYER_PALETTE }]}
                                     disabled={file.loadFailed || !file.totalFeatures}
                                     onChangeComplete={color => setLayerColor(file.fileId, color.toHexString())}
                                     aria-label={'图层颜色 ' + file.fileName}
                                 />
                                 <div className="map-layer-caption">
-                                    <div className="map-layer-name" title={file.fileName} aria-current={primary || undefined}>{file.fileName}</div>
+                                    <button type="button" className="map-layer-name" title={file.fileName} aria-current={primary || undefined}
+                                        onClick={() => onFileTabChange?.(file.fileId, file.fileName)}>
+                                        {file.fileName}
+                                    </button>
                                     <div className="map-layer-status" role="status" data-error={status.endsWith('失败') || undefined}>
                                         {status}
                                         {status === '可见' && vector && ' · MVT'}

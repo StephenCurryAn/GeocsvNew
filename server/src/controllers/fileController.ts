@@ -856,13 +856,26 @@ export const getFileData = async (req: Request, res: Response) => {
     try {
         const id = req.params.id as string;
         // 获取分页参数，默认为第一页，每页 20 条
-        const page = parseInt(req.query.page as any) || 1;
+        let page = parseInt(req.query.page as any) || 1;
         const pageSize = parseInt(req.query.pageSize as any) || 20;
 
         // 1. 检查文件是否存在
         const fileNode = await FileNode.findFileNodeById(id);
         if (!fileNode) {
             return res.status(404).json({ code: 404, message: '文件不存在' });
+        }
+
+        if (req.query.featureId !== undefined) {
+            const rawId = req.query.featureId;
+            if (typeof rawId !== 'string' || !/^\d+$/.test(rawId) || Number(rawId) < 1
+                || Number(rawId) > 2147483647 || pageSize < 1) {
+                return res.status(400).json({ code: 400, message: '无效的要素 ID 或分页大小' });
+            }
+            const offset = await Feature.findFeatureOffset(id, Number(rawId));
+            if (offset === undefined) {
+                return res.status(404).json({ code: 404, message: '当前文件中没有该要素' });
+            }
+            page = Math.floor(offset / pageSize) + 1;
         }
 
         // 2. 查询 MongoDB Feature 集合

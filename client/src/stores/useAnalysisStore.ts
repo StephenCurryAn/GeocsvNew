@@ -1,4 +1,26 @@
 import { create } from 'zustand';
+import { defaultLayerColor, LAYER_PALETTE } from '../features/map/fileLayers';
+
+const layerColorKey = 'geocsv.layerColors';
+
+function readLayerColors(): Record<string, string> {
+    try {
+        const colors = JSON.parse(localStorage.getItem(layerColorKey) || '{}');
+        return Object.fromEntries(Object.entries(colors).filter(([, color]) =>
+            typeof color === 'string' && /^#[\da-f]{6}$/i.test(color))) as Record<string, string>;
+    } catch {
+        return {};
+    }
+}
+
+function saveLayerColors(layerColors: Record<string, string>) {
+    try {
+        localStorage.setItem(layerColorKey, JSON.stringify(layerColors));
+    } catch {
+        // Keep the current session's colors when browser storage is unavailable.
+    }
+    return { layerColors };
+}
 
 // 透视配置接口
 export interface PivotConfig {
@@ -83,6 +105,7 @@ interface AnalysisState {
     // 多图层颜色管理（为MVT全量渲染服务）
     layerColors: Record<string, string>; // 记录每个 fileId 对应的颜色：{ fileId: colorHex }
     setLayerColor: (fileId: string, color: string) => void;
+    assignLayerColors: (fileIds: string[]) => void;
 
     // 在 store 中追加 validIds
     validIds: string[];
@@ -149,10 +172,22 @@ export const useAnalysisStore = create<AnalysisState>((set) => ({
     setChartMode: (mode) => set({ chartMode: mode }),
 
     // 🌟多图层颜色管理初始化
-    layerColors: {},
-    setLayerColor: (fileId, color) => set((state) => ({ 
-        layerColors: { ...state.layerColors, [fileId]: color } 
-    })),
+    layerColors: readLayerColors(),
+    setLayerColor: (fileId, color) => set((state) =>
+        state.layerColors[fileId] === color ? state : saveLayerColors({ ...state.layerColors, [fileId]: color })),
+    assignLayerColors: (fileIds) => set((state) => {
+        if (fileIds.every(id => state.layerColors[id])) return state;
+        const layerColors = { ...state.layerColors };
+        const used = new Set(fileIds.map(id => layerColors[id]?.toUpperCase()));
+        for (const id of fileIds) {
+            if (layerColors[id]) continue;
+            const preferred = defaultLayerColor(id);
+            const color = used.has(preferred) ? LAYER_PALETTE.find(item => !used.has(item)) ?? preferred : preferred;
+            layerColors[id] = color;
+            used.add(color);
+        }
+        return saveLayerColors(layerColors);
+    }),
 
     validIds: [],
     setValidIds: (ids: string[]) => set({ validIds: ids }),

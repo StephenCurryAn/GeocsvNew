@@ -3,8 +3,6 @@ import type { Map as LibreMap, StyleSpecification, SourceSpecification, LayerSpe
 export const BASEMAP_ANCHOR = 'geocsv-basemap-anchor';
 const THEMES = ['light', 'white', 'grayscale', 'dark', 'black'] as const;
 export const BASEMAP_OPTIONS = [
-  { key: 'dark', name: 'CARTO 深色' },
-  { key: 'light', name: 'CARTO 浅色' },
   ...THEMES.map(theme => ({ key: `protomaps-${theme}`, name: `Protomaps ${theme}` })),
   { key: 'tianditu-vector', name: '天地图矢量' },
   { key: 'tianditu-imagery', name: '天地图影像' },
@@ -13,20 +11,17 @@ export const BASEMAP_OPTIONS = [
 export type BasemapConfig = { protomapsKey: string; apiBase: string };
 
 export function rasterStyle(key: string, apiBase: string): StyleSpecification {
-  const tianditu = key.startsWith('tianditu-');
-  if (!['dark', 'light', 'tianditu-vector', 'tianditu-imagery'].includes(key)) {
+  if (!['tianditu-vector', 'tianditu-imagery'].includes(key)) {
     throw new Error('不支持的底图');
   }
-  const layers = tianditu ? (key === 'tianditu-vector' ? ['vec', 'cva'] : ['img', 'cia']) : [key];
+  const layers = key === 'tianditu-vector' ? ['vec', 'cva'] : ['img', 'cia'];
   const sources: Record<string, SourceSpecification> = {};
   for (const layer of layers) {
     sources[layer] = {
       type: 'raster', tileSize: 256,
-      maxzoom: tianditu ? 18 : 20,
-      tiles: [tianditu
-        ? `${apiBase.replace(/\/+$/, '')}/basemap-tiles/tianditu/${layer}/{z}/{x}/{y}`
-        : `https://a.basemaps.cartocdn.com/${layer}_all/{z}/{x}/{y}@2x.png`],
-      attribution: tianditu ? '© 天地图' : '© CARTO © OpenStreetMap contributors',
+      maxzoom: 18,
+      tiles: [`${apiBase.replace(/\/+$/, '')}/basemap-tiles/tianditu/${layer}/{z}/{x}/{y}`],
+      attribution: '© 天地图',
     };
   }
   return { version: 8, sources, layers: layers.map(id => ({ id, source: id, type: 'raster' })) };
@@ -52,7 +47,12 @@ export function prepareBasemap(style: StyleSpecification, prefix: string): Style
   return { ...style, sources: Object.fromEntries(Object.entries(style.sources).map(([id, source]) => [prefix + id, source])), layers };
 }
 
-const initial = () => prepareBasemap(rasterStyle('dark', '/api'), 'basemap-initial-');
+const blankStyle = (): StyleSpecification => ({
+  version: 8,
+  sources: {},
+  layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#f5f7fb' } }],
+});
+const initial = () => prepareBasemap(blankStyle(), 'basemap-initial-');
 export function initialMapStyle(): StyleSpecification {
   const style = initial();
   style.layers.push({ id: BASEMAP_ANCHOR, type: 'background', paint: { 'background-opacity': 0 } });
@@ -60,6 +60,7 @@ export function initialMapStyle(): StyleSpecification {
 }
 
 export async function loadBasemap(key: string, config: BasemapConfig, signal: AbortSignal): Promise<StyleSpecification> {
+  if (key === 'blank') return blankStyle();
   if (!key.startsWith('protomaps-')) return rasterStyle(key, config.apiBase);
   const theme = key.slice('protomaps-'.length);
   if (!(THEMES as readonly string[]).includes(theme)) throw new Error('不支持的 Protomaps 主题');

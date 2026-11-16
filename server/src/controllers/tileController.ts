@@ -27,7 +27,8 @@ export const getVectorTile = async (req: Request, res: Response): Promise<void> 
             ),
             mvtgeom AS (
                 SELECT 
-                    id, 
+                    id,
+                    id AS geocsv_feature_id,
                     properties,
                     ST_AsMVTGeom(
                         ST_Transform(s.geom, 3857), 
@@ -41,7 +42,7 @@ export const getVectorTile = async (req: Request, res: Response): Promise<void> 
                 -- 空间过滤：交集判断 (使用 3857 与 bound 判断)
                 AND ST_Intersects(ST_Transform(s.geom, 3857), bounds.geom)
             )
-            SELECT ST_AsMVT(mvtgeom, 'default_layer') AS tile 
+            SELECT ST_AsMVT(mvtgeom, 'default_layer', 4096, 'geom', 'geocsv_feature_id') AS tile
             FROM mvtgeom;
         `;
 

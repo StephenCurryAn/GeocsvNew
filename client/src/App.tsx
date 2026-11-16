@@ -17,7 +17,7 @@ export interface FileTabInfo {
     pagination?: { total: number; page: number; pageSize: number; totalPages: number };
 }
 
-type LayerMetadata = Pick<FileLayerInfo, 'totalFeatures' | 'loadFailed'>;
+type LayerMetadata = Pick<FileLayerInfo, 'totalFeatures' | 'loadFailed' | 'tileVersion'>;
 
 function App() {
     const { message, modal } = AntdApp.useApp();
@@ -34,19 +34,23 @@ function App() {
     // 当前激活的主文件（表格/地图主视窗）
     const [activeFileId, setActiveFileId] = useState<string>('');
     const [activeFileName, setActiveFileName] = useState<string>('');
+    const [focusFileId, setFocusFileId] = useState('');
 
     // 选中的地图要素（表格 ↔ 地图联动）
     const [selectedFeature, setSelectedFeature] = useState<any>(null);
+    const [selectionOrigin, setSelectionOrigin] = useState<'map' | 'table'>('table');
 
     // 地图只在文件选择、要素总数或加载状态变化时更新图层列表。
     const [layerMetadata, setLayerMetadata] = useState<Record<string, LayerMetadata>>({});
     const updateLayerMetadata = (fileId: string, metadata: LayerMetadata) => {
         setLayerMetadata(prev => {
-            const current = prev[fileId];
-            if (current?.totalFeatures === metadata.totalFeatures && current?.loadFailed === metadata.loadFailed) return prev;
-            return { ...prev, [fileId]: metadata };
+            const current = prev[fileId] ?? {};
+            const next = { ...current, ...metadata };
+            if (current.totalFeatures === next.totalFeatures && current.loadFailed === next.loadFailed && current.tileVersion === next.tileVersion) return prev;
+            return { ...prev, [fileId]: next };
         });
     };
+    const refreshMapTiles = (fileId: string) => updateLayerMetadata(fileId, { tileVersion: Date.now() });
 
     // 当前主文件数据快捷引用
     const currentData = uploadedFilesData[activeFileId];
@@ -62,24 +66,22 @@ function App() {
     }, [currentData]);
 
     // ===== 数据加载 =====
-    const loadFileData = async (fileId: string, fileName: string, page = 1, pageSize = 20) => {
+    const loadFileData = async (fileId: string, fileName: string, page = 1, pageSize = 20, featureId?: number) => {
         const requestVersion = (loadVersionByFileRef.current[fileId] || 0) + 1;
         loadVersionByFileRef.current[fileId] = requestVersion;
-        if (!uploadedFilesData[fileId]) updateLayerMetadata(fileId, {});
-        const messageKey = `loading-${fileId}`;
+        if (!uploadedFilesData[fileId]) updateLayerMetadata(fileId, { loadFailed: false });
         try {
-            if (fileId === activeFileId) message.loading({ content: '加载数据中...', key: messageKey });
-            const res = await geoService.getFileData(fileId, page, pageSize);
+            const res = await geoService.getFileData(fileId, page, pageSize, undefined, featureId);
             if (loadVersionByFileRef.current[fileId] !== requestVersion) return;
             setUploadedFilesData(prev => ({ ...prev, [fileId]: res }));
-            updateLayerMetadata(fileId, { totalFeatures: res.pagination.total });
-            if (fileId === activeFileId) message.success({ content: `加载第 ${page} 页成功`, key: messageKey });
+            updateLayerMetadata(fileId, { totalFeatures: res.pagination.total, loadFailed: false });
             return res;
         } catch (err: any) {
             if (loadVersionByFileRef.current[fileId] !== requestVersion) return;
             console.error(err);
             if (!uploadedFilesData[fileId]) updateLayerMetadata(fileId, { loadFailed: true });
-            if (fileId === activeFileId) message.error({ content: `“${fileName}”数据加载失败`, key: messageKey });
+            if (featureId !== undefined) message.warning(`无法在“${fileName}”的属性表中定位此要素`);
+            else if (fileId === activeFileId) message.error(`“${fileName}”数据加载失败`);
         }
     };
 
@@ -90,6 +92,7 @@ function App() {
         updateLayerMetadata(fileId, { totalFeatures: data.pagination.total });
         setActiveFileName(fileName);
         setActiveFileId(fileId);
+        setFocusFileId(fileId);
         setSelectedFeature(null);
     };
 
@@ -103,7 +106,7 @@ function App() {
         if (!activeFileId || !activeFileName || !currentData) return;
         const oldFeatures = [...currentData.features];
         const targetIndex = oldFeatures.findIndex((f: any) =>
-            f.properties?.id == recordId || f.id == recordId
+            String(f.id ?? f.properties?.id) === String(recordId)
         );
         if (targetIndex === -1) return;
         const oldFeature = oldFeatures[targetIndex];
@@ -118,6 +121,7 @@ function App() {
         try {
             message.loading({ content: '保存中...', key: 'save' });
             await geoService.updateFileData(activeFileId, recordId, newRowData);
+            refreshMapTiles(activeFileId);
             message.success({ content: '已保存', key: 'save' });
         } catch (error) {
             message.error({ content: '保存失败', key: 'save' });
@@ -130,6 +134,7 @@ function App() {
         try {
             message.loading({ content: '正在添加行...', key: 'row-op' });
             await geoService.addRow(activeFileId);
+            refreshMapTiles(activeFileId);
             message.success({ content: '新增成功', key: 'row-op' });
             if (currentData) handlePageChange(currentData.pagination.page, currentData.pagination.pageSize);
         } catch (e: any) {
@@ -142,6 +147,7 @@ function App() {
         try {
             message.loading({ content: '正在删除行...', key: 'row-op' });
             await geoService.deleteRow(activeFileId, recordID);
+            refreshMapTiles(activeFileId);
             message.success({ content: '删除成功', key: 'row-op' });
             if (currentData) handlePageChange(currentData.pagination.page, currentData.pagination.pageSize);
         } catch (e: any) {
@@ -165,6 +171,7 @@ function App() {
                 try {
                     message.loading({ content: '正在添加列...', key: 'col-op' });
                     await geoService.addColumn(activeFileId, value);
+                    refreshMapTiles(activeFileId);
                     message.success({ content: '添加成功', key: 'col-op' });
                     if (currentData) handlePageChange(currentData.pagination.page, currentData.pagination.pageSize);
                 } catch (e: any) {
@@ -179,6 +186,7 @@ function App() {
         try {
             message.loading({ content: '正在删除列...', key: 'col-op' });
             await geoService.deleteColumn(activeFileId, fieldName);
+            refreshMapTiles(activeFileId);
             message.success({ content: '删除成功', key: 'col-op' });
             if (currentData) handlePageChange(currentData.pagination.page, currentData.pagination.pageSize);
         } catch (e: any) {
@@ -194,6 +202,7 @@ function App() {
             
             // 使用 Promise.all 并发调用现有的单列删除接口
             await Promise.all(fieldNames.map(fieldName => geoService.deleteColumn(activeFileId, fieldName)));
+            refreshMapTiles(activeFileId);
             
             message.success({ content: '批量删除成功', key: 'col-op' });
             // 刷新当前页的数据
@@ -208,6 +217,7 @@ function App() {
         try {
             message.loading({ content: '正在重命名列...', key: 'renameMsg' });
             await geoService.renameColumn(activeFileId, oldName, newName);
+            refreshMapTiles(activeFileId);
             if (currentData?.features) {
                 const updatedFeatures = currentData.features.map((feature: any) => {
                     const properties = { ...feature.properties };
@@ -236,15 +246,20 @@ function App() {
         if (fileIds.length === 0) {
             setActiveFileId('');
             setActiveFileName('');
+            setFocusFileId('');
             setSelectedFeature(null);
             return;
         }
 
-        const primaryId = fileIds[fileIds.length - 1];
-        const primaryName = fileNames[fileNames.length - 1];
+        const added = fileIds.filter(id => !selectedFileIds.includes(id));
+        const primaryId = added.at(-1) ?? (fileIds.includes(activeFileId) ? activeFileId : fileIds.at(-1)!);
+        const primaryName = fileNames[fileIds.indexOf(primaryId)];
         setActiveFileName(primaryName);
         setActiveFileId(primaryId);
-        setSelectedFeature(null);
+        if (primaryId !== activeFileId) {
+            setFocusFileId(added.includes(primaryId) ? primaryId : '');
+            setSelectedFeature(null);
+        }
 
         // 并行加载所有未缓存文件的第一页
         await Promise.all(
@@ -254,6 +269,36 @@ function App() {
                 return Promise.resolve();
             })
         );
+    };
+
+    const activateFileTab = (fileId: string, fileName: string) => {
+        if (fileId === activeFileId) return;
+        setActiveFileId(fileId);
+        setActiveFileName(fileName);
+        setFocusFileId('');
+        setSelectedFeature(null);
+        if (!uploadedFilesData[fileId]) void loadFileData(fileId, fileName);
+    };
+
+    const handleMapFeature = (fileId: string, feature: Record<string, unknown> | null) => {
+        if (!feature) {
+            setSelectedFeature(null);
+            return;
+        }
+        const layer = selectedFilesInfo.find(item => item.fileId === fileId);
+        if (!layer) return;
+        setActiveFileId(fileId);
+        setActiveFileName(layer.fileName);
+        setFocusFileId('');
+        setSelectionOrigin('map');
+        setSelectedFeature(feature);
+        const page = uploadedFilesData[fileId];
+        if (page?.features.some(item => String(item.id ?? item.properties?.id) === String(feature.id))) {
+            // A slower lookup for a previous click must not replace the page already showing this feature.
+            loadVersionByFileRef.current[fileId] = (loadVersionByFileRef.current[fileId] || 0) + 1;
+        } else {
+            void loadFileData(fileId, layer.fileName, 1, page?.pagination.pageSize ?? 20, Number(feature.id));
+        }
     };
 
     // 构造传给 DataPivot 的多文件数据对象
@@ -288,10 +333,12 @@ function App() {
             map={
                 <MapView
                     data={mapData}
-                    fileName={activeFileName}
                     fileId={activeFileId}
+                    focusFileId={focusFileId}
                     selectedFeature={selectedFeature}
-                    onFeatureClick={setSelectedFeature}
+                    selectionOrigin={selectionOrigin}
+                    onFeatureClick={handleMapFeature}
+                    onFileTabChange={activateFileTab}
                     selectedFilesInfo={mapLayersInfo}
                 />
             }
@@ -308,8 +355,12 @@ function App() {
                                 : currentData ? '暂无属性数据' : '正在读取属性数据…'
                             : undefined}
                         onPageChange={handlePageChange}
-                        onRowClick={setSelectedFeature}
+                        onRowClick={feature => {
+                            setSelectionOrigin('table');
+                            setSelectedFeature(feature);
+                        }}
                         selectedFeature={selectedFeature}
+                        scrollToSelectedFeature={selectionOrigin === 'map'}
                         onDataChange={handleDataChange}
                         onAddRow={handleAddRow}
                         onDeleteRow={handleDeleteRow}
@@ -318,14 +369,7 @@ function App() {
                         onDeleteColumns={handleDeleteColumns}
                         onRenameColumn={handleRenameColumn}
                         selectedFilesData={selectedFilesData}
-                        onFileTabChange={async (fileId, fileName) => {
-                            setActiveFileId(fileId);
-                            setActiveFileName(fileName);
-                            setSelectedFeature(null);
-                            if (!uploadedFilesData[fileId]) {
-                                await loadFileData(fileId, fileName, 1, 20);
-                            }
-                        }}
+                        onFileTabChange={activateFileTab}
                     />
                 </SplitTablePanel>
             }

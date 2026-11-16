@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BasemapController, BASEMAP_ANCHOR, initialMapStyle, rasterStyle, prepareBasemap, loadBasemap } from '../src/features/map/basemaps.ts';
+import { BasemapController, BASEMAP_ANCHOR, BASEMAP_OPTIONS, initialMapStyle, rasterStyle, prepareBasemap, loadBasemap } from '../src/features/map/basemaps.ts';
 
 class MapDouble {
   constructor() {
@@ -43,6 +43,16 @@ const vectorStyle = () => ({
   version: 8, glyphs: 'https://assets.example/font/{fontstack}/{range}.pbf', sprite: 'https://assets.example/sprite',
   sources: { world: { type: 'vector', url: 'https://api.example/tiles.json' } },
   layers: [{ id: 'water', type: 'fill', source: 'world', 'source-layer': 'water' }],
+});
+
+test('only Protomaps and proxied TianDiTu options are exposed with a neutral initial map', () => {
+  assert.deepEqual(BASEMAP_OPTIONS.map(option => option.key), [
+    'protomaps-light', 'protomaps-white', 'protomaps-grayscale', 'protomaps-dark', 'protomaps-black',
+    'tianditu-vector', 'tianditu-imagery',
+  ]);
+  assert.equal(initialMapStyle().layers[0].paint['background-color'], '#f5f7fb');
+  assert.throws(() => rasterStyle('dark', '/api'));
+  assert.throws(() => rasterStyle('light', '/api'));
 });
 
 test('TianDiTu composite contains base and Chinese labels using only our API', () => {
@@ -98,7 +108,7 @@ test('tile timeout removes staged resources and restores glyphs and sprites', as
   assert.equal(map.glyphs, null);
   assert.equal(map.sprite, null);
   assert.equal(map.handlers.size, 0);
-  assert.deepEqual(Object.keys(map.sources), ['basemap-initial-dark', 'business']);
+  assert.deepEqual(Object.keys(map.sources), ['business']);
 });
 
 test('synchronous layer validation failure rolls back partially installed sources', async () => {
@@ -107,7 +117,7 @@ test('synchronous layer validation failure rolls back partially installed source
   const controller = new BasemapController(map, async () => vectorStyle());
   await assert.rejects(controller.switchTo('protomaps-dark'), /已保留/);
   assert.equal(map.handlers.size, 0);
-  assert.deepEqual(Object.keys(map.sources), ['basemap-initial-dark', 'business']);
+  assert.deepEqual(Object.keys(map.sources), ['business']);
 });
 
 test('latest selection wins when an earlier request is still loading', async () => {
@@ -123,10 +133,10 @@ test('latest selection wins when an earlier request is still loading', async () 
   });
   const first = controller.switchTo('protomaps-dark');
   await firstStarted;
-  const second = controller.switchTo('light');
+  const second = controller.switchTo('tianditu-vector');
   assert.equal(await first, false);
   assert.equal(await second, true);
-  assert.ok(map.getSource('basemap-2-light'));
+  assert.ok(map.getSource('basemap-2-vec'));
   assert.equal(map.handlers.size, 0);
 });
 

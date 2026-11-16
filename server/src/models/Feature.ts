@@ -83,9 +83,16 @@ export const findFeaturesPaginated = async (fileId: string, skip: number, limit:
   }));
 };
 
-/**
- * 统计总数
- */
+/** Locate a feature using the same ID ordering as the attribute table. */
+export const findFeatureOffset = async (fileId: string, featureId: number): Promise<number | undefined> => {
+  const result = await pool.query<{ preceding: string }>(`
+    SELECT (SELECT COUNT(*) FROM spatial_features WHERE file_id = $1 AND id < $2) AS preceding
+    FROM spatial_features WHERE file_id = $1 AND id = $2
+  `, [fileId, featureId]);
+  return result.rows[0] ? Number(result.rows[0].preceding) : undefined;
+};
+
+/** 统计总数 */
 export const countFeaturesByFileId = async (fileId: string): Promise<number> => {
   const sql = `SELECT COUNT(*) FROM spatial_features WHERE file_id = $1`;
   const result = await pool.query(sql, [fileId]);

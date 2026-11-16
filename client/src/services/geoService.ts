@@ -177,10 +177,10 @@ class GeoService {
    * @param page 页码 (默认 1)
    * @param pageSize 每页数量 (默认 20)
    */
-  async getFileData(id: string, page = 1, pageSize = 20, sceneId?: string): Promise<PaginatedGeoResponse> {
+  async getFileData(id: string, page = 1, pageSize = 20, sceneId?: string, featureId?: number): Promise<PaginatedGeoResponse> {
     // 对应后端路由: GET /api/files/:id/data?page=1&pageSize=20
     const res = await apiClient.get<ApiResponse<PaginatedGeoResponse>>(`${filesPath(sceneId)}/${encodeURIComponent(id)}/data`, {
-      params: { page, pageSize }
+      params: { page, pageSize, featureId }
     });
     // 注意：apiClient 拦截器通常已经处理了 response.data，
     // 如果你的 apiClient 依然返回 axios 原始对象，请使用 response.data.data

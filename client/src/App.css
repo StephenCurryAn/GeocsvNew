@@ -394,10 +394,18 @@
 }
 
 .map-layer-name {
+    display: block;
+    max-width: 100%;
+    padding: 0;
+    text-align: left;
+    cursor: pointer;
     color: var(--workbench-text);
     font-size: 12px;
     font-weight: 500;
 }
+
+.map-layer-name:hover { text-decoration: underline; }
+.map-layer-name[aria-current="true"] { font-weight: 700; }
 
 .map-layer-status,
 .map-layer-empty {
