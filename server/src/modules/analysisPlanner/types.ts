@@ -1,5 +1,5 @@
 import type { DatasetSummary } from '../spatialPivot/datasets';
-import type { AnalysisRun } from '../spatialPivot/service';
+import type { RunStatus } from '../analysis/protocol';
 import type { SpatialPivotSpec } from '../spatialPivot/plan';
 
 export interface AnalysisView { chartType: 'bar' | 'line' | 'pie' }
@@ -19,7 +19,7 @@ export interface PlanningContext {
 export interface PlannerDependencies {
   readDataset: (fileId: string) => Promise<DatasetSummary>;
   validatePlan: (spec: unknown) => Promise<SpatialPivotSpec>;
-  getRun: (id: string) => Promise<AnalysisRun | null>;
+  getRun: (id: string) => Promise<{ id: string; status: RunStatus; artifactId: string | null; spec: SpatialPivotSpec } | null>;
   complete?: (context: PlanningContext) => Promise<unknown>;
 }
 

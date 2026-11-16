@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "test": "node -r ts-node/register --test tests/*.test.cjs",
-    "test:integration": "node -r ts-node/register --test tests/spatialPivot.integration.cjs",
+    "test:integration": "node -r ts-node/register --test tests/*.integration.cjs",
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "dev": "nodemon -L src/index.ts"

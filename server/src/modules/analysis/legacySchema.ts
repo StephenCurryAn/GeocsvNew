@@ -1,12 +1,12 @@
 // Additive schema only: existing files, features and registered models stay untouched.
-export const SPATIAL_PIVOT_SCHEMA = `
-CREATE TABLE IF NOT EXISTS geocsv_analysis_definitions (
+export const LEGACY_ANALYSIS_SCHEMA = `
+CREATE TABLE geocsv_analysis_definitions (
   id UUID PRIMARY KEY,
   spec_hash TEXT UNIQUE NOT NULL,
   spec JSONB NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE TABLE IF NOT EXISTS geocsv_analysis_runs (
+CREATE TABLE geocsv_analysis_runs (
   id UUID PRIMARY KEY,
   definition_id UUID NOT NULL REFERENCES geocsv_analysis_definitions(id),
   spec JSONB NOT NULL,
@@ -20,8 +20,8 @@ CREATE TABLE IF NOT EXISTS geocsv_analysis_runs (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   completed_at TIMESTAMPTZ
 );
-CREATE INDEX IF NOT EXISTS geocsv_runs_queue ON geocsv_analysis_runs(status, created_at);
-CREATE TABLE IF NOT EXISTS geocsv_analysis_artifacts (
+CREATE INDEX geocsv_runs_queue ON geocsv_analysis_runs(status, created_at);
+CREATE TABLE geocsv_analysis_artifacts (
   id UUID PRIMARY KEY,
   run_id UUID UNIQUE NOT NULL REFERENCES geocsv_analysis_runs(id),
   spec JSONB NOT NULL,
@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS geocsv_analysis_artifacts (
   summary JSONB NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE TABLE IF NOT EXISTS geocsv_analysis_artifact_rows (
+CREATE TABLE geocsv_analysis_artifact_rows (
   artifact_id UUID NOT NULL REFERENCES geocsv_analysis_artifacts(id) ON DELETE CASCADE,
   feature_id INTEGER NOT NULL,
   label TEXT NOT NULL,

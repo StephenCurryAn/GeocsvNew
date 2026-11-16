@@ -9,7 +9,7 @@ export interface DatasetSummary {
 
 export const readDataset = async (db: Database, fileId: string): Promise<DatasetSummary> => {
   const file = await db.query('SELECT id, name FROM file_nodes WHERE id = $1 AND type = $2', [fileId, 'file']);
-  if (!file.rowCount) throw new AnalysisInputError('数据集不存在');
+  if (!file.rowCount) throw new AnalysisInputError('数据集不存在', 'DATASET_NOT_FOUND');
   const metadata = await db.query(`
     SELECT COUNT(*)::integer AS count,
            COALESCE(array_agg(DISTINCT ST_GeometryType(geom)) FILTER (WHERE geom IS NOT NULL), '{}') AS types
@@ -31,18 +31,18 @@ export const validateDatasets = async (db: Database, spec: SpatialPivotSpec) => 
     [target, SPATIAL_PIVOT_OPERATOR.targetGeometry], [join, SPATIAL_PIVOT_OPERATOR.joinGeometry],
   ] as const) {
     if (dataset.geometryTypes.some(type => !(allowed as readonly string[]).includes(type))) {
-      throw new AnalysisInputError(`${dataset.name} 的几何类型不符合算子要求（行政区面、POI 点）`);
+      throw new AnalysisInputError(`${dataset.name} 的几何类型不符合算子要求（行政区面、POI 点）`, 'INVALID_GEOMETRY');
     }
   }
   for (const [dataset, field] of [[target, spec.target.labelField], [join, spec.join.categoryField]] as const) {
-    if (field !== null && !dataset.fields.includes(field)) throw new AnalysisInputError(`${dataset.name} 不存在字段 ${field}`);
+    if (field !== null && !dataset.fields.includes(field)) throw new AnalysisInputError(`${dataset.name} 不存在字段 ${field}`, 'UNKNOWN_FIELD');
   }
   const quality = await db.query(`
     SELECT COUNT(*)::integer AS invalid FROM spatial_features
     WHERE file_id = ANY($1::text[])
       AND (geom IS NULL OR ST_IsEmpty(geom) OR NOT ST_IsValid(geom) OR ST_SRID(geom) <> 4326)`,
     [[spec.target.fileId, spec.join.fileId]]);
-  if (quality.rows[0].invalid > 0) throw new AnalysisInputError('图层包含空几何、无效几何或不支持的坐标系，请先修复数据');
+  if (quality.rows[0].invalid > 0) throw new AnalysisInputError('图层包含空几何、无效几何或不支持的坐标系，请先修复数据', 'INVALID_GEOMETRY');
   return { target, join };
 };
 

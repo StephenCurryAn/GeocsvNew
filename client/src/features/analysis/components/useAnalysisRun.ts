@@ -3,7 +3,7 @@ import {
   cancelRun, createRun, downloadArtifactCsv, fetchArtifact, fetchArtifactGeoJSON,
   fetchArtifactRows, fetchRun, fetchRuns, getRequestErrorMessage,
   type ResultChartType, type Run, type SpatialPivotArtifact, type SpatialPivotGeoJSON, type SpatialPivotRow,
-  type SpatialPivotSpec,
+  type SpatialPivotPlan,
 } from '../../../services/spatialPivotService';
 import { useRunHistoryStore } from '../../../stores/useRunHistoryStore';
 
@@ -134,13 +134,13 @@ export const useAnalysisRun = () => {
     return () => controller.abort();
   }, [artifactId, artifactTotalRows]);
 
-  const start = useCallback(async (spec: SpatialPivotSpec) => {
+  const start = useCallback(async (plan: SpatialPivotPlan) => {
     const version = beginSelection();
     setRequestError(null);
     setResultError(null);
     setArtifact(null);
     setResultOpen(false);
-    const created = await createRun(spec);
+    const created = await createRun(plan);
     if (selectionEpoch.current === version) setRun(created);
     setRunHistory(previous => [created, ...previous.filter(item => item.id !== created.id)].slice(0, 20));
     return created;

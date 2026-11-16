@@ -18,8 +18,9 @@
 | --- | --- |
 | `plan.ts` | 运行时协议校验、固定版本算子、参数化空间查询、矩阵格式化 |
 | `datasets.ts` | 现有数据适配、全字段摘要、几何质量和内容指纹 |
-| `service.ts` | 分析定义、任务提交、单并发调度、取消、恢复和事务提交 |
-| `schema.ts` | 增量建表，不改动原有文件或要素表 |
+| `analysis/service.ts` | 分析定义、计划确认、幂等提交、任务调度、取消、恢复和事务提交 |
+| `analysis/migrations.ts` | 版本化分析表迁移 |
+| `operators/spatialPivot.ts` | 登记算子并绑定 PostGIS 计算与结果写入 |
 | `router.ts` | HTTP 适配、分页、结果 GeoJSON 和 CSV |
 | `SpatialPivotPanel.tsx` | 参数、计划检查、任务状态、取消及运行历史 |
 | `SpatialPivotResult.tsx` | 当前页图表、统计明细、专题地图与选中联动 |
@@ -49,8 +50,10 @@
 | --- | --- |
 | `GET /datasets?ids=a,b` | 所选图层元数据与完整字段集合 |
 | `GET /operators/spatial-pivot` | 固定算子能力 |
-| `POST /analysis-plans` | 校验并返回规范化计划 |
-| `POST /runs`，body 为 `{spec}` | 保存提交时指纹，返回 202 与排队记录 |
+| `POST /analysis-plans` | 旧版参数校验，返回规范化参数 |
+| `POST /analysis/plans`，body 为 `{spec}` | 保存校验计划与输入指纹 |
+| `POST /runs`，body 为 `{planId,planVersion}` | 确认计划并核对输入，使用 `Idempotency-Key` 可靠提交 |
+| `POST /runs`，body 为 `{spec}` | 兼容提交，固定提交时指纹，返回 202 与排队记录 |
 | `GET /runs?limit=20` | 最近运行 |
 | `GET /runs/:id` | 状态、输入指纹、结果或错误 |
 | `POST /runs/:id/cancel` | 请求取消 |
@@ -70,7 +73,7 @@
 
 Artifact 元数据、结果明细、目标几何快照与成功状态在同一事务提交。取消、失败或连接中断会回滚半成品。计算不回写源数据，展示和下载只读取保存的结果。
 
-新增四张表：`geocsv_analysis_definitions`、`geocsv_analysis_runs`、`geocsv_analysis_artifacts`、`geocsv_analysis_artifact_rows`。停用时可移除新路由，无需删除源表。
+原有分析定义、Run 与 Artifact 表继续使用。计划、请求键及结果格式由版本化迁移管理，接口和回退说明见 [分析协议](analysis-protocol.md)。
 
 ## 验证与样例
 

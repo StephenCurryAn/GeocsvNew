@@ -1,6 +1,5 @@
-export class AnalysisInputError extends Error {
-  status = 400;
-}
+import { AnalysisInputError } from '../analysis/errors';
+export { AnalysisInputError } from '../analysis/errors';
 
 export interface SpatialPivotSpec {
   schemaVersion: 1;
@@ -19,21 +18,21 @@ export const SPATIAL_PIVOT_OPERATOR = Object.freeze({
 
 const record = (value: unknown): Record<string, unknown> => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new AnalysisInputError('分析计划必须是对象');
+    throw new AnalysisInputError('分析计划必须是对象', 'INVALID_SPEC');
   }
   return value as Record<string, unknown>;
 };
 
 const checkKeys = (input: Record<string, unknown>, allowed: string[]) => {
   if (Object.keys(input).some(key => !allowed.includes(key))) {
-    throw new AnalysisInputError('分析计划包含此版本不支持的参数');
+    throw new AnalysisInputError('分析计划包含此版本不支持的参数', 'INVALID_SPEC');
   }
 };
 
 const text = (value: unknown, name: string, optional = false): string | null => {
   if (optional && (value === null || value === undefined)) return null;
   if (typeof value !== 'string' || !value.trim() || value.length > 255 || value.includes('\0')) {
-    throw new AnalysisInputError(`${name}无效`);
+    throw new AnalysisInputError(`${name}无效`, 'INVALID_SPEC');
   }
   // Preserve exact field names, including spaces and quotes.
   return value;
@@ -47,10 +46,10 @@ export const parseSpatialPivotSpec = (value: unknown): SpatialPivotSpec => {
   checkKeys(target, ['fileId', 'labelField']);
   checkKeys(join, ['fileId', 'categoryField']);
   if (input.schemaVersion !== 1 || input.kind !== 'spatial_pivot' || input.operatorVersion !== 1) {
-    throw new AnalysisInputError('不支持的分析协议或算子版本');
+    throw new AnalysisInputError('不支持的分析协议或算子版本', 'INVALID_SPEC');
   }
   if (input.boundaryPolicy !== 'include' && input.boundaryPolicy !== 'exclude') {
-    throw new AnalysisInputError('必须明确边界点是否计入');
+    throw new AnalysisInputError('必须明确边界点是否计入', 'INVALID_SPEC');
   }
   const spec: SpatialPivotSpec = {
     schemaVersion: 1, kind: 'spatial_pivot', operatorVersion: 1,
@@ -58,7 +57,7 @@ export const parseSpatialPivotSpec = (value: unknown): SpatialPivotSpec => {
     join: { fileId: text(join.fileId, '关联图层')!, categoryField: text(join.categoryField, '分类字段', true) },
     boundaryPolicy: input.boundaryPolicy,
   };
-  if (spec.target.fileId === spec.join.fileId) throw new AnalysisInputError('目标与 POI 必须是不同图层');
+  if (spec.target.fileId === spec.join.fileId) throw new AnalysisInputError('目标与 POI 必须是不同图层', 'INVALID_SPEC');
   return spec;
 };
 
