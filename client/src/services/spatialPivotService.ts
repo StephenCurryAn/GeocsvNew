@@ -25,6 +25,11 @@ export type NaturalLanguagePlan =
       view: { chartType: ResultChartType }; assumptions: string[];
       inputs: { targetName: string; joinName: string };
     }
+  | {
+      status: 'ready'; source: 'llm'; message: string;
+      confirmationStatus: 'pending_confirmation'; spec: MoranSpec;
+      plan: AnalysisPlan<MoranSpec>; inputs: { targetName: string };
+    }
   | { status: 'clarification'; message: string; questions: string[] }
   | { status: 'unsupported'; message: string }
   | {
@@ -41,11 +46,26 @@ export interface SpatialPivotSpec {
   boundaryPolicy: BoundaryPolicy;
 }
 
-export interface SpatialPivotPlan {
+export interface MoranSpec {
+  schemaVersion: 1;
+  kind: 'spatial_autocorrelation';
+  operatorVersion: 2;
+  target: { fileId: string; valueField: string };
+  contiguity: 'queen' | 'rook';
+  permutations: number;
+  seed: number;
+}
+
+export type AnalysisSpec = SpatialPivotSpec | MoranSpec;
+
+export interface AnalysisPlan<TSpec extends AnalysisSpec = AnalysisSpec> {
   id: string;
   version: number;
-  spec: SpatialPivotSpec;
+  spec: TSpec;
+  status: 'validated' | 'confirmed';
 }
+
+export type SpatialPivotPlan = AnalysisPlan<SpatialPivotSpec>;
 
 export type RunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 
@@ -114,16 +134,13 @@ export const createAnalysisPlan = async (spec: SpatialPivotSpec, signal?: AbortS
 };
 
 export const createNaturalLanguagePlan = async (
-  userPrompt: string,
-  fileIds: string[],
-  contextRunId?: string,
+  sceneId: string,
+  input: { userPrompt: string; fileIds: string[]; contextRunId?: string; contextPlanId?: string },
   signal?: AbortSignal,
 ): Promise<NaturalLanguagePlan> => {
-  const response = await apiClient.post<ApiEnvelope<NaturalLanguagePlan>>('/analysis-plans/natural-language', {
-    userPrompt,
-    fileIds,
-    ...(contextRunId ? { contextRunId } : {}),
-  }, { signal });
+  const response = await apiClient.post<ApiEnvelope<NaturalLanguagePlan>>(
+    `/scenes/${encodeURIComponent(sceneId)}/analysis/plans/natural-language`, input, { signal },
+  );
   return unwrap(response.data);
 };
 

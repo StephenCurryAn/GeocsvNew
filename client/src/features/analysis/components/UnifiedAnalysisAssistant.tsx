@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, App, Button, Card, Empty, Input, Space, Spin, Typography } from 'antd';
+import { Alert, App, Button, Card, Input, Space, Spin, Tag, Typography } from 'antd';
 import { CheckCircleOutlined, SendOutlined } from '@ant-design/icons';
 import AnalysisRunView from './AnalysisRunView';
 import { useAnalysisWorkspace } from './AnalysisWorkspace';
@@ -9,11 +9,12 @@ import {
 } from '../../../services/spatialPivotService';
 
 interface UnifiedAnalysisAssistantProps {
+  sceneId: string;
   selectedFileIds: string[];
   onSwitchToLegacy: () => void;
 }
 
-const UnifiedAnalysisAssistant = ({ selectedFileIds, onSwitchToLegacy }: UnifiedAnalysisAssistantProps) => {
+const UnifiedAnalysisAssistant = ({ sceneId, selectedFileIds, onSwitchToLegacy }: UnifiedAnalysisAssistantProps) => {
   const { message } = App.useApp();
   const { runs: { assistant: analysis }, openResult } = useAnalysisWorkspace();
   const [prompt, setPrompt] = useState('');
@@ -26,6 +27,7 @@ const UnifiedAnalysisAssistant = ({ selectedFileIds, onSwitchToLegacy }: Unified
   const [reusing, setReusing] = useState(false);
   const requestEpoch = useRef(0);
   const planningController = useRef<AbortController | null>(null);
+  const previousMoranPlan = useRef<{ id: string; fileIdsKey: string } | null>(null);
   const reuseLock = useRef(false);
   const fileIdsKey = JSON.stringify([...new Set(selectedFileIds)].sort());
   const fileIds = JSON.parse(fileIdsKey) as string[];
@@ -55,7 +57,7 @@ const UnifiedAnalysisAssistant = ({ selectedFileIds, onSwitchToLegacy }: Unified
   }, []);
 
   const handlePlan = async () => {
-    if (!prompt.trim()) return;
+    if (!sceneId || !prompt.trim()) return;
     invalidatePlanRequest();
     const epoch = ++requestEpoch.current;
     const controller = new AbortController();
@@ -66,11 +68,17 @@ const UnifiedAnalysisAssistant = ({ selectedFileIds, onSwitchToLegacy }: Unified
     setPlanError(null);
     setFeedback(null);
     try {
-      const result = await createNaturalLanguagePlan(submittedPrompt, fileIds, submittedContextRunId || undefined, controller.signal);
+      const result = await createNaturalLanguagePlan(sceneId, {
+        userPrompt: submittedPrompt, fileIds, contextRunId: submittedContextRunId || undefined,
+        contextPlanId: previousMoranPlan.current?.fileIdsKey === fileIdsKey ? previousMoranPlan.current.id : undefined,
+      }, controller.signal);
       if (controller.signal.aborted || requestEpoch.current !== epoch) return;
       setPlan(result);
       setPlanBinding({ prompt: submittedPrompt, fileIdsKey, contextRunId: submittedContextRunId });
-      if (result.status === 'ready' || result.status === 'view_only') analysis.setChartType(result.view.chartType);
+      if ('view' in result) analysis.setChartType(result.view.chartType);
+      if (result.status === 'ready') {
+        previousMoranPlan.current = 'view' in result ? null : { id: result.plan.id, fileIdsKey };
+      }
     } catch (error) {
       if (!controller.signal.aborted && requestEpoch.current === epoch) setPlanError(`自然语言规划失败：${getRequestErrorMessage(error)}`);
     } finally {
@@ -92,6 +100,7 @@ const UnifiedAnalysisAssistant = ({ selectedFileIds, onSwitchToLegacy }: Unified
 
   const handleClearDraft = () => {
     invalidatePlanRequest();
+    previousMoranPlan.current = null;
     setPrompt('');
     setPlanError(null);
     setFeedback(null);
@@ -134,19 +143,18 @@ const UnifiedAnalysisAssistant = ({ selectedFileIds, onSwitchToLegacy }: Unified
       <Card size="small" className="assistant-plan-card" title="分析需求">
         <div className="space-y-3">
           <Typography.Paragraph className="!mb-0 text-xs text-slate-400">
-            描述如何统计面内的点，确认图层、字段和边界规则后再执行。
+            支持面内点计数和 Moran/LISA 空间自相关。可勾选图层，也可在需求中写出当前场景的图层名称。
           </Typography.Paragraph>
-          {selectedFileIds.length === 0 && !hasReusableContext && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="选择图层开始分析，或从运行历史打开结果" />}
-          {selectedFileIds.length === 0 && hasReusableContext && <Alert type="info" showIcon title="当前没有勾选图层，可基于已恢复的成功运行继续更换图表。" />}
+          {selectedFileIds.length === 0 && hasReusableContext && <Alert type="info" showIcon title="可复用当前场景中已打开的运行结果来更换图表。" />}
           <Input.TextArea
             value={prompt}
             onChange={event => handlePromptChange(event.target.value)}
-            placeholder="例如：统计每个街道内不同类型的设施数量，排除边界"
+            placeholder="例如：用社区图层的 total_requests 字段做 Moran/LISA，采用 Queen 邻接"
             autoSize={{ minRows: 2, maxRows: 5 }}
-            disabled={selectedFileIds.length === 0 && !hasReusableContext}
+            disabled={!sceneId}
           />
           <div className="flex gap-2">
-            <Button className="flex-1" type="primary" icon={<SendOutlined />} loading={planning} disabled={!prompt.trim() || (selectedFileIds.length === 0 && !hasReusableContext)} onClick={() => void handlePlan()}>
+            <Button className="flex-1" type="primary" icon={<SendOutlined />} loading={planning} disabled={!sceneId || !prompt.trim()} onClick={() => void handlePlan()}>
               规划分析
             </Button>
             <Button onClick={handleClearDraft} disabled={!prompt && !plan && !planError && !feedback && !planning}>清空草案</Button>
@@ -156,7 +164,7 @@ const UnifiedAnalysisAssistant = ({ selectedFileIds, onSwitchToLegacy }: Unified
           {feedback && <Alert type="success" showIcon title={feedback} closable onClose={() => setFeedback(null)} />}
           {planning && <div className="text-center"><Spin size="small" /></div>}
 
-          {plan?.status === 'ready' && planIsCurrent && (
+          {plan?.status === 'ready' && 'view' in plan && planIsCurrent && (
             <div className="space-y-2 rounded-md border border-cyan-900/50 bg-slate-900/60 p-3">
               <div className="flex items-center gap-2 text-xs font-semibold text-cyan-200"><CheckCircleOutlined />已生成待确认计划（{plan.source === 'rules' ? '规则规划' : '模型规划'}）</div>
               <Typography.Paragraph className="!mb-1 text-xs text-slate-300">{plan.message}</Typography.Paragraph>
@@ -170,6 +178,19 @@ const UnifiedAnalysisAssistant = ({ selectedFileIds, onSwitchToLegacy }: Unified
                 执行已验证算子
               </Button>
             </div>
+          )}
+
+          {plan?.status === 'ready' && !('view' in plan) && planIsCurrent && (
+            <Card size="small" title="Moran/LISA 空间自相关">
+              <Tag className="!mb-2" color="processing">待确认</Tag>
+              <dl className="!mb-0 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">
+                <dt>面图层</dt><dd className="break-all">{plan.inputs.targetName}</dd>
+                <dt>数值字段</dt><dd className="break-all">{plan.spec.target.valueField}</dd>
+                <dt>邻接规则</dt><dd>{plan.spec.contiguity === 'queen' ? 'Queen（共点或共边）' : 'Rook（共边）'}</dd>
+                <dt>置换次数</dt><dd>{plan.spec.permutations}</dd>
+                <dt>随机种子</dt><dd>{plan.spec.seed}</dd>
+              </dl>
+            </Card>
           )}
 
           {plan?.status === 'clarification' && planIsCurrent && (

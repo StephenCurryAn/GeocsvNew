@@ -11,6 +11,11 @@ const charts = [
 export const requestedCharts = (prompt: string): AnalysisView['chartType'][] => charts
   .filter(chart => new RegExp(chart.pattern).test(prompt)).map(chart => chart.chartType);
 
+export const isUnclearChartFollowup = (prompt: string) =>
+  requestedCharts(prompt).length > 0
+  && !/统计|计数|数量|多少|重新计算|重算|重新分析|重跑/.test(prompt)
+  && boundaryChoice(prompt) === null;
+
 export const isViewOnly = (prompt: string) => {
   if (requestedCharts(prompt).length === 0) return false;
   let rest = prompt.toLowerCase();
@@ -88,6 +93,19 @@ const findField = (prompt: string, fields: string[], aliases: string[]): string 
 export const rulePlan = (prompt: string, datasets: DatasetSummary[], previous?: SpatialPivotSpec): NaturalPlan | null => {
   const boundary = boundaryChoice(prompt);
   if (boundary === 'conflict') return clarification('边界点同时被要求纳入和排除，请选择一种规则。');
+  const explicitLabel = requestedLabel(prompt);
+  let rest = stripMetadata(explicitLabel ? prompt.replace(explicitLabel.phrase, '') : prompt, datasets).toLowerCase();
+  for (const chart of charts) rest = rest.replace(chart.pattern, '');
+  rest = rest.replace(excludedBoundary, '').replace(includedBoundary, '');
+  const words = ['请', '帮我', '麻烦', '我想', '需要', '想要', '统计', '计算', '计数', '数量', '个数', '多少', '总数', '总量',
+    '要素', '设施', 'poi', '点数据', '点图层', '面图层', '行政区', '区县', '街道', '不同', '类型', '类别', '分类', '分组',
+    '分别', '每个', '各个', '每', '各', '包含', '落在', '内', '中', '按', '按照', '纳入', '排除', '边界', '上', '也算',
+    '不分类', '不分组', '只', '仅', '所有', '全部', '改成', '改为', '换成', '并且', '并', '然后', '同时', '用', '绘制', '画',
+    '展示', '显示', '生成', '把', '将', '的', '里', '在', '和', '与', '以及', '再', '吧'].sort((a, b) => b.length - a.length);
+  for (const word of words) rest = rest.split(word).join('');
+  rest = rest.replace(/[，。！？、：:\s"'`]/g, '');
+  if (rest || (!/统计|计数|数量|个数|多少|count/i.test(prompt) && !previous)) return null;
+
   const polygon = datasets.filter(dataset => dataset.geometryTypes.length > 0 && dataset.geometryTypes.every(type =>
     (SPATIAL_PIVOT_OPERATOR.targetGeometry as readonly string[]).includes(type)));
   const points = datasets.filter(dataset => dataset.geometryTypes.length > 0 && dataset.geometryTypes.every(type =>
@@ -103,7 +121,6 @@ export const rulePlan = (prompt: string, datasets: DatasetSummary[], previous?: 
     : previous?.join.fileId === join.fileId ? previous.join.categoryField : null;
   if (categoryField === undefined) return clarification(`请明确分类字段。${join.name} 的可用字段：${join.fields.join('、')}`);
   const nameFields = target.fields.filter(field => ['名称', '名字', 'name', '街道名称', '区县名称', '街道名'].includes(field.toLowerCase()));
-  const explicitLabel = requestedLabel(prompt);
   if (explicitLabel && !target.fields.includes(explicitLabel.field)) return clarification(`目标图层不存在标识字段 ${explicitLabel.field}，请使用真实字段名。`);
   const labelField = explicitLabel ? explicitLabel.field : previous?.target.fileId === target.fileId ? previous.target.labelField : nameFields.length === 1 ? nameFields[0] : null;
   const spec: SpatialPivotSpec = {
@@ -111,17 +128,6 @@ export const rulePlan = (prompt: string, datasets: DatasetSummary[], previous?: 
     target: { fileId: target.fileId, labelField }, join: { fileId: join.fileId, categoryField },
     boundaryPolicy: boundary || previous?.boundaryPolicy || 'exclude',
   };
-  let rest = stripMetadata(explicitLabel ? prompt.replace(explicitLabel.phrase, '') : prompt, datasets).toLowerCase();
-  for (const chart of charts) rest = rest.replace(chart.pattern, '');
-  rest = rest.replace(excludedBoundary, '').replace(includedBoundary, '');
-  const words = ['请', '帮我', '麻烦', '我想', '需要', '想要', '统计', '计算', '计数', '数量', '个数', '多少', '总数', '总量',
-    '要素', '设施', 'poi', '点数据', '点图层', '面图层', '行政区', '区县', '街道', '不同', '类型', '类别', '分类', '分组',
-    '分别', '每个', '各个', '每', '各', '包含', '落在', '内', '中', '按', '按照', '纳入', '排除', '边界', '上', '也算',
-    '不分类', '不分组', '只', '仅', '所有', '全部', '改成', '改为', '换成', '并且', '并', '然后', '同时', '用', '绘制', '画',
-    '展示', '显示', '生成', '把', '将', '的', '里', '在', '和', '与', '以及', '再', '吧'].sort((a, b) => b.length - a.length);
-  for (const word of words) rest = rest.split(word).join('');
-  rest = rest.replace(/[，。！？、：:\s"'`]/g, '');
-  if (rest || (!/统计|计数|数量|个数|多少|count/i.test(prompt) && !previous)) return null;
   if (!previous && !/每|各|内|中|包含|落在/.test(prompt)) {
     return clarification('请确认是否需要“每个目标面内”的点计数；单独统计图层总数不等同于空间透视。');
   }

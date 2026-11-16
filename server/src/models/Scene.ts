@@ -33,6 +33,17 @@ export const sceneExists = async (id: string): Promise<boolean> => {
   return result.rowCount === 1;
 };
 
+export const sceneContainsFiles = async (
+  db: Pool | PoolClient, sceneId: string, fileIds: string[],
+): Promise<boolean> => {
+  const unique = [...new Set(fileIds)];
+  const result = await db.query(
+    "SELECT id FROM file_nodes WHERE scene_id = $1 AND id = ANY($2::text[]) AND type = 'file'",
+    [sceneId, unique],
+  );
+  return result.rowCount === unique.length;
+};
+
 // Serialize changes to a scene's resource tree, including name allocation and subtree deletion.
 export const lockSceneResources = async (client: PoolClient, id: string): Promise<void> => {
   await client.query('SELECT id FROM scenes WHERE id = $1 FOR NO KEY UPDATE', [id]);

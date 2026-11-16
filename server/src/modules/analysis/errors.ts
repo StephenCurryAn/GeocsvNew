@@ -12,6 +12,10 @@ export type AnalysisErrorCode =
   | 'INPUT_SNAPSHOT_EXPIRED'
   | 'EXECUTION_TIMEOUT'
   | 'WORKER_INTERRUPTED'
+  | 'PLANNER_UNAVAILABLE'
+  | 'PLANNER_TIMEOUT'
+  | 'PLANNER_RATE_LIMITED'
+  | 'PLANNER_INVALID_RESPONSE'
   | 'EXECUTION_FAILED';
 
 export class AnalysisError extends Error {

@@ -5,22 +5,33 @@ type Database = Pick<Pool | PoolClient, 'query'>;
 
 export interface DatasetSummary {
   fileId: string; name: string; featureCount: number; geometryTypes: string[]; fields: string[];
+  numericFields?: string[];
 }
 
-export const readDataset = async (db: Database, fileId: string): Promise<DatasetSummary> => {
+export const readDataset = async (db: Database, fileId: string, includeNumericFields = false): Promise<DatasetSummary> => {
   const file = await db.query('SELECT id, name FROM file_nodes WHERE id = $1 AND type = $2', [fileId, 'file']);
   if (!file.rowCount) throw new AnalysisInputError('数据集不存在', 'DATASET_NOT_FOUND');
   const metadata = await db.query(`
     SELECT COUNT(*)::integer AS count,
            COALESCE(array_agg(DISTINCT ST_GeometryType(geom)) FILTER (WHERE geom IS NOT NULL), '{}') AS types
     FROM spatial_features WHERE file_id = $1`, [fileId]);
-  const fields = await db.query(`
+  const fieldQuery = includeNumericFields ? `
+    SELECT key, count(*) FILTER (
+      WHERE jsonb_typeof(value) IN ('number', 'string')
+        AND (value #>> '{}') ~ '^[[:space:]]*[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?[[:space:]]*$'
+        AND pg_input_is_valid(value #>> '{}', 'double precision')
+    ) >= 3 AS numeric
+    FROM spatial_features,
+      LATERAL jsonb_each(CASE WHEN jsonb_typeof(properties) = 'object' THEN properties ELSE '{}'::jsonb END)
+    WHERE file_id = $1 GROUP BY key ORDER BY key` : `
     SELECT DISTINCT key FROM spatial_features,
       LATERAL jsonb_object_keys(CASE WHEN jsonb_typeof(properties) = 'object' THEN properties ELSE '{}'::jsonb END) AS key
-    WHERE file_id = $1 ORDER BY key`, [fileId]);
+    WHERE file_id = $1 ORDER BY key`;
+  const fields = await db.query<{ key: string; numeric?: boolean }>(fieldQuery, [fileId]);
   return {
     fileId, name: file.rows[0].name, featureCount: metadata.rows[0].count,
     geometryTypes: metadata.rows[0].types, fields: fields.rows.map(row => row.key),
+    ...(includeNumericFields ? { numericFields: fields.rows.filter(row => row.numeric).map(row => row.key) } : {}),
   };
 };
 

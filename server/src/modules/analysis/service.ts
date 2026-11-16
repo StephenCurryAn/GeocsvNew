@@ -1,6 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import type { Pool, PoolClient } from 'pg';
+import { sceneContainsFiles } from '../../models/Scene';
+import { parseMoranSpec } from '../operators/moranLisa';
+import { readDataset } from '../spatialPivot/datasets';
 import { requireOperator } from '../operators/registry';
 import { PythonWorker } from '../operators/pythonWorker';
 import type { ArtifactDraft, PreparedOperator, PythonSnapshot } from '../operators/types';
@@ -100,11 +103,24 @@ export class AnalysisService {
     return { versions: await operator.fingerprint(client) };
   }
 
-  async createPlan(input: unknown) {
+  async createPlan(input: unknown, sceneId?: string) {
     await this.initialize();
     const operator = prepare(input);
     return transaction(this.db, 'BEGIN ISOLATION LEVEL REPEATABLE READ', async client => {
       const { versions } = await this.readInputs(client, operator);
+      if (sceneId !== undefined) {
+        const fileIds = Object.values(versions).map(version => version.fileId);
+        if (!await sceneContainsFiles(client, sceneId, fileIds)) {
+          throw new AnalysisInputError('计划引用了当前场景以外的图层', 'DATASET_NOT_FOUND');
+        }
+        if (operator.spec.kind === 'spatial_autocorrelation') {
+          const { target } = parseMoranSpec(operator.spec);
+          const data = await readDataset(client, target.fileId, true);
+          if (!data.numericFields?.includes(target.valueField)) {
+            throw new AnalysisInputError('所选字段须包含至少三个有效数值', 'INVALID_SPEC');
+          }
+        }
+      }
       return writePlan(client, operator.spec, digest(operator.spec), versions, false);
     });
   }

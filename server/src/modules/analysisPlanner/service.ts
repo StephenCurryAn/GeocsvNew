@@ -1,6 +1,6 @@
 import { AnalysisInputError, parseSpatialPivotSpec, type SpatialPivotSpec } from '../spatialPivot/plan';
 import type { DatasetSummary } from '../spatialPivot/datasets';
-import { boundaryChoice, isViewOnly, requestedCharts, requestedLabel, rulePlan, unsupportedRequirement } from './rules';
+import { boundaryChoice, isUnclearChartFollowup, isViewOnly, requestedCharts, requestedLabel, rulePlan, unsupportedRequirement } from './rules';
 import { clarification, type AnalysisView, type NaturalPlan, type PlannerDependencies } from './types';
 
 const object = (value: unknown): value is Record<string, unknown> =>
@@ -12,30 +12,34 @@ const questions = (value: unknown): string[] | null => Array.isArray(value) && v
 const validView = (value: unknown): value is AnalysisView => object(value)
   && Object.keys(value).length === 1 && typeof value.chartType === 'string' && ['bar', 'line', 'pie'].includes(value.chartType);
 
+export const readNaturalRequest = (input: unknown) => {
+  if (!object(input) || typeof input.userPrompt !== 'string' || !input.userPrompt.trim() || input.userPrompt.length > 4000) {
+    throw new AnalysisInputError('请提供 1 到 4000 字的分析需求');
+  }
+  if (Object.keys(input).some(key => !['userPrompt', 'fileIds', 'contextRunId'].includes(key))) {
+    throw new AnalysisInputError('自然语言规划只接受需求、图层 ID 和历史执行 ID');
+  }
+  if (!Array.isArray(input.fileIds) || input.fileIds.length > 30
+    || input.fileIds.some(id => typeof id !== 'string' || !id.trim() || id.length > 255 || id.includes('\0'))) {
+    throw new AnalysisInputError('请选择最多 30 个有效图层');
+  }
+  if (input.contextRunId !== undefined && (typeof input.contextRunId !== 'string'
+    || !/^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i.test(input.contextRunId))) {
+    throw new AnalysisInputError('历史执行 ID 无效');
+  }
+  return { userPrompt: input.userPrompt.trim(), fileIds: [...new Set(input.fileIds as string[])],
+    contextRunId: input.contextRunId as string | undefined };
+};
+
 export class NaturalAnalysisPlanner {
   constructor(private readonly dependencies: PlannerDependencies) {}
 
   async plan(input: unknown): Promise<NaturalPlan> {
-    if (!object(input) || typeof input.userPrompt !== 'string' || !input.userPrompt.trim() || input.userPrompt.length > 4000) {
-      throw new AnalysisInputError('请提供 1 到 4000 字的分析需求');
-    }
-    if (Object.keys(input).some(key => !['userPrompt', 'fileIds', 'contextRunId'].includes(key))) {
-      throw new AnalysisInputError('自然语言规划只接受需求、图层 ID 和历史执行 ID');
-    }
-    if (!Array.isArray(input.fileIds) || input.fileIds.length > 30
-      || input.fileIds.some(id => typeof id !== 'string' || !id.trim() || id.length > 255 || id.includes('\0'))) {
-      throw new AnalysisInputError('请选择最多 30 个有效图层');
-    }
-    if (input.contextRunId !== undefined && (typeof input.contextRunId !== 'string'
-      || !/^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i.test(input.contextRunId))) {
-      throw new AnalysisInputError('历史执行 ID 无效');
-    }
-    const prompt = input.userPrompt.trim();
-    const fileIds = [...new Set(input.fileIds as string[])];
+    const { userPrompt: prompt, fileIds, contextRunId } = readNaturalRequest(input);
     const chartTypes = requestedCharts(prompt);
     if (chartTypes.length > 1) return clarification('一次请选择一种图表：柱状图、折线图或饼图。');
-    const context = input.contextRunId ? await this.dependencies.getRun(input.contextRunId as string) : null;
-    if (input.contextRunId && !context) return clarification('找不到上一条执行记录，请从历史中重新选择。');
+    const context = contextRunId ? await this.dependencies.getRun(contextRunId) : null;
+    if (contextRunId && !context) return clarification('找不到上一条执行记录，请从历史中重新选择。');
     if (isViewOnly(prompt)) {
       if (!context || context.status !== 'succeeded' || !context.artifactId) {
         return clarification('请先完成一次分析，再指定要复用的结果。');
@@ -45,7 +49,7 @@ export class NaturalAnalysisPlanner {
         runId: context.id, artifactId: context.artifactId, view: { chartType: chartTypes[0] },
       };
     }
-    if (context && chartTypes.length && !/统计|计数|数量|多少|重新计算|重算|重新分析|重跑/.test(prompt) && boundaryChoice(prompt) === null) {
+    if (context && isUnclearChartFollowup(prompt)) {
       return clarification('请明确是只更换已有结果的图表，还是需要修改计算条件；当前不会重新计算。');
     }
     const previous = context?.status === 'succeeded'
@@ -75,10 +79,10 @@ export class NaturalAnalysisPlanner {
     } catch {
       return clarification('模型解析暂不可用，请稍后重试，或改用明确的面内计数表述与分析表单。未提交任何计算。');
     }
-    return this.validateProposal(proposal, datasets, prompt, previous);
+    return this.reviewProposal(proposal, datasets, prompt, previous);
   }
 
-  private async validateProposal(proposal: unknown, datasets: DatasetSummary[], prompt: string, previous?: SpatialPivotSpec): Promise<NaturalPlan> {
+  async reviewProposal(proposal: unknown, datasets: DatasetSummary[], prompt: string, previous?: SpatialPivotSpec): Promise<NaturalPlan> {
     if (!object(proposal)) return clarification('模型没有返回有效的结构化计划，请补充具体图层、字段与计算方法。');
     if (proposal.status === 'clarification') {
       const valid = questions(proposal.questions);

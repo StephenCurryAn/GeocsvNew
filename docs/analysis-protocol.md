@@ -7,6 +7,7 @@
 | `GET /operators` | 200，`Operator[]` |
 | `POST /analysis/plans` | `{ spec }`，201，返回待确认 `Plan` |
 | `GET /analysis/plans/:id` | 200，返回已保存的 `Plan` |
+| `POST /scenes/:sceneId/analysis/plans/natural-language` | 200，当前场景自然语言规划、澄清、不支持或复用空间透视结果 |
 | `POST /runs` | `{ planId, planVersion }`，需带 `Idempotency-Key`，202 |
 | `POST /runs` | 兼容 `{ spec }`，202，为本次提交登记隐式确认计划。可带请求键 |
 | `GET /runs/:id`、`GET /runs?limit=20&operator=spatial_pivot` | 200，单条 `Run` 或按创建时间倒序的历史列表。省略 `operator` 返回全部算子的记录 |
@@ -15,6 +16,8 @@
 | `GET /artifacts/:id` | 200，返回 `Artifact` 元数据 |
 
 Moran/LISA (`spatial_autocorrelation@2`) 使用同一 Plan、Run 和 Artifact 路径。`moran_lisa` v1 的 `summary` 为 `MoranLisaSummary`，`/artifacts/:id/rows` 为 `MoranLisaPage`，地图预览和 CSV 沿用相同地址。逐要素结果可空的 `pValue` 或 `quadrant` 分别表示未检验或无象限。空间透视沿用 [分页、GeoJSON 与 CSV](spatial-pivot.md) 地址和内容。旧 `GET /operators/spatial-pivot` 仍返回原能力对象。旧 `POST /analysis-plans` 仍以裸 `SpatialPivotSpec` 校验并返回规范化参数，采用这条路径的旧客户端在提交时固定输入。旧自然语言路由在 `ready` 响应额外返回 `plan`，其他分支沿用原结构。
+
+场景规划请求接受 `{ userPrompt, fileIds, contextRunId?, contextPlanId? }`。有勾选时只使用所选场景内图层。未勾选时可点名使用当前场景中的图层。`contextRunId` 用于同场景空间透视结果复用。`contextPlanId` 可为“同一图层”提供上一份 Moran/LISA 计划的目标图层，服务端重新校验图层归属。`ready` 响应新增 `confirmationStatus: "pending_confirmation"`，返回已验证并保存的 `plan`（协议状态为 `validated`，`confirmedAt` 为 `null`）。规划与读取计划均不创建 Run。
 
 ## 阶段 2 接线字段
 
@@ -47,6 +50,7 @@ Operator 的调度入口在 `server/src/modules/operators/registry.ts`。`prepar
 | 409 | `IDEMPOTENCY_KEY_CONFLICT` | 请求键已关联不同请求 |
 | 409 或 `failed` | `INPUT_VERSION_CHANGED` | 确认前或排队期间的输入版本发生变化 |
 | 410 或 `failed` | `INPUT_SNAPSHOT_EXPIRED` | Moran/LISA 的历史输入快照已过七天保留期或内容不可用 |
+| 429、502、503、504 | `PLANNER_RATE_LIMITED`、`PLANNER_INVALID_RESPONSE`、`PLANNER_UNAVAILABLE`、`PLANNER_TIMEOUT` | 模型限流、结构化响应无效、服务不可用或调用超时 |
 | `failed` | `EXECUTION_TIMEOUT` | Python 子进程超过执行时限 |
 | `failed` | `WORKER_INTERRUPTED`、`EXECUTION_FAILED` | 执行连接中断或其他计算错误 |
 
