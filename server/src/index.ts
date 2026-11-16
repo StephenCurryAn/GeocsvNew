@@ -10,6 +10,8 @@
 
 import express, { Request, Response } from 'express';
 import cors from 'cors'; // 跨域资源共享
+import sceneRoutes from './routes/sceneRoutes';
+import { migrateScenes } from './models/Scene';
 import fileRoutes from './routes/fileRoutes'; // 导入文件路由
 import analysisRoutes from './routes/analysisRoutes';
 import tileRoutes from './routes/tileRoutes';
@@ -21,9 +23,6 @@ import { createBasemapRouter } from './modules/basemaps/router';
 const app = express();
 // http://localhost:3000
 const PORT = Number(process.env.PORT || 3000);
-
-// 连接数据库（异步）
-connectDB();
 
 // 1. 中间件配置
 
@@ -44,6 +43,7 @@ app.use(express.json());
 
 // “:3000”的来源： 这是在代码中指定的端口号。来源于代码底部的 app.listen(PORT)。
 // 2. 路由注册 （所有与'/api/files'有关的请求路由，都交给 fileRoutes）
+app.use('/api/scenes', sceneRoutes);
 app.use('/api/files', fileRoutes); // 挂载文件相关路由
 
 // 注册新路由 (以 /api/analysis 开头的请求都交给 analysisRoutes 处理)
@@ -65,17 +65,18 @@ app.get('/api/health', (req: Request, res: Response) => {
 
 
 // 4. 启动服务
-app.listen(PORT, () => {
-    console.log(`
-    🚀 服务启动成功!
-    ---------------------------
-    本地地址: http://localhost:${PORT}
-    测试接口: http://localhost:${PORT}/api/health
-    文件上传接口: http://localhost:${PORT}/api/files/upload (POST)
-    ---------------------------
-    `);
-});
+const start = async () => {
+    await connectDB();
+    await migrateScenes(pool);
+    app.listen(PORT, () => {
+        console.log("GeoCSV 后端已启动，端口 " + PORT);
+    });
+};
 
+void start().catch(error => {
+    console.error('场景数据库迁移失败:', error);
+    process.exit(1);
+});
 
 // 捕获未处理的 Promise 拒绝 (比如数据库连不上)
 process.on('unhandledRejection', (reason, promise) => {
