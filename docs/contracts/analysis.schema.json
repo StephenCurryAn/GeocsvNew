@@ -1,0 +1,635 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GeoCSV Analysis Protocol v1",
+  "$defs": {
+    "OperatorRef": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "id",
+        "version"
+      ],
+      "additionalProperties": false
+    },
+    "Operator": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "name": {
+          "type": "string"
+        },
+        "executor": {
+          "type": "string"
+        },
+        "inputs": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "geometryTypes": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "geometryTypes"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "parameterSchema": {
+          "type": "string"
+        },
+        "output": {
+          "type": "object",
+          "properties": {
+            "format": {
+              "type": "string"
+            },
+            "schemaVersion": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": [
+            "format",
+            "schemaVersion"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "name",
+        "executor",
+        "inputs",
+        "parameterSchema",
+        "output"
+      ],
+      "additionalProperties": false
+    },
+    "AnalysisSpec": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "kind": {
+          "type": "string",
+          "minLength": 1
+        },
+        "operatorVersion": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "kind",
+        "operatorVersion"
+      ],
+      "additionalProperties": true
+    },
+    "SpatialPivotSpec": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "kind": {
+          "const": "spatial_pivot"
+        },
+        "operatorVersion": {
+          "const": 1
+        },
+        "target": {
+          "type": "object",
+          "properties": {
+            "fileId": {
+              "type": "string",
+              "maxLength": 255,
+              "pattern": "^(?=[\\s\\S]*\\S)[^\\u0000]+$"
+            },
+            "labelField": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 255,
+                  "pattern": "^(?=[\\s\\S]*\\S)[^\\u0000]+$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "fileId"
+          ],
+          "additionalProperties": false
+        },
+        "join": {
+          "type": "object",
+          "properties": {
+            "fileId": {
+              "type": "string",
+              "maxLength": 255,
+              "pattern": "^(?=[\\s\\S]*\\S)[^\\u0000]+$"
+            },
+            "categoryField": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 255,
+                  "pattern": "^(?=[\\s\\S]*\\S)[^\\u0000]+$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "fileId"
+          ],
+          "additionalProperties": false
+        },
+        "boundaryPolicy": {
+          "enum": [
+            "include",
+            "exclude"
+          ]
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "kind",
+        "operatorVersion",
+        "target",
+        "join",
+        "boundaryPolicy"
+      ],
+      "additionalProperties": false
+    },
+    "DatasetVersion": {
+      "type": "object",
+      "properties": {
+        "fileId": {
+          "type": "string",
+          "maxLength": 255,
+          "pattern": "^(?=[\\s\\S]*\\S)[^\\u0000]+$"
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "fingerprint": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "fileId",
+        "count",
+        "fingerprint"
+      ],
+      "additionalProperties": false
+    },
+    "InputVersions": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/DatasetVersion"
+      }
+    },
+    "CreatePlan": {
+      "type": "object",
+      "properties": {
+        "spec": {
+          "$ref": "#/$defs/AnalysisSpec"
+        }
+      },
+      "required": [
+        "spec"
+      ],
+      "additionalProperties": false
+    },
+    "Plan": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "operator": {
+          "$ref": "#/$defs/OperatorRef"
+        },
+        "spec": {
+          "$ref": "#/$defs/AnalysisSpec"
+        },
+        "specHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "inputVersions": {
+          "$ref": "#/$defs/InputVersions"
+        },
+        "status": {
+          "enum": [
+            "validated",
+            "confirmed"
+          ]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "confirmedAt": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "id",
+        "version",
+        "operator",
+        "spec",
+        "specHash",
+        "inputVersions",
+        "status",
+        "createdAt",
+        "confirmedAt"
+      ],
+      "additionalProperties": false
+    },
+    "ConfirmPlan": {
+      "type": "object",
+      "properties": {
+        "planId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "planVersion": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "planId",
+        "planVersion"
+      ],
+      "additionalProperties": false
+    },
+    "SubmitRun": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "spec": {
+              "$ref": "#/$defs/AnalysisSpec"
+            }
+          },
+          "required": [
+            "spec"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "$ref": "#/$defs/ConfirmPlan"
+        }
+      ]
+    },
+    "ErrorCode": {
+      "enum": [
+        "INVALID_REQUEST",
+        "INVALID_SPEC",
+        "UNSUPPORTED_OPERATOR",
+        "DATASET_NOT_FOUND",
+        "UNKNOWN_FIELD",
+        "INVALID_GEOMETRY",
+        "IDEMPOTENCY_KEY_CONFLICT",
+        "PLAN_NOT_FOUND",
+        "PLAN_VERSION_CONFLICT",
+        "INPUT_VERSION_CHANGED",
+        "WORKER_INTERRUPTED",
+        "EXECUTION_FAILED"
+      ]
+    },
+    "Run": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "definitionId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "planId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "operator": {
+          "$ref": "#/$defs/OperatorRef"
+        },
+        "status": {
+          "enum": [
+            "queued",
+            "running",
+            "succeeded",
+            "failed",
+            "cancelled"
+          ]
+        },
+        "spec": {
+          "$ref": "#/$defs/AnalysisSpec"
+        },
+        "inputVersions": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InputVersions"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "artifactId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "errorCode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ErrorCode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "completedAt": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "id",
+        "definitionId",
+        "planId",
+        "operator",
+        "status",
+        "spec",
+        "inputVersions",
+        "artifactId",
+        "error",
+        "errorCode",
+        "createdAt",
+        "completedAt"
+      ],
+      "additionalProperties": false
+    },
+    "Artifact": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "runId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "schemaVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "format": {
+          "type": "string"
+        },
+        "operator": {
+          "$ref": "#/$defs/OperatorRef"
+        },
+        "spec": {
+          "$ref": "#/$defs/AnalysisSpec"
+        },
+        "columns": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "label"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "totalRows": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "summary": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "runId",
+        "schemaVersion",
+        "format",
+        "operator",
+        "spec",
+        "columns",
+        "totalRows",
+        "summary"
+      ],
+      "additionalProperties": false
+    },
+    "SpatialCountsRow": {
+      "type": "object",
+      "properties": {
+        "featureId": {
+          "type": "integer"
+        },
+        "label": {
+          "type": "string"
+        },
+        "counts": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "total": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "featureId",
+        "label",
+        "counts",
+        "total"
+      ],
+      "additionalProperties": false
+    },
+    "SpatialCountsPage": {
+      "type": "object",
+      "properties": {
+        "rows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SpatialCountsRow"
+          }
+        },
+        "total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "page": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "pageSize": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "rows",
+        "total",
+        "page",
+        "pageSize"
+      ],
+      "additionalProperties": false
+    },
+    "Error": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "integer",
+          "minimum": 400,
+          "maximum": 599
+        },
+        "message": {
+          "type": "string"
+        },
+        "errorCode": {
+          "$ref": "#/$defs/ErrorCode"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "anyOf": [
+    {
+      "$ref": "#/$defs/Operator"
+    },
+    {
+      "$ref": "#/$defs/CreatePlan"
+    },
+    {
+      "$ref": "#/$defs/Plan"
+    },
+    {
+      "$ref": "#/$defs/SubmitRun"
+    },
+    {
+      "$ref": "#/$defs/Run"
+    },
+    {
+      "$ref": "#/$defs/Artifact"
+    },
+    {
+      "$ref": "#/$defs/SpatialCountsPage"
+    },
+    {
+      "$ref": "#/$defs/Error"
+    }
+  ]
+}

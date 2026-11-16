@@ -5,7 +5,7 @@ import AnalysisRunView from './AnalysisRunView';
 import { useAnalysisRun } from './useAnalysisRun';
 import {
   createNaturalLanguagePlan, getRequestErrorMessage,
-  type NaturalLanguagePlan, type SpatialPivotSpec,
+  type NaturalLanguagePlan, type SpatialPivotPlan,
 } from '../../../services/spatialPivotService';
 
 interface UnifiedAnalysisAssistantProps {
@@ -97,11 +97,11 @@ const UnifiedAnalysisAssistant = ({ selectedFileIds, onSwitchToLegacy }: Unified
     setFeedback(null);
   };
 
-  const handleExecute = async (spec: SpatialPivotSpec) => {
+  const handleExecute = async (plan: SpatialPivotPlan) => {
     setStarting(true);
     setPlanError(null);
     try {
-      await analysis.start(spec);
+      await analysis.start(plan);
       setPlan(null);
       setPlanBinding(null);
       message.success('已提交已验证空间透视算子');
@@ -165,7 +165,7 @@ const UnifiedAnalysisAssistant = ({ selectedFileIds, onSwitchToLegacy }: Unified
                 边界点：{plan.spec.boundaryPolicy === 'include' ? '纳入统计' : '排除统计'}；展示：{{ bar: '柱状图', line: '折线图', pie: '饼图' }[plan.view.chartType]}
               </div>
               {plan.assumptions.length > 0 && <div className="text-xs text-amber-200">假设：<ul className="ml-4 list-disc">{plan.assumptions.map((assumption, index) => <li key={`${index}-${assumption}`}>{assumption}</li>)}</ul></div>}
-              <Button block type="primary" loading={starting} disabled={!planIsCurrent || Boolean(analysis.activeRun)} onClick={() => void handleExecute(plan.spec)}>
+              <Button block type="primary" loading={starting} disabled={!planIsCurrent || Boolean(analysis.activeRun)} onClick={() => void handleExecute(plan.plan)}>
                 执行已验证算子
               </Button>
             </div>

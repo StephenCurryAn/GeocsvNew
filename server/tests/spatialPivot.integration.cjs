@@ -6,8 +6,9 @@ const { join } = require('node:path');
 const { Pool } = require('pg');
 const express = require('express');
 const { createSpatialPivotRouter } = require('../src/modules/spatialPivot/router');
-const { SpatialPivotService } = require('../src/modules/spatialPivot/service');
+const { AnalysisService } = require('../src/modules/analysis/service');
 const { queryAttributePivot } = require('../src/modules/attributePivot');
+const examples = require('../../docs/contracts/analysis.examples.json');
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
 
@@ -20,7 +21,7 @@ test('PostGIS: plan -> persisted run -> table/map/CSV artifact; boundaries, repl
   await admin.query(`CREATE SCHEMA "${schema}"`);
   const db = new Pool({ connectionString: databaseUrl, options: `-c search_path=${schema},public`, max: 8 });
   db.on('error', error => console.error('[test pool]', error.message));
-  const service = new SpatialPivotService(db, 10000);
+  const service = new AnalysisService(db, 10000);
   const app = express();
   app.use(express.json());
   app.use((req, res, next) => {
@@ -50,11 +51,7 @@ test('PostGIS: plan -> persisted run -> table/map/CSV artifact; boundaries, repl
     }
     throw new Error('run never reached a terminal state');
   };
-  const spec = {
-    schemaVersion: 1, kind: 'spatial_pivot', operatorVersion: 1,
-    target: { fileId: 'districts', labelField: 'name' },
-    join: { fileId: 'pois', categoryField: 'category' }, boundaryPolicy: 'exclude',
-  };
+  const spec = examples.SpatialPivotSpec;
   try {
     await db.query(readFileSync(join(__dirname, '../src/config/init.sql'), 'utf8'));
     await db.query(`INSERT INTO file_nodes(id,name,type) VALUES
@@ -75,6 +72,9 @@ test('PostGIS: plan -> persisted run -> table/map/CSV artifact; boundaries, repl
     assert.equal(datasets[0].fileId, 'districts');
     assert.equal(datasets[1].fileId, 'pois');
     assert.deepEqual(await request('/analysis-plans', spec), spec);
+    assert.deepEqual(await request('/operators'), [examples.Operator]);
+    const freshLedger = (await db.query('SELECT version FROM geocsv_analysis_migrations ORDER BY version')).rows;
+    assert.deepEqual(freshLedger.map(row => row.version), [1, 2, 3]);
     const beforePlanning = Number((await db.query('SELECT count(*) FROM geocsv_analysis_runs')).rows[0].count);
     const natural = await request('/analysis-plans/natural-language', {
       userPrompt: '按category分类统计每个街道内设施数量，排除边界', fileIds: ['districts', 'pois'],
@@ -82,6 +82,10 @@ test('PostGIS: plan -> persisted run -> table/map/CSV artifact; boundaries, repl
     assert.equal(natural.status, 'ready');
     assert.equal(natural.source, 'rules');
     assert.deepEqual(natural.spec, spec, 'Form and natural language produce the same validated protocol');
+    assert.deepEqual(natural.plan.spec, spec);
+    assert.equal(natural.plan.status, 'validated');
+    assert.equal(natural.plan.confirmedAt, null);
+    assert.deepEqual(await request(`/analysis/plans/${natural.plan.id}`), natural.plan);
     assert.equal(Number((await db.query('SELECT count(*) FROM geocsv_analysis_runs')).rows[0].count), beforePlanning, 'Planning never creates a run');
     const header = { 'Idempotency-Key': randomUUID() };
     const submitRun = (specification, headers = header) => request('/runs', { spec: specification }, 202, headers);
@@ -106,7 +110,8 @@ test('PostGIS: plan -> persisted run -> table/map/CSV artifact; boundaries, repl
     assert.equal(recomputed.id, persisted.id);
     assert.notEqual(recomputed.id, naturalRun.id);
     assert.equal((await db.query('SELECT count(*) FROM geocsv_analysis_runs')).rows[0].count, '2');
-    t.diagnostic(`concurrent/replay IDs: ${naturalRun.id}, ${recomputed.id} (new key, dropped response)`);
+    assert.deepEqual((await request(`/artifacts/${(await terminal(recomputed.id)).artifactId}/rows`)).rows.map(row => row.total), [2, 1, 0]);
+    t.diagnostic(`same-key Run ${naturalRun.id}, recompute Run ${recomputed.id} (dropped HTTP response recovered)`);
     assert.equal(naturalRun.status, 'succeeded', naturalRun.error);
     assert.deepEqual((await request(`/artifacts/${naturalRun.artifactId}/rows`)).rows.map(row => row.total), [2, 1, 0]);
     const beforeView = Number((await db.query('SELECT count(*) FROM geocsv_analysis_runs')).rows[0].count);
@@ -123,14 +128,64 @@ test('PostGIS: plan -> persisted run -> table/map/CSV artifact; boundaries, repl
     assert.equal(Number((await db.query('SELECT count(*) FROM geocsv_analysis_runs')).rows[0].count), beforeView, 'Views and unsupported requests never create a run');
     await request('/analysis-plans', { ...spec, target: { ...spec.target, labelField: 'missing' } }, 400);
     await request('/analysis-plans', { ...spec, boundaryPolicy: 'guess' }, 400);
-    const run = await terminal((await request('/runs', { spec }, 202)).id);
+    const plan = await request('/analysis/plans', examples.CreatePlan, 201);
+    assert.deepEqual(Object.keys(plan).sort(), Object.keys(examples.Plan).sort());
+    assert.deepEqual(plan.operator, { id: spec.kind, version: spec.operatorVersion });
+    assert.equal(plan.version, 1);
+    assert.equal(plan.status, 'validated');
+    assert.match(plan.specHash, /^[a-f0-9]{64}$/);
+    assert.equal(plan.inputVersions.join.count, 5);
+    const planRequest = { planId: plan.id, planVersion: plan.version };
+    const planKey = { 'Idempotency-Key': randomUUID() };
+    const expectFailure = async (path, body, status, errorCode, headers) => {
+      const response = await submit(body, headers, path);
+      assert.equal(response.status, status);
+      assert.equal((await response.json()).errorCode, errorCode);
+    };
+    await expectFailure('/analysis/plans', { spec: { ...spec, unknown: true } }, 400, 'INVALID_SPEC');
+    await expectFailure('/analysis/plans', { spec: { ...spec, kind: 'unsupported' } }, 400, 'UNSUPPORTED_OPERATOR');
+    await expectFailure('/analysis/plans', { spec: { ...spec, join: { fileId: 'missing' } } }, 400, 'DATASET_NOT_FOUND');
+    await expectFailure('/analysis/plans', { spec: { ...spec, target: { fileId: 'pois' }, join: { fileId: 'districts' } } }, 400, 'INVALID_GEOMETRY');
+    await expectFailure('/analysis/plans', { spec: { ...spec, join: { ...spec.join, categoryField: 'missing' } } }, 400, 'UNKNOWN_FIELD');
+    await expectFailure('/runs', planRequest, 400, 'INVALID_REQUEST');
+    await expectFailure('/runs', planRequest, 409, 'IDEMPOTENCY_KEY_CONFLICT', header);
+    await expectFailure('/runs', { ...planRequest, planVersion: 2 }, 409, 'PLAN_VERSION_CONFLICT', planKey);
+    await expectFailure('/runs', { ...planRequest, planId: randomUUID() }, 404, 'PLAN_NOT_FOUND', planKey);
+
+    const [confirmed, duplicateConfirmation] = await Promise.all([
+      request('/runs', planRequest, 202, planKey),
+      request('/runs', planRequest, 202, planKey),
+    ]);
+    assert.equal(confirmed.id, duplicateConfirmation.id);
+    assert.equal(confirmed.planId, plan.id);
+    assert.deepEqual(confirmed.inputVersions, plan.inputVersions);
+    assert.equal((await db.query('SELECT count(*) FROM geocsv_analysis_runs WHERE plan_id=$1', [plan.id])).rows[0].count, '1');
+    await expectFailure('/runs', { ...planRequest, planVersion: 2 }, 409, 'IDEMPOTENCY_KEY_CONFLICT', planKey);
+    const confirmAgain = { 'Idempotency-Key': randomUUID() };
+    await assert.rejects(submit(planRequest, { ...confirmAgain, 'X-Test-Drop-Response': 'yes' }), /fetch failed/);
+    const acceptedAgain = (await db.query('SELECT id FROM geocsv_analysis_runs WHERE request_key=$1',
+      [confirmAgain['Idempotency-Key']])).rows[0];
+    assert.ok(acceptedAgain);
+    assert.equal((await request('/runs', planRequest, 202, confirmAgain)).id, acceptedAgain.id);
+    assert.notEqual(acceptedAgain.id, confirmed.id);
+    const confirmedPlan = await request(`/analysis/plans/${plan.id}`);
+    assert.equal(confirmedPlan.status, 'confirmed');
+    assert.ok(confirmedPlan.confirmedAt);
+
+    const run = await terminal(confirmed.id);
+    assert.deepEqual(Object.keys(run).sort(), Object.keys(examples.Run).sort());
     assert.equal(run.status, 'succeeded', run.error);
     assert.ok(run.inputVersions.target.fingerprint);
     const artifact = await request(`/artifacts/${run.artifactId}`);
+    assert.deepEqual(Object.keys(artifact).sort(), Object.keys(examples.Artifact).sort());
     assert.equal(artifact.totalRows, 3);
+    assert.equal(artifact.format, 'spatial_counts');
+    assert.equal(artifact.schemaVersion, 1);
+    assert.deepEqual(artifact.operator, plan.operator);
+    t.diagnostic(`confirmed plan ${plan.id}, Run ${run.id}, Artifact ${artifact.id}, totals [2,1,0]`);
     assert.equal(artifact.summary.matchedPairs, 3);
     const page = await request(`/artifacts/${run.artifactId}/rows?page=1&pageSize=20`);
-    assert.deepEqual(page.rows.map(row => row.total), [2, 1, 0]);
+    assert.deepEqual(page, examples.SpatialCountsPage);
     assert.equal(new Set(page.rows.map(row => row.featureId)).size, 3);
     const mapResponse = await fetch(`${base}/artifacts/${run.artifactId}/geojson`);
     const geojson = await mapResponse.json();
@@ -169,11 +224,23 @@ test('PostGIS: plan -> persisted run -> table/map/CSV artifact; boundaries, repl
     assert.equal(missing.data.find(row => row.rowKey === '未分类').value, 1);
     assert.equal(missing.data.find(row => row.rowKey === '未分类（空值）').value, 1);
 
+    const stalePlan = await request('/analysis/plans', { spec }, 201);
     await db.query(`UPDATE spatial_features SET properties=properties || '{"changed":true}'::jsonb WHERE file_id='pois'`);
+    const staleRequest = { planId: stalePlan.id, planVersion: stalePlan.version };
+    const staleKey = { 'Idempotency-Key': randomUUID() };
+    await expectFailure('/runs', staleRequest, 409, 'INPUT_VERSION_CHANGED', staleKey);
+    assert.equal((await request(`/analysis/plans/${stalePlan.id}`)).status, 'validated');
+    assert.equal((await db.query('SELECT count(*) FROM geocsv_analysis_runs WHERE plan_id=$1', [stalePlan.id])).rows[0].count, '0');
+    assert.equal((await request('/runs', planRequest, 202, planKey)).id, run.id, 'Confirmed retries bypass source revalidation');
+    const refreshedPlan = await request('/analysis/plans', { spec }, 201);
+    assert.notEqual(refreshedPlan.inputVersions.join.fingerprint, stalePlan.inputVersions.join.fingerprint);
+    const refreshedRun = await request('/runs', { planId: refreshedPlan.id, planVersion: refreshedPlan.version }, 202, staleKey);
+    assert.equal((await terminal(refreshedRun.id)).status, 'succeeded', 'A rejected confirmation leaves its key available');
     assert.equal((await submitRun(spec)).id, naturalRun.id, 'A retry returns its accepted Run after inputs change');
     const changed = await terminal((await request(`/runs/${run.id}/replay`, {}, 202)).id);
     assert.equal(changed.status, 'failed');
     assert.match(changed.error, /数据已改变/);
+    assert.equal(changed.errorCode, 'INPUT_VERSION_CHANGED');
     assert.deepEqual((await request(`/artifacts/${run.artifactId}/rows`)).rows, page.rows);
 
     const hold = await db.connect();
@@ -189,6 +256,7 @@ test('PostGIS: plan -> persisted run -> table/map/CSV artifact; boundaries, repl
     const changedWhileQueued = await terminal(waiting.id);
     assert.equal(changedWhileQueued.status, 'failed');
     assert.match(changedWhileQueued.error, /数据已改变/);
+    assert.equal(changedWhileQueued.errorCode, 'INPUT_VERSION_CHANGED');
     assert.equal(changedWhileQueued.artifactId, null);
 
     // A real, cancellable database operation, not a mocked HTTP status.
@@ -219,6 +287,7 @@ test('PostGIS: plan -> persisted run -> table/map/CSV artifact; boundaries, repl
     const interrupted = await terminal(disconnected.id).catch(error => { throw new Error('Connection recovery polling failed', { cause: error }); });
     assert.equal(interrupted.status, 'failed', 'Lost worker connections must recover without restarting the API');
     assert.equal(interrupted.artifactId, null);
+    assert.equal(interrupted.errorCode, 'WORKER_INTERRUPTED');
     await db.query('DROP TRIGGER slow_artifact ON geocsv_analysis_artifacts');
     const healthy = await terminal((await request('/runs', { spec }, 202)).id);
     assert.equal(healthy.status, 'succeeded', healthy.error);

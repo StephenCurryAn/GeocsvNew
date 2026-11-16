@@ -9,7 +9,7 @@ import AnalysisRunView from './AnalysisRunView';
 import { useAnalysisRun } from './useAnalysisRun';
 import {
   createAnalysisPlan, fetchDatasets, getRequestErrorMessage,
-  type BoundaryPolicy, type DatasetSummary, type SpatialPivotSpec,
+  type BoundaryPolicy, type DatasetSummary, type SpatialPivotPlan, type SpatialPivotSpec,
 } from '../../../services/spatialPivotService';
 
 
@@ -32,7 +32,7 @@ const SpatialPivotPanel = ({ selectedFileIds }: { selectedFileIds: string[] }) =
   const [labelField, setLabelField] = useState<string | null>(null);
   const [categoryField, setCategoryField] = useState<string | null>(null);
   const [boundaryPolicy, setBoundaryPolicy] = useState<BoundaryPolicy>('exclude');
-  const [plan, setPlan] = useState<SpatialPivotSpec | null>(null);
+  const [plan, setPlan] = useState<SpatialPivotPlan | null>(null);
   const [planning, setPlanning] = useState(false);
   const [starting, setStarting] = useState(false);
   const [requestError, setRequestError] = useState<string | null>(null);
@@ -209,9 +209,9 @@ const SpatialPivotPanel = ({ selectedFileIds }: { selectedFileIds: string[] }) =
           <div className="space-y-2 rounded-md border border-cyan-900/50 bg-slate-900/60 p-3">
             <div className="text-xs font-semibold text-cyan-200">计划已校验</div>
             <div className="text-xs text-slate-300">
-              {targetDataset?.name}：{plan.target.labelField || '按要素 ID'}，统计 {joinDataset?.name}
-              {plan.join.categoryField ? ` 中的「${plan.join.categoryField}」分类` : ' 的总数'}；
-              {plan.boundaryPolicy === 'include' ? '纳入边界点' : '排除边界点'}。
+              {targetDataset?.name}：{plan.spec.target.labelField || '按要素 ID'}，统计 {joinDataset?.name}
+              {plan.spec.join.categoryField ? ` 中的「${plan.spec.join.categoryField}」分类` : ' 的总数'}；
+              {plan.spec.boundaryPolicy === 'include' ? '纳入边界点' : '排除边界点'}。
             </div>
             <Button block type="primary" icon={<PlayCircleOutlined />} loading={starting} disabled={Boolean(analysis.activeRun)} onClick={handleStart}>
               开始空间透视
