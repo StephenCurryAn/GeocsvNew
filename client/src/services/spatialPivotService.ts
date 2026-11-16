@@ -153,7 +153,7 @@ export const fetchRun = async (runId: string, signal?: AbortSignal): Promise<Run
 };
 
 export const fetchRuns = async (limit = 20, signal?: AbortSignal): Promise<Run[]> => {
-  const response = await apiClient.get<ApiEnvelope<Run[]>>('/runs', { params: { limit }, signal });
+  const response = await apiClient.get<ApiEnvelope<Run[]>>('/runs', { params: { limit, operator: 'spatial_pivot' }, signal });
   return unwrap(response.data);
 };
 

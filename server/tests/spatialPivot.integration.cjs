@@ -72,9 +72,10 @@ test('PostGIS: plan -> persisted run -> table/map/CSV artifact; boundaries, repl
     assert.equal(datasets[0].fileId, 'districts');
     assert.equal(datasets[1].fileId, 'pois');
     assert.deepEqual(await request('/analysis-plans', spec), spec);
-    assert.deepEqual(await request('/operators'), [examples.Operator]);
+    assert.deepEqual((await request('/operators')).find(operator => operator.id === examples.Operator.id), examples.Operator);
+    await service.start();
     const freshLedger = (await db.query('SELECT version FROM geocsv_analysis_migrations ORDER BY version')).rows;
-    assert.deepEqual(freshLedger.map(row => row.version), [1, 2, 3]);
+    assert.deepEqual(freshLedger.map(row => row.version), [1, 2, 3, 4]);
     const beforePlanning = Number((await db.query('SELECT count(*) FROM geocsv_analysis_runs')).rows[0].count);
     const natural = await request('/analysis-plans/natural-language', {
       userPrompt: '按category分类统计每个街道内设施数量，排除边界', fileIds: ['districts', 'pois'],
@@ -293,7 +294,7 @@ test('PostGIS: plan -> persisted run -> table/map/CSV artifact; boundaries, repl
     assert.equal(healthy.status, 'succeeded', healthy.error);
     assert.ok((await request('/runs')).length >= 6);
   } finally {
-    service.stop();
+    await service.stop();
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));
     await db.end();

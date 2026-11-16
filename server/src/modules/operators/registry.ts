@@ -1,9 +1,10 @@
 import { AnalysisInputError } from '../analysis/errors';
+import { moranLisa } from './moranLisa';
 import { spatialPivot } from './spatialPivot';
 import type { Operator } from './types';
 
 const operatorKey = (id: string, version: number) => `${id}@${version}`;
-const entries = [spatialPivot];
+const entries = [spatialPivot, moranLisa];
 const registry = new Map<string, Operator>(
   entries.map(operator => [operatorKey(operator.descriptor.id, operator.descriptor.version), operator]),
 );

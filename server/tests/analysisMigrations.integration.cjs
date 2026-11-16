@@ -46,7 +46,7 @@ test('PostGIS migration: upgrade legacy rows, preserve exports, and accept old w
 
   await Promise.all([migrateAnalysis(db), migrateAnalysis(db)]);
   const versions = await ledger(db);
-  assert.deepEqual(versions.map(row => row.version), [1, 2, 3]);
+  assert.deepEqual(versions.map(row => row.version), [1, 2, 3, 4]);
   const service = new AnalysisService(db);
   const app = express();
   app.use('/api', createSpatialPivotRouter(db, service));
@@ -85,7 +85,7 @@ test('PostGIS migration: upgrade legacy rows, preserve exports, and accept old w
     assert.equal((await service.getArtifact(oldArtifactId)).format, 'spatial_counts');
     assert.deepEqual(await ledger(db), versions, 'Restart does not write another migration entry');
   } finally {
-    service.stop();
+    await service.stop();
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));
   }
@@ -111,8 +111,8 @@ test('PostGIS migration: preserve keyed runs from the submission batch', { skip:
   try {
     assert.equal((await service.create({ spec }, key)).id, id);
     assert.equal((await service.history(20)).length, 1);
-    assert.deepEqual((await ledger(db)).map(row => row.version), [1, 2, 3]);
-  } finally { service.stop(); }
+    assert.deepEqual((await ledger(db)).map(row => row.version), [1, 2, 3, 4]);
+  } finally { await service.stop(); }
 });
 
 test('PostGIS migration: reject schema drift and roll back the ledger', { skip: !databaseUrl }, async t => {

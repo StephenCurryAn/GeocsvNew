@@ -72,7 +72,13 @@ export const createAnalysisRouter = (service: AnalysisService) => {
     const run = await service.create({ spec: body?.spec }, key);
     res.status(202).json({ code: 202, data: run });
   }));
-  router.get('/runs', route(async (req, res) => res.json({ code: 200, data: await service.history(integer(req.query.limit, 20, 100)) })));
+  router.get('/runs', route(async (req, res) => {
+    const operator = req.query.operator;
+    if (operator !== undefined && (typeof operator !== 'string' || !listOperators().some(item => item.id === operator))) {
+      throw new AnalysisInputError('无效的历史算子筛选条件', 'UNSUPPORTED_OPERATOR');
+    }
+    res.json({ code: 200, data: await service.history(integer(req.query.limit, 20, 100), operator) });
+  }));
   router.get('/runs/:id', route(async (req, res) => {
     const run = await service.get(uuid(req.params.id));
     res.status(run ? 200 : 404).json({ code: run ? 200 : 404, ...(run ? { data: run } : { message: '执行记录不存在' }) });
@@ -85,7 +91,7 @@ export const createAnalysisRouter = (service: AnalysisService) => {
     const run = await service.get(uuid(req.params.id));
     if (!run) { res.status(404).json({ code: 404, message: '执行记录不存在' }); return; }
     if (!run.inputVersions) throw new AnalysisInputError('此执行没有可重放的输入版本');
-    const replay = await service.create({ spec: run.spec, expectedVersions: run.inputVersions },
+    const replay = await service.create({ spec: run.spec, expectedVersions: run.inputVersions, replayRunId: run.id },
       submissionKey(req, `runs:replay:${run.id}`));
     res.status(202).json({ code: 202, data: replay });
   }));

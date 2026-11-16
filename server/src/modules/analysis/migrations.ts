@@ -102,7 +102,34 @@ const plansAndArtifactFormats = async (client: PoolClient) => {
   `);
 };
 
-const migrations = [baseline, submissionKeys, plansAndArtifactFormats];
+const pythonSnapshotsAndResults = async (client: PoolClient) => {
+  await client.query(`
+    CREATE TABLE geocsv_analysis_snapshots (
+      id UUID PRIMARY KEY,
+      digest TEXT NOT NULL,
+      payload BYTEA,
+      expires_at TIMESTAMPTZ NOT NULL DEFAULT now() + interval '7 days'
+    );
+    CREATE INDEX geocsv_snapshots_expiry ON geocsv_analysis_snapshots(expires_at) WHERE payload IS NOT NULL;
+    ALTER TABLE geocsv_analysis_runs ADD COLUMN snapshot_id UUID REFERENCES geocsv_analysis_snapshots(id);
+    CREATE INDEX geocsv_runs_snapshot ON geocsv_analysis_runs(snapshot_id) WHERE snapshot_id IS NOT NULL;
+    CREATE TABLE geocsv_analysis_moran_rows (
+      artifact_id UUID NOT NULL REFERENCES geocsv_analysis_artifacts(id) ON DELETE CASCADE,
+      feature_id INTEGER NOT NULL,
+      local_i DOUBLE PRECISION NOT NULL,
+      expected_i DOUBLE PRECISION NOT NULL,
+      z DOUBLE PRECISION NOT NULL,
+      lag_z DOUBLE PRECISION NOT NULL,
+      neighbor_count INTEGER NOT NULL CHECK (neighbor_count >= 0),
+      p_value DOUBLE PRECISION CHECK (p_value > 0 AND p_value <= 1),
+      quadrant TEXT CHECK (quadrant IN ('HH','HL','LH','LL')),
+      geom GEOMETRY(Geometry,4326) NOT NULL,
+      PRIMARY KEY (artifact_id, feature_id)
+    );
+  `);
+};
+
+const migrations = [baseline, submissionKeys, plansAndArtifactFormats, pythonSnapshotsAndResults];
 
 export const migrateAnalysis = async (db: Pool): Promise<void> => {
   await transaction(db, 'BEGIN', async client => {

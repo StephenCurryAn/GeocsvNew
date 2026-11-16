@@ -15,6 +15,7 @@ import analysisRoutes from './routes/analysisRoutes';
 import tileRoutes from './routes/tileRoutes';
 import { connectDB } from './config/db'; // 导入数据库连接函数
 import pool from './config/db';
+import { AnalysisService } from './modules/analysis/service';
 import { createSpatialPivotRouter } from './modules/spatialPivot/router';
 import { createBasemapRouter } from './modules/basemaps/router';
 
@@ -52,7 +53,8 @@ app.use('/api/analysis', analysisRoutes);
 // 注册矢量瓦片路由
 app.use('/api/tiles', tileRoutes);
 app.use('/api', createBasemapRouter());
-app.use('/api', createSpatialPivotRouter(pool));
+const analysis = new AnalysisService(pool);
+app.use('/api', createSpatialPivotRouter(pool, analysis));
 
 // 3. 测试路由
 app.get('/api/health', (req: Request, res: Response) => {
@@ -65,7 +67,7 @@ app.get('/api/health', (req: Request, res: Response) => {
 
 
 // 4. 启动服务
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
     console.log(`
     🚀 服务启动成功!
     ---------------------------
@@ -76,6 +78,26 @@ app.listen(PORT, () => {
     `);
 });
 
+
+void analysis.start().catch(error => {
+    console.error('[Analysis startup]', error);
+    shutdown(1);
+});
+
+let closing = false;
+function shutdown(exitCode = 0) {
+    if (closing) return;
+    closing = true;
+    const stopped = analysis.stop();
+    server.close(() => {
+        void stopped.then(() => pool.end()).then(() => { process.exitCode = exitCode; }).catch(error => {
+            console.error('[Analysis shutdown]', error);
+            process.exitCode = 1;
+        });
+    });
+}
+process.once('SIGINT', () => shutdown());
+process.once('SIGTERM', () => shutdown());
 
 // 捕获未处理的 Promise 拒绝 (比如数据库连不上)
 process.on('unhandledRejection', (reason, promise) => {

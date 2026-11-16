@@ -63,6 +63,49 @@ uv run --project audits/spatial_autocorrelation --frozen --offline python -m uni
 Pop-Location
 ```
 
-## Worker 接入条件
+## 统一执行
 
-阶段 1 契约验收后，由 Worker 适配器读取不可变快照，按其要素 ID、字段和 CRS 组装输入。Run/Artifact 需保存快照摘要、算法版本、有效参数、依赖锁摘要、清洗记录及推断规则。先确认 `null` p 值、局部象限、浮点字段和几何如何映射到实际 Artifact，再联调两类算子共用接口。需在独立进程容量验证中确定置换上限、超时和取消策略，随后验收稳定执行 ID、迟到返回、恢复回收及幂等归档。
+`spatial_autocorrelation@2` 与 `spatial_pivot@1` 共用 `POST /api/analysis/plans`、带 `Idempotency-Key` 的 `POST /api/runs`、状态查询和历史。`MoranLisaSpec` 把目标图层、数值字段、Queen/Rook、置换次数与种子作为有效参数写入 Plan、Run 和 Artifact。计数页面按算子筛选历史，原专业模型 HTTP 路由继续提供旧结果语义。
+
+确认时，Node 在同一事务内核对 Plan 中的输入版本、保存快照和创建 Run。快照只包含按 ID 排列的原始字段值、面 WKB 与 CRS。快照实际字节的 SHA-256 写入 `inputVersions.target.fingerprint`，也是 Artifact 的 `inputDigest`。分析使用 EPSG:4326 的已存几何，首次部署的提交上限是 20,000 个要素和 64 MiB 快照，置换范围 0–9999。保留期七天，重放重用同一快照。超过保留期返回 HTTP 410 `INPUT_SNAPSHOT_EXPIRED`，既有 Artifact 仍可读取。
+
+Node 抢占任务后使用 Run ID 作为稳定执行 ID，向本地 Python 子进程发送快照。计算阶段仅持有调度连接上的会话锁，没有未提交的数据库事务。Python 在原子发布结果前校验输入摘要，Node 校验执行 ID、输入摘要、算法版本、锁文件摘要、有效参数和行 ID，再在短事务内写 Artifact 和终态。Artifact 的 `moran_lisa` v1 支持分页、快照几何预览、CSV，p 值与象限按实际结果提供 `null`。
+
+默认子进程时限为 120 秒。超时进入 `failed/EXECUTION_TIMEOUT`，子进程异常退出进入 `failed/WORKER_INTERRUPTED`。取消先写终态，再停止本机子进程。若取消先提交，已发布的迟到结果也无法归档。Node 退出前停止领取，子进程通过管道感知父进程退出。重启后先恢复 `running` 的 Python Run，复用本机已发布的结果，或用同一快照重新计算。Artifact 的 Run 唯一约束与事务提交确保每个 Run 仅归档一次。
+
+首版调度在同一数据库串行处理任务。运行中占用一个池连接。跨主机共享文件、主机掉电恢复和高并发调度未在本轮验收。跨进程重启需保留私有 `ANALYSIS_WORKER_DIR`，默认使用本工作树 `python_engine/.tmp/analysis-worker`。默认读取 `python_engine/.venv`，可用 `ANALYSIS_PYTHON` 指定已按所在工作树的锁文件同步的解释器。
+
+### 阶段 5 接线条件
+
+- `GET /api/operators` 提供可信入口 `spatial_autocorrelation@2`、目标面类型、`parameterSchema` 引用和输出版本。`GET /api/datasets?ids=...` 提供图层几何类型与字段。仓库的协议 JSON Schema 已给出控件标题、默认值、范围和 Queen/Rook 选项；阶段 5 需将 Schema 随客户端打包或提供运行时读取入口。
+- Queen 和 Rook 可复用同一 `MoranLisaSpec`，分别固定 `contiguity=queen` 与 `contiguity=rook`，由相同 Plan/Run/Artifact 接口试跑。全局和局部类型及示例见 [共享协议](../analysis-protocol.md)。
+- 阶段 5 负责目录、预设与发布版本持久化、试跑绑定、发布权限及专用结果界面。当前可从 Artifact 核对实际算子版本与有效参数，预设发布版本的绑定还需新增字段。阶段 5 的局部显著性展示需明确校正规则。
+
+### 验收证据
+
+Windows Node 24、CPython 3.12.13 和 WSL 的 PostgreSQL 16／PostGIS 3.5 上，`npm run test:integration` 8 项通过，0 跳过。样例目标为同一图层的 A、B、C、D 四个面，两个预设的输入摘要均为 `5c8f78c38e76261ea5ba14a06fb472953c085d9298a0a7aa74ebaff6ed9ea231`。
+
+| 项目 | Run ID | Artifact ID | 结果 |
+| --- | --- | --- | --- |
+| Queen，4 次置换 | `b69fc273-9362-4ab1-9806-7cb272a2d6fa` | `ab0da34c-6662-4d37-a5ee-348f5478a4e3` | `I=0.2`，全局 `p=0.4`，局部 p 值 `[0.8,0.8,1,null]` |
+| Rook，禁用置换 | `b58fc9c5-7dff-43c3-865b-8041de70876e` | `c787c2ea-6fa7-45ad-98c7-634829ab9df2` | `I=0.6`，局部邻居数 `[1,1,0,0]`，p 值为空 |
+| 归档前杀停 Node 并重启 | `eeb10566-bf24-47d0-901b-42db28631ae2` | `0a8aa9f1-29a5-4856-be07-dfc59d37bca2` | 重启实例的 Python 路径设为不可用，读取已完成的 Worker 文件并归档一次 |
+| 子进程超时 | `1da27041-6e02-49b4-9bd3-bbfccf1210e7` | — | `failed/EXECUTION_TIMEOUT` |
+| 结果发布后、归档前取消 | `be6135b4-1b82-4b38-ab12-38b3a58c8de3` | — | `cancelled`，已发布结果已清理 |
+
+另用正式 `dist/index.js` 入口和 Python 示例客户端运行 Queen。客户端短超时后使用相同的计划和请求键重试，库中只创建一个 Run `5b26d209-2b06-4f6b-a5eb-04fbaaccc321`，由 Artifact `ee6c77ff-1e95-4208-aca2-3e93096fa582` 返回 `I=0.2` 和四行结果。Worker 运行时 `/api/health` 在一秒内返回 200。各轮均清理独立测试 schema。
+
+### PostGIS 复现
+
+使用 [环境基线](../environment-baseline.md) 的独立测试数据库。测试自行创建临时 schema 和四面样例，验收完成后清理；Run/Artifact ID 留在测试输出。
+
+```powershell
+uv sync --project python_engine --frozen
+Push-Location server
+npm ci
+npm run build
+node -r ts-node/register --test --test-concurrency=1 tests/*.integration.cjs
+Pop-Location
+```
+
+`TEST_DATABASE_URL` 应指向已启用 PostGIS 的专用测试数据库。对已在运行的隔离服务，可用 `python python_engine/examples/run_moran.py four-faces value --contiguity queen --simulate-timeout` 提交并读取结果。请求等待超时只表示客户端未收到响应，示例用同一计划与请求键重试。收到 Run 后，计算失败通过 `status` 和 `errorCode` 表示。
