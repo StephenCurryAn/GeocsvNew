@@ -1,22 +1,61 @@
 @import "tailwindcss";
 
-/* v4 这里的 @theme 块相当于以前的 tailwind.config.js */
-@theme {
-  /* 炫酷深色主题 */
-  --color-geo-dark: #0f172a;      /* 深蓝灰色背景 */
-  --color-geo-panel: #1e293b;     /* 面板深蓝灰 */
-  --color-geo-accent: #3b82f6;    /* 亮蓝色强调色 */
-  --color-geo-secondary: #60a5fa; /* 次要蓝色 */
-  --color-geo-border: #334155;    /* 边框深蓝灰 */
-  --color-geo-text-primary: #f1f5f9;  /* 主要文字 */
-  --color-geo-text-secondary: #cbd5e1; /* 次要文字 */
+@theme inline {
+    --color-geo-dark: var(--workbench-bg);
+    --color-geo-panel: var(--workbench-panel);
+    --color-geo-accent: var(--workbench-accent);
+    --color-geo-secondary: var(--workbench-accent);
+    --color-geo-border: var(--workbench-border);
+    --color-geo-text-primary: var(--workbench-text);
+    --color-geo-text-secondary: var(--workbench-muted);
 }
 
-/* ...其他样式... */
-/* 全局重置 */
-html, body, #root {
-  height: 100%;
-  width: 100%;
-  margin: 0;
-  overflow: hidden;
+:root {
+    color-scheme: light;
+    --workbench-bg: #f4f1eb;
+    --workbench-panel: #fbf9f5;
+    --workbench-inset: #ede8de;
+    --workbench-border: #ded7cc;
+    --workbench-text: #282a29;
+    --workbench-muted: #605c55;
+    --workbench-accent: #3d6683;
+    --workbench-selected: #e2ebef;
+    --workbench-focus: #a25336;
+    --workbench-focus-surface: #f3e3d6;
+    --workbench-radius: 8px;
+    --workbench-motion: 180ms cubic-bezier(.2, .75, .25, 1);
+    --workbench-danger: #aa3038;
+    --workbench-success: #236b49;
+    --workbench-warning: #86550e;
+    --workbench-shadow: 0 2px 8px rgb(26 38 54 / 13%);
+    --workbench-font: Inter, "Segoe UI", "Microsoft YaHei", sans-serif;
+}
+
+:root[data-theme="dark"] {
+    color-scheme: dark;
+    --workbench-danger: #ff9a9d;
+    --workbench-success: #85d3a9;
+    --workbench-warning: #f4c774;
+    --workbench-shadow: 0 2px 8px rgb(0 0 0 / 24%);
+}
+
+html, body, #root, #root > .ant-app {
+    height: 100%;
+    width: 100%;
+    margin: 0;
+    overflow: hidden;
+}
+
+body {
+    background: var(--workbench-bg);
+    scrollbar-color: var(--workbench-border) transparent;
+}
+
+#root > .ant-app {
+    color: var(--workbench-text);
+    font-family: var(--workbench-font);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    :root { --workbench-motion: 0ms; }
 }

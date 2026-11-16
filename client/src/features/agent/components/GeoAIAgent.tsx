@@ -1,9 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Button, Input, Avatar, Badge, Segmented, App, Modal } from 'antd';
+import { Button, Input, Avatar, Segmented, App, Modal } from 'antd';
 import {
     SendOutlined, UserOutlined, ClearOutlined,
     CloseOutlined, CodeOutlined, SettingOutlined, CheckCircleOutlined,
-    LoadingOutlined, DeploymentUnitOutlined, FullscreenOutlined
+    LoadingOutlined, MessageOutlined, FullscreenOutlined
 } from '@ant-design/icons';
 import { geoService } from '../../../services/geoService';
 import { getApiUrl } from '../../../services/apiConfig';
@@ -90,8 +90,6 @@ interface ChatMessage {
 
 interface GeoAIAgentProps {
     selectedFileIds?: string[];
-    isOpen?: boolean;
-    onClose?: () => void;
 }
 
 const MAX_CONTEXT_ROWS = 100;
@@ -179,34 +177,9 @@ const QUICK_PROMPTS = [
     '分析点数据的空间分布',
 ];
 
-// ✨ 重新设计的AI头像 — DeploymentUnitOutlined 代表神经网络/知识图谱
-const AIAvatar = () => (
-    <div
-        className="shrink-0 flex items-center justify-center"
-        style={{
-            width: 40,
-            height: 40,
-            borderRadius: 12,
-            background: 'linear-gradient(135deg, #0ea5e9 0%, #6366f1 100%)',
-            boxShadow: '0 0 16px rgba(99,102,241,0.45), 0 2px 8px rgba(0,0,0,0.4)',
-            position: 'relative',
-            overflow: 'hidden',
-        }}
-    >
-        {/* 内层光晕 */}
-        <div style={{
-            position: 'absolute', inset: 0,
-            background: 'radial-gradient(circle at 30% 30%, rgba(255,255,255,0.18) 0%, transparent 60%)',
-        }} />
-        <DeploymentUnitOutlined style={{ fontSize: 20, color: '#fff', position: 'relative', zIndex: 1 }} />
-    </div>
-);
+const AIAvatar = () => <span className="agent-avatar" aria-hidden="true"><MessageOutlined /></span>;
 
-const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
-    selectedFileIds = [],
-    isOpen = false,
-    onClose,
-}) => {
+const GeoAIAgent: React.FC<GeoAIAgentProps> = ({ selectedFileIds = [] }) => {
     const { message } = App.useApp();
     const [assistantMode, setAssistantMode] = useState<'operator' | 'legacy'>('operator');
     const [agentMode, setAgentMode] = useState<'pivot' | 'feature_calc' | 'pro_model'>('pivot');
@@ -297,15 +270,10 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
     ]);
 
     const scrollRef = useRef<HTMLDivElement>(null);
-    const inputRef = useRef<any>(null);
 
     useEffect(() => {
         if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }, [messages, pipelineSteps]);
-
-    useEffect(() => {
-        if (isOpen) setTimeout(() => inputRef.current?.focus(), 300);
-    }, [isOpen]);
 
     const handleSend = async () => {
         if (!inputValue.trim() || loading) return;
@@ -427,8 +395,8 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
     const renderPipelineStepsViewer = (steps: PipelineStep[], isLive: boolean) => {
         if (steps.length === 0) {
             return (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '16px 20px', color: '#64748b', fontSize: 13, fontFamily: 'monospace' }}>
-                    <LoadingOutlined style={{ color: '#38bdf8', fontSize: 16 }} spin />
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '16px 20px', color: 'var(--workbench-muted)', fontSize: 13, fontFamily: 'monospace' }}>
+                    <LoadingOutlined style={{ color: 'var(--workbench-accent)', fontSize: 16 }} spin />
                     <span>正在初始化分析引擎...</span>
                 </div>
             );
@@ -450,30 +418,29 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
                         <div
                             key={step.id}
                             style={{
-                                background: step.status === 'error' ? 'rgba(239,68,68,0.06)' : 'rgba(15,23,42,0.6)',
-                                border: `1px solid ${step.status === 'error' ? 'rgba(239,68,68,0.25)' : 'rgba(51,65,85,0.6)'}`,
+                                background: step.status === 'error' ? 'rgba(239,68,68,0.06)' : 'var(--workbench-inset)',
+                                border: `1px solid ${step.status === 'error' ? 'rgba(239,68,68,0.25)' : 'var(--workbench-border)'}`,
                                 borderRadius: 10,
                                 padding: '10px 14px',
-                                animation: 'geoFadeUp 0.35s ease forwards',
                             }}
                         >
                             {/* 步骤标题行 */}
                             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                                <span style={{ fontFamily: 'monospace', fontSize: 11, color: '#475569', flexShrink: 0 }}>
+                                <span style={{ fontFamily: 'monospace', fontSize: 11, color: 'var(--workbench-muted)', flexShrink: 0 }}>
                                     {step.timestamp}
                                 </span>
                                 <span style={{ fontSize: 14, flexShrink: 0, lineHeight: 1 }}>
                                     {step.status === 'success'
-                                        ? <CheckCircleOutlined style={{ color: '#34d399' }} />
+                                        ? <CheckCircleOutlined style={{ color: 'var(--workbench-success)' }} />
                                         : step.status === 'error'
-                                        ? <CloseOutlined style={{ color: '#f87171' }} />
-                                        : <LoadingOutlined style={{ color: '#38bdf8' }} spin />}
+                                        ? <CloseOutlined style={{ color: 'var(--workbench-danger)' }} />
+                                        : <LoadingOutlined style={{ color: 'var(--workbench-accent)' }} spin />}
                                 </span>
                                 <span style={{
                                     fontSize: 13,
                                     fontFamily: 'monospace',
                                     fontWeight: 600,
-                                    color: step.status === 'loading' ? '#7dd3fc' : step.status === 'error' ? '#fca5a5' : '#cbd5e1',
+                                    color: step.status === 'loading' ? 'var(--workbench-accent)' : step.status === 'error' ? 'var(--workbench-danger)' : 'var(--workbench-text)',
                                     lineHeight: 1.5,
                                 }}>
                                     {title}
@@ -484,8 +451,8 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
                             {details.length > 0 && (
                                 <div style={{
                                     marginTop: 10,
-                                    background: 'rgba(2,6,23,0.6)',
-                                    border: '1px solid rgba(30,41,59,0.9)',
+                                    background: 'var(--workbench-inset)',
+                                    border: '1px solid var(--workbench-border)',
                                     borderRadius: 8,
                                     overflow: 'hidden',
                                 }}>
@@ -500,7 +467,7 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
                                                     style={{
                                                         display: 'flex',
                                                         alignItems: 'flex-start',
-                                                        borderBottom: idx < details.length - 1 ? '1px solid rgba(30,41,59,0.7)' : 'none',
+                                                        borderBottom: idx < details.length - 1 ? '1px solid var(--workbench-border)' : 'none',
                                                         minHeight: 34,
                                                     }}
                                                 >
@@ -509,12 +476,12 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
                                                         flexShrink: 0,
                                                         width: 96,
                                                         padding: '8px 10px',
-                                                        background: 'rgba(15,23,42,0.8)',
-                                                        borderRight: '1px solid rgba(30,41,59,0.7)',
+                                                        background: 'var(--workbench-inset)',
+                                                        borderRight: '1px solid var(--workbench-border)',
                                                         fontSize: 11.5,
                                                         fontFamily: 'monospace',
                                                         fontWeight: 700,
-                                                        color: '#94a3b8',
+                                                        color: 'var(--workbench-muted)',
                                                         letterSpacing: '0.02em',
                                                         lineHeight: 1.5,
                                                     }}>
@@ -528,7 +495,7 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
                                                         fontSize: 12.5,
                                                         fontFamily: 'monospace',
                                                         fontWeight: 600,
-                                                        color: '#7dd3fc',
+                                                        color: 'var(--workbench-accent)',
                                                         lineHeight: 1.6,
                                                         wordBreak: 'break-word',
                                                         whiteSpace: 'pre-wrap',
@@ -543,8 +510,8 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
                                             <div key={idx} style={{
                                                 padding: '8px 12px',
                                                 fontFamily: 'monospace', fontSize: 12,
-                                                color: 'rgba(186,230,253,0.65)', lineHeight: 1.6,
-                                                borderBottom: idx < details.length - 1 ? '1px solid rgba(30,41,59,0.5)' : 'none',
+                                                color: 'var(--workbench-accent)', lineHeight: 1.6,
+                                                borderBottom: idx < details.length - 1 ? '1px solid var(--workbench-border)' : 'none',
                                                 wordBreak: 'break-word',
                                             }}>
                                                 {line}
@@ -571,20 +538,20 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
                     <AIAvatar />
                     <div style={{
                         flex: 1, minWidth: 0,
-                        background: 'rgba(10,15,24,0.9)',
-                        border: '1px solid rgba(51,65,85,0.7)',
+                        background: 'var(--workbench-panel)',
+                        border: '1px solid var(--workbench-border)',
                         borderRadius: '0 14px 14px 14px',
                         overflow: 'hidden',
                     }}>
                         {/* 面板标题 */}
                         <div style={{
-                            height: 40, background: 'rgba(17,24,39,0.9)',
-                            borderBottom: '1px solid rgba(51,65,85,0.5)',
+                            height: 40, background: 'var(--workbench-inset)',
+                            borderBottom: '1px solid var(--workbench-border)',
                             display: 'flex', alignItems: 'center', paddingLeft: 16, gap: 8,
                         }}>
-                            <DeploymentUnitOutlined style={{ color: '#38bdf8', fontSize: 14 }} />
-                            <span style={{ fontSize: 12, fontFamily: 'monospace', fontWeight: 700, color: '#64748b', letterSpacing: '0.08em' }}>
-                                SPATIAL PIPELINE
+                            <MessageOutlined />
+                            <span style={{ fontSize: 12, fontFamily: 'monospace', fontWeight: 700, color: 'var(--workbench-muted)', letterSpacing: '0.08em' }}>
+                                分析进度
                             </span>
                         </div>
                         {renderPipelineStepsViewer(pipelineSteps, true)}
@@ -622,13 +589,9 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
                 {/* 头像 */}
                 {isUser ? (
                     <Avatar
-                        size={40}
-                        icon={<UserOutlined style={{ fontSize: 18 }} />}
-                        style={{
-                            flexShrink: 0, background: '#2563eb',
-                            border: '2px solid rgba(96,165,250,0.3)',
-                            borderRadius: 12, boxShadow: '0 2px 8px rgba(37,99,235,0.4)',
-                        }}
+                        size={26}
+                        icon={<UserOutlined />}
+                        className="agent-avatar"
                     />
                 ) : (
                     <AIAvatar />
@@ -637,28 +600,20 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
                 {/* 气泡区域 */}
                 <div style={{
                     display: 'flex', flexDirection: 'column', gap: 10,
-                    minWidth: 0, maxWidth: 'calc(100% - 56px)',
+                    minWidth: 0, maxWidth: 'calc(100% - 38px)',
                     alignItems: isUser ? 'flex-end' : 'flex-start',
                 }}>
                     {/* 主文本气泡 */}
                     <div style={{
                         padding: '11px 16px',
-                        fontSize: 14,
-                        lineHeight: 1.7,
+                        fontSize: 13,
+                        lineHeight: 1.6,
                         whiteSpace: 'pre-wrap',
                         wordBreak: 'break-word',
                         borderRadius: isUser ? '14px 4px 14px 14px' : '4px 14px 14px 14px',
-                        background: isUser
-                            ? 'linear-gradient(135deg, #1d4ed8 0%, #2563eb 100%)'
-                            : 'rgba(30,41,59,0.85)',
-                        border: isUser
-                            ? '1px solid rgba(96,165,250,0.25)'
-                            : '1px solid rgba(51,65,85,0.5)',
-                        color: isUser ? '#f0f9ff' : '#cbd5e1',
-                        boxShadow: isUser
-                            ? '0 4px 16px rgba(37,99,235,0.25)'
-                            : '0 2px 8px rgba(0,0,0,0.2)',
-                        backdropFilter: 'blur(8px)',
+                        background: isUser ? 'var(--workbench-selected)' : 'var(--workbench-inset)',
+                        border: '1px solid var(--workbench-border)',
+                        color: 'var(--workbench-text)',
                     }}>
                         {msg.content}
                     </div>
@@ -667,19 +622,19 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
                     {!isUser && msg.pipelineSteps && msg.pipelineSteps.length > 0 && (
                         <div style={{
                             width: '100%',
-                            background: 'rgba(10,15,24,0.85)',
-                            border: '1px solid rgba(51,65,85,0.6)',
+                            background: 'var(--workbench-panel)',
+                            border: '1px solid var(--workbench-border)',
                             borderRadius: 12,
                             overflow: 'hidden',
                         }}>
                             <div style={{
-                                height: 38, background: 'rgba(17,24,39,0.85)',
-                                borderBottom: '1px solid rgba(51,65,85,0.4)',
+                                height: 38, background: 'var(--workbench-inset)',
+                                borderBottom: '1px solid var(--workbench-border)',
                                 display: 'flex', alignItems: 'center', paddingLeft: 14, gap: 8,
                             }}>
-                                <CodeOutlined style={{ color: '#38bdf8', fontSize: 13 }} />
-                                <span style={{ fontSize: 11, fontFamily: 'monospace', fontWeight: 700, color: '#64748b', letterSpacing: '0.08em' }}>
-                                    EXECUTION LOG
+                                <CodeOutlined style={{ color: 'var(--workbench-accent)', fontSize: 13 }} />
+                                <span style={{ fontSize: 11, fontFamily: 'monospace', fontWeight: 700, color: 'var(--workbench-muted)', letterSpacing: '0.08em' }}>
+                                    执行记录
                                 </span>
                             </div>
                             {renderPipelineStepsViewer(msg.pipelineSteps, false)}
@@ -690,25 +645,25 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
                     {!isUser && (msg.pythonCode || msg.engine) && (
                         <div style={{
                             width: '100%',
-                            background: 'rgba(13,17,23,0.95)',
-                            border: '1px solid rgba(51,65,85,0.6)',
+                            background: 'var(--workbench-panel)',
+                            border: '1px solid var(--workbench-border)',
                             borderRadius: 12,
                             overflow: 'hidden',
                         }}>
                             {/* ECharts 图表 */}
                             {msg.engine === 'echarts' && msg.chartOption && (
-                                <div style={{ background: '#111827', borderBottom: '1px solid rgba(51,65,85,0.4)', padding: 12 }}>
+                                <div style={{ background: 'var(--workbench-panel)', borderBottom: '1px solid var(--workbench-border)', padding: 12 }}>
                                     <ReactECharts option={msg.chartOption} style={{ height: 280, width: '100%' }} onEvents={{ click: handleChartClick }}/>
                                 </div>
                             )}
 
                             {/* HTML iframe 图表 */}
                             {msg.engine === 'html_iframe' && msg.chartHtml && (
-                                <div style={{ height: 280, background: '#fff', borderBottom: '1px solid rgba(51,65,85,0.4)' }}>
+                                <div style={{ height: 280, background: '#fff', borderBottom: '1px solid var(--workbench-border)' }}>
                                     <iframe
                                         srcDoc={msg.chartHtml}
                                         title="Spatial Chart"
-                                        style={{ width: '100%', height: '100%', border: 'none', background: '#020617' }}
+                                        style={{ width: '100%', height: '100%', border: 'none', background: 'var(--workbench-panel)' }}
                                         sandbox="allow-scripts allow-same-origin"
                                     />
                                 </div>
@@ -717,13 +672,13 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
                             {/* 错误栈 */}
                             {msg.status === 'failed' && msg.traceback && (
                                 <div style={{ padding: '12px 16px', background: 'rgba(239,68,68,0.05)', borderBottom: '1px solid rgba(239,68,68,0.2)' }}>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#f87171', fontWeight: 700, fontSize: 13, marginBottom: 8 }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--workbench-danger)', fontWeight: 700, fontSize: 13, marginBottom: 8 }}>
                                         <CloseOutlined style={{ fontSize: 12 }} /> 沙盒执行崩溃 / 修复超时
                                     </div>
                                     <div style={{
                                         background: 'rgba(30,30,30,0.8)', borderRadius: 8,
                                         padding: '10px 12px', overflowX: 'auto',
-                                        fontSize: 12, color: '#fca5a5',
+                                        fontSize: 12, color: 'var(--workbench-danger)',
                                         fontFamily: 'monospace', lineHeight: 1.6,
                                         border: '1px solid rgba(239,68,68,0.2)',
                                     }}>
@@ -742,7 +697,7 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
                                         <div style={{
                                             display: 'flex', alignItems: 'center', gap: 8,
                                             fontSize: 12, fontFamily: 'monospace', fontWeight: 700,
-                                            color: msg.status === 'failed' ? '#f87171' : '#38bdf8',
+                                            color: msg.status === 'failed' ? 'var(--workbench-danger)' : 'var(--workbench-accent)',
                                             letterSpacing: '0.05em',
                                         }}>
                                             <CodeOutlined style={{ fontSize: 13 }} />
@@ -761,25 +716,24 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
                                                 setTempModalCode(editedCodeMap[msg.id] ?? msg.pythonCode ?? '');
                                                 setCodeModalVisible(true);
                                             }}
-                                            style={{ color: '#94a3b8', background: 'rgba(255,255,255,0.05)' }}
+                                            style={{ color: 'var(--workbench-muted)', background: 'var(--workbench-inset)' }}
                                         />
                                     </div>
                                     <textarea
                                         style={{
                                             width: '100%', height: 200,
-                                            background: '#1e1e1e', color: '#ce9178',
+                                            background: 'var(--workbench-panel)', color: 'var(--workbench-text)',
                                             fontFamily: 'monospace', fontSize: 13,
                                             lineHeight: 1.65, padding: '12px 14px',
-                                            borderRadius: 8, border: '1px solid #334155',
+                                            borderRadius: 8, border: '1px solid var(--workbench-border)',
                                             outline: 'none', resize: 'vertical',
                                             boxSizing: 'border-box',
-                                            boxShadow: 'inset 0 2px 6px rgba(0,0,0,0.3)',
                                         }}
                                         value={editedCodeMap[msg.id] ?? msg.pythonCode}
                                         onChange={e => setEditedCodeMap(prev => ({ ...prev, [msg.id]: e.target.value }))}
                                         spellCheck={false}
                                     />
-                                    <div style={{ display: 'flex', gap: 10, marginTop: 10 }}>
+                                    <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
                                         <Button
                                             size="middle"
                                             type="primary"
@@ -787,8 +741,6 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
                                             icon={<SettingOutlined />}
                                             style={{
                                                 flex: 1.5, fontWeight: 700, fontSize: 13,
-                                                background: '#0369a1', borderColor: '#0ea5e9',
-                                                boxShadow: '0 2px 10px rgba(14,165,233,0.25)',
                                             }}
                                             onClick={async () => {
                                                 const codeToRun = editedCodeMap[msg.id] ?? msg.pythonCode ?? '';
@@ -843,8 +795,8 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
                                             icon={<CheckCircleOutlined />}
                                             style={{
                                                 flex: 1, fontSize: 13, fontWeight: 600,
-                                                background: 'rgba(30,41,59,0.8)',
-                                                borderColor: '#334155', color: '#94a3b8',
+                                                background: 'var(--workbench-inset)',
+                                                borderColor: 'var(--workbench-border)', color: 'var(--workbench-muted)',
                                             }}
                                         >
                                             固化为服务模型
@@ -860,77 +812,28 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
     };
 
     // ─────────────────────────────────────────────
-    // 主体渲染
-    // ─────────────────────────────────────────────
     return (
-        <div style={{
-            display: 'flex', flexDirection: 'column',
-            height: '100%', width: '100%',
-            background: '#080c14',
-            borderLeft: '1px solid rgba(30,41,59,0.8)',
-            overflow: 'hidden',
-        }}>
-            {/* ── 顶栏 ── */}
-            <div style={{
-                height: 56, flexShrink: 0,
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                padding: '0 18px',
-                background: 'rgba(10,14,22,0.95)',
-                borderBottom: '1px solid rgba(30,41,59,0.8)',
-                backdropFilter: 'blur(12px)',
-            }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <div style={{
-                        width: 8, height: 8, borderRadius: '50%',
-                        background: '#22d3ee',
-                        boxShadow: '0 0 8px rgba(34,211,238,0.8)',
-                    }} />
-                    <span style={{
-                        fontSize: 14, fontWeight: 800,
-                        color: '#e2e8f0', letterSpacing: '0.1em',
-                        fontFamily: 'monospace',
-                    }}>
-                        GEO-Pivot 空间智能
-                    </span>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    {selectedFileIds.length > 0 && (
-                        <Badge count={selectedFileIds.length} color="#0ea5e9" style={{ marginRight: 6 }}>
-                            <span style={{ fontSize: 12, color: '#64748b', fontWeight: 600 }}>已载入</span>
-                        </Badge>
-                    )}
-                    {assistantMode === 'legacy' && <Button
-                        type="text" size="small"
-                        icon={<ClearOutlined style={{ fontSize: 15 }} />}
-                        onClick={handleClear}
-                        title="清空对话"
-                        style={{ color: '#64748b' }}
-                    />}
+        <div className="agent-panel">
+            <header className="workbench-heading">
+                <h2 id="agent-heading"><MessageOutlined aria-hidden="true" />空间分析助手</h2>
+                {assistantMode === 'legacy' && (
                     <Button
-                        type="text" size="small"
-                        icon={<CloseOutlined style={{ fontSize: 15 }} />}
-                        onClick={onClose}
-                        title="关闭"
-                        style={{ color: '#64748b' }}
+                        type="text" size="small" icon={<ClearOutlined />}
+                        onClick={handleClear} aria-label="清空对话" title="清空对话"
                     />
-                </div>
-            </div>
+                )}
+            </header>
 
-            {/* ── 警告条 ── */}
-            {selectedFileIds.length === 0 && assistantMode === 'legacy' && (
-                <div style={{
-                    margin: '12px 16px 0',
-                    padding: '10px 14px',
-                    borderRadius: 10,
-                    background: 'rgba(120,53,15,0.2)',
-                    border: '1px solid rgba(180,83,9,0.3)',
-                    display: 'flex', alignItems: 'center', gap: 10,
-                    fontSize: 13, color: '#fbbf24', fontWeight: 600,
-                }}>
-                    {/* <ThunderboltOutlined style={{ fontSize: 15, flexShrink: 0 }} /> */}
-                    请先在左侧资源树中勾选需要分析的数据集
-                </div>
-            )}
+            <div className="agent-mode">
+                <Segmented
+                    aria-label="助手模式"
+                    options={[{ label: '自然语言', value: 'operator' }, { label: '实验流程', value: 'legacy' }]}
+                    value={assistantMode}
+                    onChange={setAssistantMode}
+                    size="small"
+                    block
+                />
+            </div>
 
             {/* ── 消息列表 ── */}
             <div className={`min-h-0 flex-1 overflow-hidden ${assistantMode === 'operator' ? 'flex' : 'hidden'}`}>
@@ -940,171 +843,86 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
                 ref={scrollRef}
                 style={{
                     flex: 1, overflowY: 'auto', overflowX: 'hidden',
-                    padding: '16px',
+                    padding: '12px',
                     display: assistantMode === 'legacy' ? 'flex' : 'none',
                     flexDirection: 'column', gap: 16,
                     scrollbarWidth: 'thin',
-                    scrollbarColor: '#1e293b transparent',
+                    scrollbarColor: 'var(--workbench-border) transparent',
                 }}
             >
                 {messages.map(renderMessage)}
             </div>
 
-            {/* ── 快捷指令 ── */}
-            {assistantMode === 'legacy' && messages.length <= 2 && selectedFileIds.length > 0 && (
-                <div style={{ padding: '0 16px 12px' }}>
-                    <p style={{ fontSize: 11, color: '#475569', fontWeight: 700, letterSpacing: '0.1em', marginBottom: 8, fontFamily: 'monospace' }}>
-                        快捷指令
-                    </p>
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                        {QUICK_PROMPTS.map(prompt => (
-                            <button
-                                key={prompt}
-                                onClick={() => setInputValue(prompt)}
-                                style={{
-                                    fontSize: 12.5, padding: '6px 14px', cursor: 'pointer',
-                                    borderRadius: 20, border: '1px solid #334155',
-                                    background: 'rgba(22,31,46,0.8)', color: '#94a3b8',
-                                    fontWeight: 500, transition: 'all 0.2s',
-                                }}
-                                onMouseEnter={e => {
-                                    (e.currentTarget as HTMLButtonElement).style.borderColor = '#0ea5e9';
-                                    (e.currentTarget as HTMLButtonElement).style.color = '#38bdf8';
-                                    (e.currentTarget as HTMLButtonElement).style.background = 'rgba(14,165,233,0.08)';
-                                }}
-                                onMouseLeave={e => {
-                                    (e.currentTarget as HTMLButtonElement).style.borderColor = '#334155';
-                                    (e.currentTarget as HTMLButtonElement).style.color = '#94a3b8';
-                                    (e.currentTarget as HTMLButtonElement).style.background = 'rgba(22,31,46,0.8)';
-                                }}
-                            >
-                                {prompt}
-                            </button>
-                        ))}
-                    </div>
-                </div>
-            )}
-
-            {/* ── 输入区 ── */}
-            <div style={{
-                flexShrink: 0, padding: '12px 16px 16px',
-                borderTop: '1px solid rgba(30,41,59,0.8)',
-                background: 'rgba(10,14,22,0.9)',
-                backdropFilter: 'blur(12px)',
-            }}>
-                <Segmented
-                    options={[{ label: '自然语言（算子优先）', value: 'operator' }, { label: '原有实验流程', value: 'legacy' }]}
-                    value={assistantMode}
-                    onChange={value => setAssistantMode(value as 'operator' | 'legacy')}
-                    style={{ marginBottom: assistantMode === 'legacy' ? 8 : 0, width: '100%', fontSize: 12 }}
-                    block
-                />
-
-                {assistantMode === 'legacy' && <>
-                    <div style={{ marginBottom: 6, color: '#94a3b8', fontSize: 11 }}>原有实验流程（保留旧交互与代码执行能力）</div>
+            {assistantMode === 'legacy' && (
+                <div className="agent-composer">
+                    {messages.length <= 2 && selectedFileIds.length > 0 && (
+                        <div className="agent-prompts">
+                            {QUICK_PROMPTS.map(prompt => (
+                                <Button key={prompt} size="small" onClick={() => setInputValue(prompt)}>{prompt}</Button>
+                            ))}
+                        </div>
+                    )}
                     <Segmented
+                        aria-label="实验分析模式"
                         options={[
                             { label: '数据透视', value: 'pivot' },
                             { label: '空间推算', value: 'feature_calc' },
                             { label: '专业模型', value: 'pro_model' },
                         ]}
                         value={agentMode}
-                        onChange={(val) => setAgentMode(val as 'pivot' | 'feature_calc' | 'pro_model')}
-                        style={{ marginBottom: 10, width: '100%', fontSize: 12 }}
+                        onChange={setAgentMode}
+                        size="small"
                         block
                     />
-                    <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end' }}>
+                    <div className="agent-input">
                         <Input.TextArea
-                            ref={inputRef}
+                            aria-label="分析需求"
                             value={inputValue}
-                            onChange={e => setInputValue(e.target.value)}
-                            onKeyDown={e => {
-                                if (e.key === 'Enter' && !e.shiftKey) {
-                                    e.preventDefault();
-                                    handleSend();
+                            onChange={event => setInputValue(event.target.value)}
+                            onKeyDown={event => {
+                                if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+                                    event.preventDefault();
+                                    void handleSend();
                                 }
                             }}
-                            placeholder={selectedFileIds.length > 0 ? '输入分析需求（Enter 发送，Shift+Enter 换行）' : '等待接入地理图层...'}
+                            placeholder={selectedFileIds.length > 0 ? '输入分析需求' : '请先选择地理图层'}
                             disabled={loading}
                             autoSize={{ minRows: 2, maxRows: 5 }}
-                            style={{
-                                flex: 1, fontSize: 14, lineHeight: 1.6,
-                                background: '#0f1822', border: '1px solid #1e293b',
-                                borderRadius: 10, padding: '10px 13px',
-                                color: '#f1f5f9', resize: 'none',
-                                boxShadow: 'inset 0 1px 4px rgba(0,0,0,0.3)',
-                            }}
                         />
                         <Button
                             type="primary"
-                            icon={<SendOutlined style={{ fontSize: 16 }} />}
+                            icon={<SendOutlined />}
+                            aria-label="发送"
                             loading={loading}
                             onClick={handleSend}
                             disabled={!inputValue.trim() || loading}
-                            style={{
-                                width: 44, height: 44, borderRadius: 10,
-                                flexShrink: 0, marginBottom: 1,
-                                background: 'linear-gradient(135deg, #0369a1, #0ea5e9)',
-                                border: 'none',
-                                boxShadow: '0 4px 14px rgba(14,165,233,0.35)',
-                                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                            }}
                         />
                     </div>
-                </>}
-            </div>
-
-            {/* 动画注入 */}
-            <style>{`
-                @keyframes geoFadeUp {
-                    from { opacity: 0; transform: translateY(8px); }
-                    to   { opacity: 1; transform: translateY(0); }
-                }
-                textarea:focus {
-                    border-color: #0ea5e9 !important;
-                    box-shadow: inset 0 1px 4px rgba(0,0,0,0.3), 0 0 0 2px rgba(14,165,233,0.15) !important;
-                    outline: none !important;
-                }
-                .dark-modal-wrap .ant-modal-content {
-                    background-color: #1e293b !important;
-                    border: 1px solid #334155;
-                    border-radius: 16px;
-                    overflow: hidden;
-                }
-                .dark-modal-wrap .ant-modal-header {
-                    background-color: #1e293b !important;
-                    border-bottom: none !important;
-                }
-            `}</style>
+                </div>
+            )}
 
             {/* 🌟 新增：全屏沉浸式代码编辑器弹窗 */}
             <Modal
                 title={
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: '#e2e8f0', fontFamily: 'monospace', fontSize: 16 }}>
-                        <CodeOutlined style={{ color: '#38bdf8' }} />
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: 'var(--workbench-text)', fontFamily: 'monospace', fontSize: 16 }}>
+                        <CodeOutlined style={{ color: 'var(--workbench-accent)' }} />
                         <span>算子沙盒全屏编辑器</span>
                     </div>
                 }
-                open={codeModalVisible} // ⚠️ 如果这里报错，请把它改成 visible={codeModalVisible}
+                open={codeModalVisible}
                 width={900}
                 centered
                 destroyOnHidden
                 styles={{
                     body: {
                         padding: '20px 24px',
-                        background: '#0f172a',
-                        borderBottom: '1px solid #334155',
-                        borderTop: '1px solid #334155'
+                        background: 'var(--workbench-panel)',
+                        borderBottom: '1px solid var(--workbench-border)',
+                        borderTop: '1px solid var(--workbench-border)'
                     }
                 }}
                 okText="保存修改"
                 cancelText="取消"
-                okButtonProps={{ 
-                    style: { background: '#0ea5e9', borderColor: '#0ea5e9', fontWeight: 'bold' } 
-                }}
-                cancelButtonProps={{
-                    style: { color: '#94a3b8', borderColor: '#475569', background: 'transparent' }
-                }}
                 onCancel={() => setCodeModalVisible(false)}
                 onOk={() => {
                     if (activeCodeMsgId) {
@@ -1112,23 +930,20 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({
                     }
                     setCodeModalVisible(false);
                 }}
-                /* 强制背景色，覆盖默认的白色 */
-                wrapClassName="dark-modal-wrap"
             >
                 <div style={{ display: 'flex', flexDirection: 'column', height: '65vh' }}>
-                    <div style={{ color: '#64748b', fontSize: 13, marginBottom: 12, display: 'flex', justifyContent: 'space-between' }}>
+                    <div style={{ color: 'var(--workbench-muted)', fontSize: 13, marginBottom: 12, display: 'flex', justifyContent: 'space-between' }}>
                         <span>编辑完成后点击“保存修改”，即可在面板中使用“应用修改并重跑”测试代码。</span>
                         <span style={{ fontFamily: 'monospace' }}>Python 3.9+ 环境</span>
                     </div>
                     <textarea
                         style={{
                             flex: 1, width: '100%',
-                            background: '#1e1e1e', color: '#ce9178',
+                            background: 'var(--workbench-panel)', color: 'var(--workbench-text)',
                             fontFamily: 'monospace', fontSize: 14.5,
                             lineHeight: 1.7, padding: '20px',
-                            borderRadius: 10, border: '1px solid #334155',
+                            borderRadius: 10, border: '1px solid var(--workbench-border)',
                             outline: 'none', resize: 'none',
-                            boxShadow: 'inset 0 4px 12px rgba(0,0,0,0.5)',
                         }}
                         value={tempModalCode}
                         onChange={e => setTempModalCode(e.target.value)}

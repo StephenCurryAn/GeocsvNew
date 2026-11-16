@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, App, Button, Card, Empty, Input, Space, Spin, Typography } from 'antd';
-import { CheckCircleOutlined, DeploymentUnitOutlined, SendOutlined } from '@ant-design/icons';
+import { CheckCircleOutlined, SendOutlined } from '@ant-design/icons';
 import AnalysisRunView from './AnalysisRunView';
-import { useAnalysisRun } from './useAnalysisRun';
+import { useAnalysisWorkspace } from './AnalysisWorkspace';
 import {
   createNaturalLanguagePlan, getRequestErrorMessage,
   type NaturalLanguagePlan, type SpatialPivotPlan,
@@ -15,7 +15,7 @@ interface UnifiedAnalysisAssistantProps {
 
 const UnifiedAnalysisAssistant = ({ selectedFileIds, onSwitchToLegacy }: UnifiedAnalysisAssistantProps) => {
   const { message } = App.useApp();
-  const analysis = useAnalysisRun();
+  const { runs: { assistant: analysis }, openResult } = useAnalysisWorkspace();
   const [prompt, setPrompt] = useState('');
   const [planning, setPlanning] = useState(false);
   const [plan, setPlan] = useState<NaturalLanguagePlan | null>(null);
@@ -119,6 +119,7 @@ const UnifiedAnalysisAssistant = ({ selectedFileIds, onSwitchToLegacy }: Unified
     setPlanError(null);
     try {
       if (!await analysis.restoreExistingRun(runId, artifactId)) return;
+      openResult('assistant');
       setFeedback('已复用已有结果并更新展示方式，没有重新计算。');
     } catch (error) {
       setPlanError(`无法复用已有结果：${getRequestErrorMessage(error)}`);
@@ -129,13 +130,13 @@ const UnifiedAnalysisAssistant = ({ selectedFileIds, onSwitchToLegacy }: Unified
   };
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-3 overflow-y-auto p-4">
-      <Card size="small" className="border-cyan-800/40 bg-[#0b1121]" title={<span className="flex items-center gap-2 text-sm text-cyan-300"><DeploymentUnitOutlined />自然语言分析</span>} extra={<span className="text-xs text-emerald-300">算子优先</span>}>
+    <div className="assistant-content flex h-full min-h-0 flex-col gap-3 overflow-y-auto">
+      <Card size="small" className="assistant-plan-card" title="分析需求">
         <div className="space-y-3">
           <Typography.Paragraph className="!mb-0 text-xs text-slate-400">
-            描述目标面与点图层之间的统计需求。系统先规划已验证的空间透视算子；执行前会展示数据、字段和边界假设供确认。
+            描述如何统计面内的点，确认图层、字段和边界规则后再执行。
           </Typography.Paragraph>
-          {selectedFileIds.length === 0 && !hasReusableContext && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="请先勾选参与分析的图层，或从运行历史恢复一条成功结果以继续更换图表" />}
+          {selectedFileIds.length === 0 && !hasReusableContext && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="选择图层开始分析，或从运行历史打开结果" />}
           {selectedFileIds.length === 0 && hasReusableContext && <Alert type="info" showIcon title="当前没有勾选图层，可基于已恢复的成功运行继续更换图表。" />}
           <Input.TextArea
             value={prompt}
@@ -195,7 +196,7 @@ const UnifiedAnalysisAssistant = ({ selectedFileIds, onSwitchToLegacy }: Unified
         </div>
       </Card>
 
-      <AnalysisRunView analysis={analysis} />
+      <AnalysisRunView source="assistant" />
     </div>
   );
 };

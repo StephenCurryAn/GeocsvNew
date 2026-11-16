@@ -1,4 +1,6 @@
+import type { PoolClient } from 'pg';
 import pool from '../config/db';
+import { transaction } from '../modules/analysis/database';
 import { readDataset } from '../modules/spatialPivot/datasets';
 
 export interface IFeature {
@@ -13,50 +15,23 @@ export interface IFeature {
  * @param fileId 文件节点ID
  * @param features GeoJSON 的 features 数组
  */
-export const insertFeaturesBatch = async (fileId: string, features: any[]) => {
-  // PostGIS 需要将 GeoJSON 的 geometry 转换为 WKT 或者直接识别 JSON
-  // ST_GeomFromGeoJSON() 可以非常方便地解析 GeoJSON 格式字符串入库
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    
-    // 如果数据量巨大，更推荐用 pg-copy-streams，这里先用批量插入的简单拼装法 (如果上万条可能会慢，后续可优化)
-    const values: any[] = [];
-    const queryParts: string[] = [];
-    
-    let paramIndex = 1;
-    for (let i = 0; i < features.length; i++) {
-      const f = features[i];
-      // geometry 可能是 null (如单纯的 CSV 行)
-      const geomJson = f.geometry ? JSON.stringify(f.geometry) : null;
-      const propsJson = f.properties ? JSON.stringify(f.properties) : null;
-      
-      queryParts.push(`($${paramIndex++}, ST_GeomFromGeoJSON($${paramIndex++}), $${paramIndex++})`);
-      values.push(fileId, geomJson, propsJson);
-      
-      // 做简单的分批，防止参数过多报错 (Postgres 一个查询最多支持 65535 个参数)
-      // 我们每条有 3 个参数，65535/3 = 21845 条。保险起见每 5000 条执行一次
-      if (queryParts.length >= 5000 || i === features.length - 1) {
-        const sql = `
-          INSERT INTO spatial_features (file_id, geom, properties)
-          VALUES ${queryParts.join(', ')}
-        `;
-        await client.query(sql, values);
-        
-        // 清空继续
-        queryParts.length = 0;
-        values.length = 0;
-        paramIndex = 1;
-      }
+export const insertFeaturesBatch = async (fileId: string, features: any[], client?: PoolClient): Promise<void> => {
+  const insert = async (db: PoolClient) => {
+    // Stay below PostgreSQL's 65535-parameter limit (3 parameters per feature).
+    for (let offset = 0; offset < features.length; offset += 5000) {
+      const values: unknown[] = [];
+      const rows = features.slice(offset, offset + 5000).map(feature => {
+        const firstParameter = values.length + 1;
+        values.push(fileId, feature.geometry ? JSON.stringify(feature.geometry) : null,
+          feature.properties ? JSON.stringify(feature.properties) : null);
+        return `($${firstParameter}, ST_GeomFromGeoJSON($${firstParameter + 1}), $${firstParameter + 2})`;
+      });
+      await db.query(`INSERT INTO spatial_features (file_id, geom, properties) VALUES ${rows.join(', ')}`, values);
     }
-    
-    await client.query('COMMIT');
-  } catch (error) {
-    await client.query('ROLLBACK');
-    throw error;
-  } finally {
-    client.release();
-  }
+  };
+
+  if (client) await insert(client);
+  else await transaction(pool, 'BEGIN', insert);
 };
 
 /**

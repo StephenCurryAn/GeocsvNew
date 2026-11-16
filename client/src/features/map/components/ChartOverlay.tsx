@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import ReactECharts from 'echarts-for-react';
-import { Button, Segmented, Switch, Select } from 'antd';
+import { Button, Segmented, Switch, Select, theme as antdTheme } from 'antd';
 import { 
     CloseOutlined, BarChartOutlined, RadarChartOutlined, 
     DotChartOutlined, EnvironmentOutlined, HeatMapOutlined,
@@ -49,6 +49,7 @@ const HEATMAP_PALETTES: Record<string, string[]> = {
 };
 
 const ChartOverlay: React.FC = () => {
+    const { token } = antdTheme.useToken();
     const { 
         isChartVisible, setChartVisible, 
         pivotData, pivotConfig, generatedColumns,
@@ -114,13 +115,13 @@ const ChartOverlay: React.FC = () => {
             return {
                 backgroundColor: 'transparent',
                 tooltip: {
-                    trigger: 'item', backgroundColor: 'rgba(15, 23, 42, 0.95)', borderColor: '#8b5cf6', textStyle: { color: '#fff' },
-                    formatter: (p: any) => `<div style="color:#a78bfa">● Raw Point</div><div>X: ${p.value[0]}</div><div>Y: ${p.value[1]}</div>`
+                    trigger: 'item', backgroundColor: token.colorBgElevated, borderColor: '#8b5cf6', textStyle: { color: token.colorText },
+                    formatter: (p: any) => `<div style="color:${token.colorPrimary}">● Raw Point</div><div>X: ${p.value[0]}</div><div>Y: ${p.value[1]}</div>`
                 },
                 grid: { top: '15%', left: '8%', right: '8%', bottom: '12%', containLabel: true },
                 // 下面直接使用局部变量 xField 和 yField
-                xAxis: { type: 'value', name: xField, nameTextStyle: { color: '#a78bfa' }, splitLine: { show: false }, axisLabel: { color: '#e5e7eb' } },
-                yAxis: { type: 'value', name: yField, nameTextStyle: { color: '#a78bfa' }, splitLine: { lineStyle: { color: 'rgba(255,255,255,0.05)', type: 'dashed' } }, axisLabel: { color: '#9ca3af' }, scale: true },
+                xAxis: { type: 'value', name: xField, nameTextStyle: { color: token.colorPrimary }, splitLine: { show: false }, axisLabel: { color: token.colorText } },
+                yAxis: { type: 'value', name: yField, nameTextStyle: { color: token.colorPrimary }, splitLine: { lineStyle: { color: token.colorSplit, type: 'dashed' } }, axisLabel: { color: token.colorTextSecondary }, scale: true },
                 series: [{
                     type: 'scatter', symbolSize: 6, 
                     // 这里也直接使用局部变量，TypeScript 就能完美识别了
@@ -147,14 +148,14 @@ const ChartOverlay: React.FC = () => {
         const useDualYAxis = !isPivot2D && seriesFields.length >= 2 && (chartType === 'Bar' || chartType === 'Line');
 
         // 3. 构建 BaseOption (公共UI配置)
-        const tooltipBg = 'rgba(15, 23, 42, 0.95)';
-        const tooltipBorder = '#334155';
-        const axisLabelColor = '#9ca3af';
+        const tooltipBg = token.colorBgElevated;
+        const tooltipBorder = token.colorBorder;
+        const axisLabelColor = token.colorTextSecondary;
 
         let baseOption: any = {
             backgroundColor: 'transparent',
-            tooltip: { trigger: 'axis', backgroundColor: tooltipBg, borderColor: tooltipBorder, textStyle: { color: '#e2e8f0' } },
-            legend: { show: is2D, data: is2D ? seriesFields : [], textStyle: { color: '#e5e7eb' }, bottom: showScroll ? 35 : 5, type: 'scroll' },
+            tooltip: { trigger: 'axis', backgroundColor: tooltipBg, borderColor: tooltipBorder, textStyle: { color: token.colorText } },
+            legend: { show: is2D, data: is2D ? seriesFields : [], textStyle: { color: token.colorText }, bottom: showScroll ? 35 : 5, type: 'scroll' },
             grid: { top: '15%', left: '8%', right: '8%', bottom: showScroll ? '20%' : '12%', containLabel: true },
             dataZoom: showScroll ? [{ type: 'slider', show: true, bottom: 5, height: 12, borderColor: 'transparent', fillerColor: 'rgba(34, 211, 238, 0.3)', backgroundColor: 'rgba(255,255,255,0.05)' }] : [],
             xAxis: { type: 'category', data: xAxisData, axisLine: { show: false }, axisTick: { show: false }, axisLabel: { color: axisLabelColor, rotate: showScroll ? 0 : 30 } },
@@ -163,17 +164,17 @@ const ChartOverlay: React.FC = () => {
             yAxis: useDualYAxis ? [
                 { 
                     type: 'value', name: seriesFields[0], alignTicks: true,
-                    axisLine: { show: false }, splitLine: { lineStyle: { color: 'rgba(255,255,255,0.05)', type: 'dashed' } }, 
+                    axisLine: { show: false }, splitLine: { lineStyle: { color: token.colorSplit, type: 'dashed' } },
                     axisLabel: { color: axisLabelColor }, nameTextStyle: { color: axisLabelColor }
                 },
                 { 
                     type: 'value', name: seriesFields.length > 2 ? '指标均值/比例' : seriesFields[1], alignTicks: true,
                     axisLine: { show: false }, splitLine: { show: false }, 
-                    axisLabel: { color: '#fbbf24' }, nameTextStyle: { color: '#fbbf24' }
+                    axisLabel: { color: token.colorWarningText }, nameTextStyle: { color: token.colorWarningText }
                 }
             ] : { 
                 type: 'value', axisLine: { show: false }, 
-                splitLine: { lineStyle: { color: 'rgba(255,255,255,0.05)', type: 'dashed' } }, 
+                splitLine: { lineStyle: { color: token.colorSplit, type: 'dashed' } },
                 axisLabel: { color: axisLabelColor } 
             },
             series: []
@@ -264,7 +265,7 @@ const ChartOverlay: React.FC = () => {
                 // 覆写基础配置
                 baseOption = {
                     backgroundColor: 'transparent',
-                    tooltip: { trigger: 'item', backgroundColor: tooltipBg, borderColor: tooltipBorder, textStyle: { color: '#e2e8f0' } },
+                    tooltip: { trigger: 'item', backgroundColor: tooltipBg, borderColor: tooltipBorder, textStyle: { color: token.colorText } },
                     color: CONTRAST_PALETTES.map(p => p[0]), // 赋予缤纷色彩
                     series: [{
                         name: targetField, type: 'pie', radius: ['25%', '50%'], center: ['50%', '55%'], roseType: 'area',
@@ -294,15 +295,15 @@ const ChartOverlay: React.FC = () => {
 
                 baseOption = {
                     backgroundColor: 'transparent',
-                    tooltip: { trigger: 'item', backgroundColor: tooltipBg, borderColor: tooltipBorder, textStyle: { color: '#fff' } },
-                    legend: { show: true, type: 'scroll', bottom: 5, textStyle: { color: '#e5e7eb' }, pageIconColor: theme.primary },
+                    tooltip: { trigger: 'item', backgroundColor: tooltipBg, borderColor: tooltipBorder, textStyle: { color: token.colorText } },
+                    legend: { show: true, type: 'scroll', bottom: 5, textStyle: { color: token.colorText }, pageIconColor: theme.primary },
                     radar: {
                         indicator: indicators, shape: 'polygon', center: ['50%', '55%'], radius: '60%', splitNumber: 4,
                         axisName: { color: !is2D ? theme.primary : '#22d3ee', fontSize: 11, fontWeight: 'bold' },
                         axisTick: { show: false },
-                        splitLine: { lineStyle: { color: ['rgba(255,255,255,0.1)', 'rgba(255,255,255,0.05)'] } },
-                        splitArea: { show: true, areaStyle: { color: ['rgba(255,255,255,0.02)', 'rgba(255,255,255,0.05)'] } },
-                        axisLine: { lineStyle: { color: 'rgba(255,255,255,0.1)' } }
+                        splitLine: { lineStyle: { color: [token.colorBorder, token.colorSplit] } },
+                        splitArea: { show: true, areaStyle: { color: [token.colorFillQuaternary, token.colorFillTertiary] } },
+                        axisLine: { lineStyle: { color: token.colorBorder } }
                     },
                     series: [{
                         type: 'radar', symbol: 'circle', symbolSize: 4,
@@ -393,10 +394,10 @@ const ChartOverlay: React.FC = () => {
                             position: 'top', 
                             backgroundColor: tooltipBg, 
                             borderColor: '#333', 
-                            textStyle: { color: '#fff' }, 
+                            textStyle: { color: token.colorText },
                             formatter: (p: any) => {
                                 if (isGeodetector) {
-                                    const intType = p.data[3] ? `<div style="margin-top:4px; font-size:12px; color:#9ca3af">交互类型: <span style="color:#22d3ee">${p.data[3]}</span></div>` : '';
+                                    const intType = p.data[3] ? `<div style="margin-top:4px; font-size:12px; color:${token.colorTextSecondary}">交互类型: <span style="color:${token.colorPrimary}">${p.data[3]}</span></div>` : '';
                                     return `<div style="text-align:center; font-weight:bold; margin-bottom:4px">${hYData[p.data[1]]} ∩ ${hXData[p.data[0]]}</div>
                                             <div>交互 q 值: <span style="color:${hColors[hColors.length-1]}; font-weight:bold">${p.data[2]}</span></div>
                                             ${intType}`;
@@ -409,13 +410,13 @@ const ChartOverlay: React.FC = () => {
                         grid: { top: 40, bottom: 112, left: 112, right: 34, containLabel: true },
                         xAxis: { 
                             type: 'category', data: hXData, splitArea: { show: true }, 
-                            axisLabel: { color: '#cbd5e1', rotate: hXData.length > 3 ? 35 : 0, margin: 14, hideOverlap: true, fontSize: 12, fontWeight: 600 },
+                            axisLabel: { color: token.colorTextSecondary, rotate: hXData.length > 3 ? 35 : 0, margin: 14, hideOverlap: true, fontSize: 12, fontWeight: 600 },
                             axisLine: { show: false }, axisTick: { show: false },
                             splitLine: { show: false }
                         },
                         yAxis: { 
                             type: 'category', data: hYData, splitArea: { show: true }, 
-                            axisLabel: { color: '#cbd5e1', margin: 14, width: 96, overflow: 'truncate', fontSize: 12, fontWeight: 600 },
+                            axisLabel: { color: token.colorTextSecondary, margin: 14, width: 96, overflow: 'truncate', fontSize: 12, fontWeight: 600 },
                             axisLine: { show: false }, axisTick: { show: false },
                             splitLine: { show: false }
                         },
@@ -426,7 +427,7 @@ const ChartOverlay: React.FC = () => {
                             calculable: true, orient: 'horizontal', 
                             left: 'center', bottom: 22,
                             formatter: formatVisualValue,
-                            textStyle: { color: '#e5e7eb', fontSize: 12, fontWeight: 600 },
+                            textStyle: { color: token.colorText, fontSize: 12, fontWeight: 600 },
                             textGap: 12,
                             inRange: { color: hColors },
                             itemWidth: 16, itemHeight: visualMapLength,
@@ -440,7 +441,7 @@ const ChartOverlay: React.FC = () => {
                             data: heatmapData, 
                             label: {
                                 show: isGeodetector, 
-                                color: '#fff',
+                                color: token.colorText,
                                 fontSize: 11
                             },
                             itemStyle: { borderColor: 'rgba(15,23,42,0.72)', borderWidth: 1, borderRadius: 3 },
@@ -465,7 +466,7 @@ const ChartOverlay: React.FC = () => {
         }
 
         return baseOption;
-    }, [pivotData, rawScatterData, chartType, scatterSource, scatterConfig, generatedColumns, pivotConfig, isChartVisible, mapColorTheme, activePieSeries, chartMode]);
+    }, [pivotData, rawScatterData, chartType, scatterSource, scatterConfig, generatedColumns, pivotConfig, isChartVisible, mapColorTheme, activePieSeries, chartMode, token]);
 
     const onChartClick = (params: any) => {
         if (!isMapLinkageEnabled) return;
@@ -517,20 +518,15 @@ const ChartOverlay: React.FC = () => {
     const showThemeSelect = isMapLinkageEnabled && pivotData && !pivotConfig.groupByCol && pivotConfig.groupByRow;
     
     return (
-        <div 
-            className="absolute bottom-8 right-8 z-[1000] flex flex-col overflow-hidden
-                       rounded-3xl transition-all duration-300 ease-out
-                       bg-[#0b1121]/30 backdrop-blur-xl
-                       border border-white/10 ring-1 ring-white/5
-                       shadow-[0_8px_32px_0_rgba(0,0,0,0.36)]
-                       group hover:bg-[#0b1121]/40 hover:border-cyan-500/30"
+        <div
+            className="map-chart"
             style={{ width: containerWidth, height: containerHeight }}
         >
             {/* Header */}
-            <div className="h-14 shrink-0 flex items-center justify-between px-4 border-b border-white/5 bg-gradient-to-r from-white/5 to-transparent">
-                <div className="mr-2 flex items-center">
+            <div className="map-chart-header">
+                <div className="map-chart-controls">
                     {chartMode === 'ai' ? (
-                        <span className="text-cyan-400 font-bold ml-2">AI 智能分析视图</span>
+                        <span className="font-semibold">分析图表</span>
                     ) : (
                     <>
                         <Segmented<ChartType>
@@ -546,7 +542,8 @@ const ChartOverlay: React.FC = () => {
                             ]}
                             value={chartType}
                             onChange={setChartType}
-                            className="custom-segmented-glass"
+                            size="small"
+                            aria-label="图表类型"
                         />
                         {/* [新增] 热力图专属配色选择器 */}
                         {showHeatmapPalette && (
@@ -586,7 +583,7 @@ const ChartOverlay: React.FC = () => {
                                                     ? `linear-gradient(to right, ${conf.stops[0]}, ${conf.stops[1]})`
                                                     : conf.primary 
                                             }}></div>
-                                            <span className="text-gray-300 text-xs">{conf.label}</span>
+                                            <span className="text-geo-text-secondary text-xs">{conf.label}</span>
                                         </div>
                                     ),
                                     value: key
@@ -596,17 +593,17 @@ const ChartOverlay: React.FC = () => {
                     </>
                     )}
                 </div>
-                <Button type="text" shape="circle" icon={<CloseOutlined className="text-gray-300" />} onClick={() => { setChartVisible(false); setHighlightedCategory(null); }} />
+                <Button type="text" shape="circle" icon={<CloseOutlined />} aria-label="关闭图表" onClick={() => { setChartVisible(false); setHighlightedCategory(null); }} />
             </div>
 
             {/* 主区 */}
-            <div className="flex-1 w-full h-full p-2 relative">
+            <div className="flex-1 min-h-0 w-full p-2 relative">
                 {/* [新增] 饼图维度选择器：如果图表是 Pie 且是多维数据，悬浮显示 Select */}
                 {chartMode !== 'ai' && chartType === 'Pie' && generatedColumns.length > 1 && (
-                    <div className="absolute top-2 right-4 z-10 bg-[#1e293b]/80 backdrop-blur-md rounded-lg border border-[#334155] p-1.5 flex items-center shadow-lg">
-                        <span className="text-[11px] text-gray-400 font-bold mr-2">透视维度:</span>
+                    <div className="absolute top-2 right-4 z-10 bg-geo-panel rounded border border-geo-border p-1.5 flex items-center">
+                        <span className="text-xs text-geo-text-secondary mr-2">透视维度:</span>
                         <Select 
-                            size="small" variant="borderless" className="w-28 text-cyan-400"
+                            size="small" variant="borderless" className="w-28"
                             value={activePieSeries} onChange={setActivePieSeries}
                             options={(pivotConfig.groupByCol && pivotData
                                 ? pivotData.map(item => String(item.rowKey ?? 'Unknown'))
@@ -621,14 +618,14 @@ const ChartOverlay: React.FC = () => {
                 ) : chartMode === 'ai' && aiChartOption ? (
                     <ReactECharts option={aiChartOption} style={{ height: '100%', width: '100%' }} theme="dark" notMerge autoResize />
                 ) : (
-                    <ReactECharts option={getOption} style={{ height: '100%', width: '100%' }} theme="dark" notMerge autoResize onEvents={{ 'click': onChartClick }} />
+                    <ReactECharts option={getOption} style={{ height: '100%', width: '100%' }} notMerge autoResize onEvents={{ 'click': onChartClick }} />
                 )}
             </div>
 
             {/* Footer 保持不变 */}
-            <div className="h-10 shrink-0 flex items-center justify-between px-4 border-t border-white/5 bg-white/5 text-xs text-gray-300">
+            <div className="map-chart-footer">
                 <div className="flex items-center gap-2 font-medium">
-                    <EnvironmentOutlined className={isMapLinkageEnabled ? 'text-cyan-400' : 'text-gray-400'} />
+                    <EnvironmentOutlined className={isMapLinkageEnabled ? 'text-geo-accent' : 'text-geo-text-secondary'} />
                     <span>地图颜色映射联动</span>
                 </div>
                 <Switch size="small" checked={isMapLinkageEnabled} onChange={(c) => { setMapLinkageEnabled(c); if(!c) setHighlightedCategory(null); }} disabled={chartMode === 'ai'} />

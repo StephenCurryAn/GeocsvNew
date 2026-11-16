@@ -4,7 +4,13 @@
 // 先进行Multer存硬盘这个步骤，然后进行控制器处理数据这个步骤，并返回回复
 
 // import mongoose, { Document, Schema } from 'mongoose';
-import e, { Request, Response } from 'express';
+import type { Request, Response } from 'express';
+import { randomUUID } from 'node:crypto';
+import type { PoolClient } from 'pg';
+import pool from '../config/db';
+import { DEFAULT_SCENE_ID, lockSceneResources } from '../models/Scene';
+import { transaction } from '../modules/analysis/database';
+import { shapefileSidecars } from '../utils/uploadConfig';
 import fs from 'fs';
 import path from 'path';
 import vm from 'vm'; // 引入 Node.js 虚拟机模块，用于动态执行代码
@@ -564,335 +570,206 @@ const readAndParseFile = async (filePath: string, dbExtension?: string) => {
     return { type: 'text', data: content };
 };
 
-/**
- * 文件上传 控制器
- * 控制器作用：处理客户端上传的文件并将其解析为 GeoJSON 对象
- * 用到了 readAndParseFile 函数，readAndParseFile(mainFilePath, mainExt)
- * const result = await readAndParseFile(mainFilePath, mainExt);
- */
-export const uploadFile = async (req: Request, res: Response) => {
-    try {
-        // 关键 :获取 parentId
-        // Multer 处理 FormData 时，文本字段会在 req.body 中
-        // 前端传过来的可能是字符串 'null' 或 'undefined'，需要清洗
-        /**
-         * 这里的 req.body 是谁填充的？
-         * 1.express.json() (在 index.ts 中配置)
-         * 它负责监听普通的 JSON 数据。如果前端传的是 JSON，它会解析好放进 req.body
-         * 2.Multer (在 fileRoutes.ts 中的 upload.array('files'))
-         * 这是专门处理文件上传的中间件。
-         * 它的工作：它拦截了请求，费劲地把二进制流里的“文件部分”切出来存硬盘，
-         *          并把“文本字段”（比如 parentId）切出来
-         * 它的结果：它把整理好的文件信息挂载到 req.files，把文本信息挂载到 req.body
-         */
-        let parentId = req.body.parentId;
-        if (parentId === 'null' || parentId === 'undefined' || parentId === '') {
-            parentId = null;
+class ResourceError extends Error {
+    constructor(readonly status: number, message: string) {
+        super(message);
+    }
+}
+
+const respondResourceError = (res: Response, error: unknown) => {
+    if (error instanceof ResourceError) {
+        return res.status(error.status).json({ code: error.status, message: error.message });
+    }
+    console.error('资源操作失败:', error);
+    return res.status(500).json({ code: 500, message: '资源操作失败' });
+};
+
+const resourceSceneId = (req: Request) => String(req.params.sceneId ?? DEFAULT_SCENE_ID);
+
+function resourceName(value: unknown): string {
+    const name = typeof value === 'string' ? value.trim() : '';
+    if (!name || name.length > 255) throw new ResourceError(400, '请输入 1 到 255 个字符的名称');
+    return name;
+}
+
+async function requireParent(value: unknown, sceneId: string, client?: PoolClient): Promise<string | null> {
+    if (value == null || value === '' || value === 'null' || value === 'undefined') return null;
+    if (typeof value !== 'string' || value.length > 50) {
+        throw new ResourceError(400, '父目录 ID 无效');
+    }
+    const parent = await FileNode.findFileNodeById(value, sceneId, client);
+    if (parent?.type !== 'folder') throw new ResourceError(404, '当前场景中没有该父目录');
+    return parent.id;
+}
+
+type UploadPart = {
+    file: Express.Multer.File;
+    name: string;
+    extension: string;
+};
+
+function groupUploads(files: Express.Multer.File[]): UploadPart[][] {
+    const datasets: UploadPart[][] = [];
+    const shapefiles = new Map<string, UploadPart[]>();
+
+    for (const file of files) {
+        const name = resourceName(Buffer.from(file.originalname, 'latin1').toString('utf8'));
+        const extension = path.extname(name).toLowerCase();
+        const part = { file, name, extension };
+        if (extension !== '.shp' && !shapefileSidecars.includes(extension)) {
+            datasets.push([part]);
+            continue;
         }
-
-        // 【新增】支持前端传递自定义名称 (clean name)
-        // 如果前端在 FormData 里 append 了 'name' 字段，就用它；否则用文件名
-        let customName = req.body.name;
-        if (customName === 'null' || customName === 'undefined') customName = '';
-
-        // req.files 是一个数组 (因为我们用了 upload.array)
-        // （文件名、存在哪了、多大、什么类型等）
-        // 这段代码是 TypeScript 的类型断言，告诉编译器我们确定它是这个类型（数组）
-        const files = req.files as Express.Multer.File[];
-
-        // 检查是否有文件被上传
-        if (!files || files.length === 0) {
-            return res.status(400).json({
-                code: 400,
-                message: '没有文件被上传',
-                data: null
-            });
+        const stem = name.slice(0, -extension.length).toLowerCase();
+        const group = shapefiles.get(stem) ?? [];
+        if (group.some(item => item.extension === extension)) {
+            throw new ResourceError(400, 'Shapefile 包含重复的同名组件：' + name);
         }
-        // 为了防止文件名冲突（因为我们在uploadConfig.ts中去掉了随机数），我们在这里统一给这一批文件重命名
-        // 生成一个统一的时间戳ID
-        // Math.round是四舍五入
-        // Math.random()是生成0-1之间的随机小数
-        const batchId = `${Date.now()}-${Math.round(Math.random() * 1000)}`;
-        // 存储处理结果
-        const processedFiles = [];
-        // 1. 先进行一次遍历，把所有文件重命名为 "原文件名_BatchId.后缀"
-        // 这样可以确保 .shp, .dbf, .shx 依然拥有相同的“前缀”，同时又全球唯一
-        const renamedFilesMap: Record<string, string> = {}; // 用于记录 .shp 文件的最终路径
+        group.push(part);
+        shapefiles.set(stem, group);
+        if (extension === '.shp') datasets.push(group);
+    }
+    for (const group of shapefiles.values()) {
+        if (!group.some(item => item.extension === '.shp')) {
+            throw new ResourceError(400, '缺少对应的 .shp 文件：' + group[0].name);
+        }
+    }
+    return datasets;
+}
 
-        for (const file of files) {
-            // 修复乱码
-            const originalName = Buffer.from(file.originalname, 'latin1').toString('utf8');
-            const ext = path.extname(originalName).toLowerCase();
-            const basename = path.basename(originalName, ext); // 不带后缀的文件名
-
-            // 新文件名: 比如 "MyMap_1768821.shp"
-            // 这里面的file.path是Multer存硬盘时的路径（类似“E:\Project\uploads\test.shp”）
-            const newFilename = `${basename}_${batchId}${ext}`;
-            // path.dirname 是获取目录名，path.join是拼接路径
-            const newPath = path.join(path.dirname(file.path), newFilename);
-
-            // 重命名物理文件
-            await fsPromises.rename(file.path, newPath);
-
-            // 如果是 .shp 文件，我们把它作为“主文件”记录下来
-            if (ext === '.shp') {
-                renamedFilesMap['main'] = newPath;
-                renamedFilesMap['originalName'] = originalName;
-                renamedFilesMap['size'] = file.size.toString();
-                renamedFilesMap['mime'] = file.mimetype;
+function getImportedFeatures(data: any): { geometry?: any; properties: any }[] {
+    if (Array.isArray(data)) {
+        return data.filter(row => row && typeof row === 'object' && !Array.isArray(row))
+            .map(properties => ({ properties }));
+    }
+    if (data?.type !== 'FeatureCollection' || !Array.isArray(data.features)) return [];
+    return data.features.map((feature: any) => {
+        const { geometry } = feature;
+        const properties = feature.properties ?? {};
+        if (geometry) {
+            try {
+                if (geometry.coordinates) geometry.coordinates = stripZDimension(geometry.coordinates);
+                properties.cp = geometry.type === 'Point' ? geometry.coordinates : center(feature).geometry.coordinates;
+            } catch (error) {
+                console.warn('[Geometry] 中心点计算失败:', error);
             }
-            // 如果是单文件 (json/csv)，也记录
-            else if (['.json', '.geojson', '.csv', '.tif', '.tiff'].includes(ext)) {
-                renamedFilesMap['main'] = newPath;
-                renamedFilesMap['originalName'] = originalName;
-                renamedFilesMap['size'] = file.size.toString();
-                renamedFilesMap['mime'] = file.mimetype;
-            }
         }
+        return { geometry, properties };
+    });
+}
 
-        // 2. 存库逻辑
-        // 我们只在数据库里存 "主文件" (.shp 或 .json) 的记录
-        // 附属文件 (.dbf, .shx) 只要物理存在于硬盘即可，不需要数据库记录
-        if (!renamedFilesMap['main']) {
-            // 如果上传了一堆文件但没有 .shp 也没有 .json或.csv，说明不完整或不支持
-            // (比如只传了 .dbf)
-            return res.status(400).json({ code: 400, message: '上传不完整：Shapefile 必须包含 .shp 文件' });
-        }
-        const mainFilePath = renamedFilesMap['main'];
-        const mainOriginalName = renamedFilesMap['originalName'];
-        const mainExt = path.extname(mainFilePath).toLowerCase();
-        
-        // 3. 解析预览
-        let parsedData: any = null;
-        let isRaster = false;
+function allocateFileName(originalName: string, siblingNames: Set<string>): string {
+    const extension = path.extname(originalName);
+    const stem = Array.from(path.basename(originalName, extension));
+    let name = originalName;
+    for (let index = 1; siblingNames.has(name); index++) {
+        const suffix = '(' + index + ')' + extension;
+        name = stem.slice(0, 255 - suffix.length).join('') + suffix;
+    }
+    siblingNames.add(name);
+    return name;
+}
+
+async function removeUploadPaths(paths: Iterable<string>): Promise<void> {
+    for (const filePath of paths) {
         try {
-            // 如果是 .shp，readAndParseFile 内部会自动去找同名的 .dbf
-            const result = await readAndParseFile(mainFilePath, mainExt);
-            if (result.type === 'json') {
-                parsedData = result.data;
-            }
-            else if (result.type === 'raster') {
-                isRaster = true;
-            }
-        } catch (e: any) {
-            console.warn('预览解析警告:', e.message);
-            // 如果是 shp 解析失败，可能是缺了 dbf，这里可以选择报错，或者仅存文件不预览
-            if (mainExt === '.shp') {
-                return res.status(400).json({ code: 400, message: `Shapefile 解析失败: ${e.message}` });
+            await fsPromises.unlink(filePath);
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+                console.warn('无法清理上传文件:', error);
             }
         }
+    }
+}
 
-        // 处理数据库文件名冲突 (自动重命名)
-        // 如果数据库里已经有了 "data.csv"，我们自动改成 "data(1).csv"
-        let dbFileName = mainOriginalName || customName;
-        let counter = 1;
-        // 循环检查是否存在同名文件
-        while (true) {
-            const existing = await FileNode.findOneFileNode({
-                name: dbFileName,
-                parent_id: parentId,
-                type: 'file'
-            });
-            if (!existing) break; // 没有重名，跳出循环
-
-            // 有重名，构造新名字
-            const ext = path.extname(mainOriginalName); // .csv
-            const nameNoExt = path.basename(mainOriginalName, ext); // data
-            dbFileName = `${nameNoExt}(${counter})${ext}`; // data(1).csv
-            counter++;
+export const uploadFile = async (req: Request, res: Response) => {
+    const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+    const stagedPaths = new Set(files.map(file => file.path));
+    try {
+        if (files.length === 0) throw new ResourceError(400, '没有文件被上传');
+        const sceneId = resourceSceneId(req);
+        const parentId = await requireParent(req.body.parentId, sceneId);
+        const datasets: {
+            main: UploadPart;
+            mainPath: string;
+            features: ReturnType<typeof getImportedFeatures>;
+            raster: boolean;
+        }[] = [];
+        for (const group of groupUploads(files)) {
+            const main = group.find(item => item.extension === '.shp') ?? group[0];
+            const storageId = randomUUID();
+            const directory = path.dirname(main.file.path);
+            for (const part of group) {
+                const destination = path.join(directory, storageId + part.extension);
+                await fsPromises.rename(part.file.path, destination);
+                stagedPaths.delete(part.file.path);
+                stagedPaths.add(destination);
+            }
+            const mainPath = path.join(directory, storageId + main.extension);
+            let parsed;
+            try {
+                parsed = await readAndParseFile(mainPath, main.extension);
+            } catch (error) {
+                throw new ResourceError(400, main.name + '：' + (error as Error).message);
+            }
+            datasets.push({ main, mainPath, features: getImportedFeatures(parsed.data), raster: parsed.type === 'raster' });
         }
 
-        // 在数据库中创建文件节点记录
-        const fileNode = FileNode.createFileNodeObject({
-            name: mainOriginalName,      // 文件名
-            type: 'file',                     // 类型为文件
-            parent_id: parentId,                   // 默认放在根目录，后续可以根据需求调整   
-            //  path.resolve是把相对路径转为绝对路径;process.cwd()是获取当前工作目录(server根目录)
-            // path: path.resolve(process.cwd(), mainFilePath),  
-            path: mainFilePath,  //这里面的mainFilePath已经是绝对路径了
-            size: Number(renamedFilesMap['size']),              // 文件大小
-            extension: mainExt,         // 文件扩展名
-            mime_type: renamedFilesMap['mime']       // MIME类型
-        });
-
-        // 保存到数据库
-        const savedFileNode = await FileNode.insertFileNode(fileNode);
-
-        //  新增重构：将解析出的要素存入 Feature 集合
-        if (parsedData) {
-            // 情况 A: GeoJSON FeatureCollection
-            if (parsedData.type === 'FeatureCollection' && Array.isArray(parsedData.features)) {
-                console.log(`[Database] 正在将 ${parsedData.features.length} 个要素写入 MongoDB...`);
-
-                // 构造要插入的文档数组
-                const featuresToInsert = parsedData.features.map((f: any) => {
-
-                    //  在此处计算中心点
-                    if (f.geometry) {
-                        try {
-
-                            // 🌟 新增：在存入数据库前，强制剥离 Z 轴（高程）数据，防止 PostGIS 报错
-                            if (f.geometry.coordinates) {
-                                f.geometry.coordinates = stripZDimension(f.geometry.coordinates);
-                            }
-
-                            // 确保 properties 存在
-                            if (!f.properties) f.properties = {};
-
-                            // 1. 如果是点 (Point)，中心点就是它自己，直接取坐标，省去 turf 计算开销
-                            if (f.geometry.type === 'Point' && Array.isArray(f.geometry.coordinates)) {
-                                f.properties.cp = f.geometry.coordinates;
-                            }
-                            // 2. 如果是 线/面 (Line/Polygon)，使用 turf.center 计算包围盒中心
-                            else {
-                                // turf.center 接收一个 Feature，返回一个 Point Feature
-                                const centerFeature = center(f);
-                                f.properties.cp = centerFeature.geometry.coordinates;
-                            }
-                        } catch (err) {
-                            console.warn('[Geometry] 中心点计算失败，跳过:', err);
-                            // 计算失败时不写入 center 字段，前端做好空值兼容即可
-                        }
-                    }
-
-                    // 构造基础对象
-                    const featureDoc: any = {
-                        fileId: savedFileNode.id,
-                        type: 'Feature',
-                        properties: f.properties
-                    };
-
-                    // 只有当 geometry 是有效对象且不是 null 时才添加该字段
-                    // 如果 geometry 为 null，我们直接不把这个 key 放进去
-                    // MongoDB 的 2dsphere 索引会忽略没有该字段的文档，从而避免报错
-                    if (f.geometry && typeof f.geometry === 'object') {
-                        featureDoc.geometry = f.geometry;
-                    }
-
-                    return featureDoc;
+        const imported = await transaction(pool, 'BEGIN', async client => {
+            await lockSceneResources(client, sceneId);
+            await requireParent(parentId, sceneId, client);
+            const siblingNames = await FileNode.findSiblingNames(sceneId, parentId, 'file', client);
+            const result = [];
+            for (const { main, mainPath, features, raster } of datasets) {
+                const node = await FileNode.insertFileNode(FileNode.createFileNodeObject({
+                    scene_id: sceneId,
+                    name: allocateFileName(main.name, siblingNames),
+                    parent_id: parentId,
+                    path: mainPath,
+                    size: main.file.size,
+                    extension: main.extension,
+                    mime_type: main.file.mimetype,
+                }), client);
+                await Feature.insertFeaturesBatch(node.id, features, client);
+                result.push({
+                    _id: node.id,
+                    fileName: node.name,
+                    fileSize: node.size,
+                    fileType: main.extension,
+                    totalFeatures: raster ? 1 : features.length,
                 });
-
-                // 批量插入 (使用 PostGIS repo)
-                await Feature.insertFeaturesBatch(savedFileNode.id, featuresToInsert);
-                console.log(`[Database] 写入完成`);
             }
-            // 情况 B: 普通数组 (纯 CSV 表格)
-            // 暂时跳过，或者需要  Feature Model 来支持无 Geometry 的数据。
-            // 目前只处理带地理信息的 Feature。
-        }
-
-        // 成功响应
-        // 这里要和前端的 geoService.ts 中的 UploadResponse 接口对应
-        // 🔺注意：不再返回全量 geoJson，防止前端卡死。
-        // 🔺前端稍后会调用 getFileData 获取第一页数据。
-        res.status(200).json({
-            code: 200,
-            message: '文件上传并解析成功',
-            data: {
-                // 前端调用时会用到这些字段，名称注意要一致
-                _id: savedFileNode.id,        // 返回数据库记录的ID
-                fileName: mainOriginalName, // 返回原始文件名 (注意：这里是 fileName，不是 filename)
-                // geoJson: parsedData,            // 返回解析后的 GeoJSON 数据
-                fileSize: savedFileNode.size,        // 文件大小
-                fileType: mainExt,         // 文件类型
-                // 如果是栅格，要素数量返回 1（代表一张图）否则按原样
-                totalFeatures: isRaster ? 1 : (parsedData?.features?.length || 0)
-            }
+            return result;
         });
-
-    } catch (error: any) {
-        console.error('文件上传处理错误:', error);
-
-        // 错误响应
-        res.status(500).json({
-            code: 500,
-            message: `文件处理失败: ${error.message}`,
-            data: null
-        });
+        stagedPaths.clear();
+        const data = req.params.sceneId ? imported : imported[imported.length - 1];
+        res.json({ code: 200, message: '文件上传并解析成功', data });
+    } catch (error) {
+        await removeUploadPaths(stagedPaths);
+        respondResourceError(res, error);
     }
 };
 
-/**
- * 创建文件夹 控制器
- * 控制器作用：在数据库中创建一个新的文件夹记录
- */
 export const createFolder = async (req: Request, res: Response) => {
     try {
-        // 这里面的req.body里面的一些属性是在前端的 geoService.ts 里被定义的
-        // 这里面name在前端根本就没有被定义（后续要是需要这个参数，可以去前端的geoService.ts 代码）
-        const { name, parentId } = req.body;
-        // const { parentId } = req.body;
-
-        // 验证必要参数
-        if (!name) {
-            return res.status(400).json({
-                code: 400,
-                message: '名称不能为空',
-                data: null
-            });
-        }
-        // console.log(`[Create Folder] 尝试创建文件夹: ${name} | parentId: ${parentId}`);
-
-        // 验证 parentId（如果不是根目录，则必须是有效的ObjectId）
-        if (parentId !== null && parentId !== undefined && parentId !== '') {
-            if (!parentId.match(/^[0-9a-fA-F-]{36}$/)) { // 简单验证 UUID 格式
-                return res.status(400).json({
-                    code: 400,
-                    message: '无效的父级ID格式',
-                    data: null
-                });
-            }
-        }
-
-        // 检查同名文件夹是否已存在
-        const existingFolder = await FileNode.findOneFileNode({
-            name: name,
-            parent_id: parentId || null,
-            type: 'folder'
+        const name = resourceName(req.body?.name);
+        const sceneId = resourceSceneId(req);
+        const node = await transaction(pool, 'BEGIN', async client => {
+            await lockSceneResources(client, sceneId);
+            const parentId = await requireParent(req.body.parentId, sceneId, client);
+            const siblingNames = await FileNode.findSiblingNames(sceneId, parentId, 'folder', client);
+            if (siblingNames.has(name)) throw new ResourceError(409, '同名文件夹已存在');
+            return FileNode.insertFileNode(FileNode.createFileNodeObject({
+                name, scene_id: sceneId, parent_id: parentId, type: 'folder',
+            }), client);
         });
-
-        if (existingFolder) {
-            return res.status(409).json({
-                code: 409,
-                message: '同名文件夹已存在',
-                data: null
-            });
-        }
-
-        // 创建文件夹节点
-        const folderNode = FileNode.createFileNodeObject({
-            name: name,
-            type: 'folder',
-            parent_id: parentId || null,  // 如果没有指定父ID，则为根目录
-        });
-
-        // 保存到数据库
-        const savedFolderNode = await FileNode.insertFileNode(folderNode);
-
-        // 成功响应
-        // 接口层：你现在看到的 res.json({ data: { _id: ... } }) 这段代码，
-        // 是在 server/src/controllers/fileController.ts 里定义的。这是你在决定“我要给前端看什么字段”
-        res.status(200).json({
+        res.json({
             code: 200,
             message: '文件夹创建成功',
-            // 数据库层：_id, name, parentId, type 这些值的来源和格式，
-            // 是在 server/src/models/FileNode.ts 里定义的。那是你的“数据库字典”。
-            data: {
-                _id: savedFolderNode.id,
-                name: savedFolderNode.name,
-                parentId: savedFolderNode.parent_id,
-                type: 'folder'
-            }
+            data: { _id: node.id, name: node.name, parentId: node.parent_id, type: node.type },
         });
-
-    } catch (error: any) {
-        console.error('创建文件夹错误:', error);
-        // 错误响应
-        res.status(500).json({
-            code: 500,
-            message: `创建文件夹失败: ${error.message}`,
-            data: null
-        });
+    } catch (error) {
+        respondResourceError(res, error);
     }
 };
 
@@ -951,7 +828,7 @@ export const getFileTree = async (req: Request, res: Response) => {
         // 从数据库查询所有文件节点
         // FileNode 是 Mongoose 模型，相当于拥有进入数据库（MongoDB）的所有钥匙，能去读写数据
         // fileNodes就是FileNode模型去数据库里查到的所有文件节点记录，按parentId和createdAt排序得到的
-        const fileNodes = await FileNode.findAllFileNodes();
+        const fileNodes = await FileNode.findAllFileNodes(resourceSceneId(req));
         // 将扁平数组转换为树形结构
         const treeData = buildTreeFromFlatArray(fileNodes);
         // 成功响应
@@ -1027,93 +904,48 @@ export const getFileData = async (req: Request, res: Response) => {
     }
 };
 
-/**
- * 重命名节点 控制器
- * PUT /api/files/:id
- */
 export const renameNode = async (req: Request, res: Response) => {
     try {
-        const id = req.params.id as string;
-        // name是await apiClient.put(`/files/${id}`, { name: newName })中所传的
-        const { name } = req.body;
-
-        if (!name) return res.status(400).json({ code: 400, message: '名称不能为空' });
-
-        const node = await FileNode.findFileNodeById(id);
-        if (!node) return res.status(404).json({ code: 404, message: '文件不存在' });
-
-        // 更新名称与自动扩展名
-        const updatedNode = await FileNode.updateFileNodeName(id, name);
-
-        res.status(200).json({ code: 200, message: '重命名成功', data: updatedNode });
-    } catch (error: any) {
-        // 处理唯一索引冲突 (同目录下重名)
-        if (error.code === 11000) {
-            return res.status(409).json({ code: 409, message: '该目录下已存在同名文件' });
-        }
-        res.status(500).json({ code: 500, message: error.message });
+        const sceneId = resourceSceneId(req);
+        const id = String(req.params.id);
+        const name = resourceName(req.body?.name);
+        const node = await transaction(pool, 'BEGIN', async client => {
+            await lockSceneResources(client, sceneId);
+            const current = await FileNode.findFileNodeById(id, sceneId, client);
+            if (!current) throw new ResourceError(404, '当前场景中没有该资源');
+            if (current.name === name) return current;
+            const siblingNames = await FileNode.findSiblingNames(sceneId, current.parent_id, current.type, client);
+            if (siblingNames.has(name)) throw new ResourceError(409, '该目录下已存在同名资源');
+            return FileNode.updateFileNodeName(id, sceneId, name, client);
+        });
+        res.json({ code: 200, message: '重命名成功', data: node });
+    } catch (error) {
+        respondResourceError(res, error);
     }
 };
 
-/**
- * 删除节点 控制器
- * DELETE /api/files/:id
- *   ：同步删除Feature表里的成千上万条数据
- */
 export const deleteNode = async (req: Request, res: Response) => {
     try {
-        const id = req.params.id as string;
-        const node = await FileNode.findFileNodeById(id);
-        if (!node) return res.status(404).json({ code: 404, message: '文件不存在' });
+        const sceneId = resourceSceneId(req);
+        const deleted = await transaction(pool, 'BEGIN', async client => {
+            await lockSceneResources(client, sceneId);
+            // spatial_features are deleted by their existing ON DELETE CASCADE foreign key.
+            return FileNode.deleteFileSubtree(String(req.params.id), sceneId, client);
+        });
+        if (!deleted.length) throw new ResourceError(404, '当前场景中没有该资源');
 
-        const deleteRecursive = async (pid: string) => {
-            const children = await FileNode.findFileNodesByParent(pid);
-            for (const child of children) {
-                if (child.type === 'folder') {
-                    await deleteRecursive(child.id);
-                } else {
-                    // 删除物理文件 (保持不变)
-                    await deletePhysicalFiles(child.path);
-
-                    //  【新增】删除 MongoDB 中的关联要素数据（features集合中）
-                    await Feature.deleteFeaturesByFileId(child.id);
-                }
-                // 删除节点在数据库的记录（filenodes集合中）
-                await FileNode.deleteFileNodeById(child.id);
+        for (const node of deleted) {
+            if (node.type !== 'file' || !node.path) continue;
+            const filePath = path.resolve(node.path);
+            const paths = [filePath];
+            if (path.extname(filePath).toLowerCase() === '.shp') {
+                paths.push(...shapefileSidecars.map(extension => filePath.replace(/\.shp$/i, extension)));
             }
-        };
-        const deletePhysicalFiles = async (filePath?: string) => {
-            if (!filePath) return;
-            const absPath = path.resolve(process.cwd(), filePath);
-            const ext = path.extname(absPath).toLowerCase();
-
-            // 如果是 shp，顺便删掉关联文件
-            if (ext === '.shp') {
-                const extensions = ['.shp', '.shx', '.dbf', '.prj', '.cpg'];
-                for (const e of extensions) {
-                    const relatedPath = absPath.replace(/\.shp$/i, e);
-                    // 删除关联文件（在硬盘，物理删除）
-                    try { await fsPromises.unlink(relatedPath); } catch (e) { }
-                }
-            } else {
-                try { await fsPromises.unlink(absPath); } catch (e) { }
-            }
-        };
-
-        // 如果是文件夹，先递归删除所有子内容
-        if (node.type === 'folder') {
-            await deleteRecursive(node.id);
-        } else {
-            await deletePhysicalFiles(node.path);
-            //  【新增】如果是文件，删除其对应的 Feature 数据（features集合中）
-            await Feature.deleteFeaturesByFileId(node.id);
+            await removeUploadPaths(paths);
         }
-
-        // 删除节点本身(filenodes集合中)
-        await FileNode.deleteFileNodeById(id);
-        res.status(200).json({ code: 200, message: '删除成功' });
-    } catch (error: any) {
-        res.status(500).json({ code: 500, message: error.message });
+        res.json({ code: 200, message: '删除成功' });
+    } catch (error) {
+        respondResourceError(res, error);
     }
 };
 

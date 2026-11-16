@@ -1,178 +1,131 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { Button, Tooltip } from 'antd';
-import { RobotOutlined } from '@ant-design/icons';
+import { useRef, useState, type ReactNode } from 'react';
+import { ChartNoAxesColumnIncreasing, Map as MapIcon, PanelsTopLeft } from 'lucide-react';
+import PanelSeparator, { SEPARATOR_SIZE } from './PanelSeparator';
+import WorkbenchThemeMenu from './WorkbenchThemeMenu';
+import { useAnalysisWorkspace, type WorkspaceView } from '../features/analysis/components/AnalysisWorkspace';
+import AnalysisResultView from '../features/analysis/components/AnalysisResultView';
+import { usePanelSize } from './usePanelSize';
 
-const MIN_SIDEBAR_WIDTH = 150;
-const MIN_TABLE_WIDTH = 200;
-const SNAP_THRESHOLD = 80;
+const MIN_WORKSPACE = 178;
+const MIN_ASSISTANT = 264;
+const MIN_CENTER = 300;
+const MIN_MAP = 240;
+const MIN_TABLE = 218;
+const MIN_WIDTH = MIN_WORKSPACE + MIN_ASSISTANT + MIN_CENTER + 2 * SEPARATOR_SIZE;
+const VIEW_BAR_HEIGHT = 44;
+const MIN_HEIGHT = MIN_MAP + MIN_TABLE + SEPARATOR_SIZE + VIEW_BAR_HEIGHT;
+const views = [
+    { key: 'map', title: '工作地图', icon: MapIcon },
+    { key: 'results', title: '分析结果', icon: ChartNoAxesColumnIncreasing },
+] as const;
+const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 
 interface MainLayoutProps {
-    children?: React.ReactNode;
-    selectedFileIds?: string[];
-    aiPanelOpen?: boolean;
-    onToggleAI?: () => void;
+    workspace: ReactNode;
+    map: ReactNode;
+    table: ReactNode;
+    assistant: ReactNode;
 }
 
-const MainLayout: React.FC<MainLayoutProps> = ({
-    children,
-    selectedFileIds = [],
-    aiPanelOpen = false,
-    onToggleAI,
-}) => {
-    const [sidebarWidth, setSidebarWidth] = useState<number>(260);
-    const [tableWidth, setTableWidth] = useState<number>(500);
-    const dragInfoRef = useRef<{
-        type: 'sidebar' | 'table';
-        startX: number;
-        startWidth: number;
-    } | null>(null);
+export default function MainLayout({ workspace, map, table, assistant }: MainLayoutProps) {
+    const { view, result, changeView } = useAnalysisWorkspace();
+    const tabs = useRef<Record<WorkspaceView, HTMLButtonElement | null>>({ map: null, results: null });
+    const workbenchRef = useRef<HTMLDivElement>(null);
+    const size = usePanelSize(workbenchRef);
+    const [workspaceWidth, setWorkspaceWidth] = useState<number>();
+    const [assistantWidth, setAssistantWidth] = useState<number>();
+    const [tableHeight, setTableHeight] = useState<number>();
 
-    const handleMouseDown = (type: 'sidebar' | 'table', e: React.MouseEvent) => {
-        e.preventDefault();
-        dragInfoRef.current = { type, startX: e.clientX, startWidth: type === 'sidebar' ? sidebarWidth : tableWidth };
-        document.body.style.cursor = 'col-resize';
-        document.body.style.userSelect = 'none';
-        document.addEventListener('mousemove', handleMouseMove);
-        document.addEventListener('mouseup', handleMouseUp);
-    };
-
-    const handleMouseMove = (e: MouseEvent) => {
-        if (!dragInfoRef.current) return;
-        const { type, startX, startWidth } = dragInfoRef.current;
-        const rawWidth = startWidth + (e.clientX - startX);
-        if (type === 'sidebar') {
-            setSidebarWidth(rawWidth < SNAP_THRESHOLD ? 0 : Math.max(MIN_SIDEBAR_WIDTH, Math.min(500, rawWidth)));
-        } else {
-            setTableWidth(rawWidth < SNAP_THRESHOLD ? 0 : Math.max(MIN_TABLE_WIDTH, Math.min(window.innerWidth - sidebarWidth - 200, rawWidth)));
-        }
-    };
-
-    const handleMouseUp = () => {
-        dragInfoRef.current = null;
-        document.body.style.cursor = '';
-        document.body.style.userSelect = '';
-        document.removeEventListener('mousemove', handleMouseMove);
-        document.removeEventListener('mouseup', handleMouseUp);
-    };
-
-    useEffect(() => {
-        return () => {
-            document.removeEventListener('mousemove', handleMouseMove);
-            document.removeEventListener('mouseup', handleMouseUp);
-        };
-    }, []);
-
-    const childrenArray = React.Children.toArray(children);
+    const width = Math.max(MIN_WIDTH, size.width);
+    const height = Math.max(MIN_HEIGHT, size.height);
+    const sidesAvailable = width - MIN_CENTER - 2 * SEPARATOR_SIZE;
+    const leftRequested = workspaceWidth ?? clamp(Math.round(width * 0.18), MIN_WORKSPACE, 264);
+    const rightRequested = assistantWidth ?? clamp(Math.round(width * 0.24), MIN_ASSISTANT, 368);
+    const right = clamp(rightRequested, MIN_ASSISTANT, Math.min(560, sidesAvailable - MIN_WORKSPACE));
+    const left = clamp(leftRequested, MIN_WORKSPACE, Math.min(480, sidesAvailable - right));
+    const tableMax = height - VIEW_BAR_HEIGHT - MIN_MAP - SEPARATOR_SIZE;
+    const bottom = clamp(tableHeight ?? Math.round(height * 0.36), MIN_TABLE, tableMax);
 
     return (
-        <div className="w-screen h-screen overflow-hidden flex flex-row bg-geo-dark select-none">
-
-            {/* === 左侧面板 === */}
+        <div className="workbench-scroll" ref={workbenchRef}>
             <div
-                className="shrink-0 flex flex-col bg-geo-panel"
+                className="workbench"
                 style={{
-                    width: `${sidebarWidth}px`,
-                    borderRight: sidebarWidth === 0 ? 'none' : '1px solid #334155',
-                    transition: dragInfoRef.current ? 'none' : 'width 0.1s ease-out',
+                    minWidth: MIN_WIDTH,
+                    minHeight: MIN_HEIGHT,
+                    gridTemplateColumns: left + 'px ' + SEPARATOR_SIZE + 'px minmax(0, 1fr) ' + SEPARATOR_SIZE + 'px ' + right + 'px',
                 }}
             >
-                <div className={`w-full h-full flex flex-col ${sidebarWidth < MIN_SIDEBAR_WIDTH ? 'opacity-0' : 'opacity-100'} transition-opacity duration-100`}>
-                    <div className="h-11 flex items-center px-4 border-b border-geo-border shrink-0">
-                        <span className="text-xs font-semibold text-geo-text-secondary tracking-widest uppercase">工作空间</span>
+                <aside id="workbench-workspace" className="workbench-workspace" aria-labelledby="workspace-heading">
+                    <header className="workbench-heading">
+                        <h1 id="workspace-heading"><span className="workbench-mark" aria-hidden="true"><PanelsTopLeft size={15} /></span>工作空间</h1>
+                        <WorkbenchThemeMenu />
+                    </header>
+                    <div className="workbench-workspace-content">{workspace}</div>
+                </aside>
+
+                <PanelSeparator
+                    label="调整工作空间宽度" controls="workbench-workspace"
+                    value={left} min={MIN_WORKSPACE} max={Math.min(480, sidesAvailable - right)}
+                    onResize={setWorkspaceWidth}
+                />
+
+                <main className="workbench-center">
+                    <div className="workbench-view-bar" role="tablist" aria-label="中央视图">
+                        {views.map(({ key, title, icon: Icon }) => (
+                            <button
+                                key={key} id={'workbench-tab-' + key} type="button" role="tab"
+                                ref={element => { tabs.current[key] = element; }}
+                                aria-selected={view === key} aria-controls={'workbench-view-' + key}
+                                tabIndex={view === key ? 0 : -1}
+                                onClick={() => changeView(key)}
+                                onKeyDown={event => {
+                                    let next: WorkspaceView;
+                                    if (event.key === 'Home') next = 'map';
+                                    else if (event.key === 'End') next = 'results';
+                                    else if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') next = key === 'map' ? 'results' : 'map';
+                                    else return;
+                                    event.preventDefault();
+                                    changeView(next);
+                                    tabs.current[next]?.focus();
+                                }}
+                            >
+                                <Icon size={15} aria-hidden="true" />{title}
+                                {key === 'results' && result?.run?.artifactId && <span className="workbench-result-dot" aria-hidden="true" />}
+                            </button>
+                        ))}
                     </div>
-                    <div className="flex-1 overflow-auto">
-                        {childrenArray[0]}
-                    </div>
-                </div>
-            </div>
-
-            {/* 拖拽条 1 */}
-            <div
-                className="w-1 shrink-0 cursor-col-resize hover:bg-geo-accent/60 transition-colors duration-150 z-10"
-                style={{ background: '#1e293b' }}
-                onMouseDown={(e) => handleMouseDown('sidebar', e)}
-                onDoubleClick={() => setSidebarWidth(prev => prev === 0 ? 260 : 0)}
-            />
-
-            {/* === 中间表格面板 === */}
-            <div
-                className="shrink-0 flex flex-col bg-geo-dark"
-                style={{
-                    width: `${tableWidth}px`,
-                    transition: dragInfoRef.current ? 'none' : 'width 0.1s ease-out',
-                }}
-            >
-                <div className={`w-full h-full flex flex-col ${tableWidth < MIN_TABLE_WIDTH ? 'opacity-0' : 'opacity-100'} transition-opacity duration-100`}>
-                    <div className="h-11 flex items-center px-4 border-b border-geo-border shrink-0">
-                        <span className="text-xs font-semibold text-geo-text-secondary tracking-widest uppercase">属性数据</span>
-                    </div>
-                    <div className="flex-1 overflow-hidden">
-                        {childrenArray[1]}
-                    </div>
-                </div>
-            </div>
-
-            {/* 拖拽条 2 */}
-            <div
-                className="w-1 shrink-0 cursor-col-resize hover:bg-geo-accent/60 transition-colors duration-150 z-10"
-                style={{ background: '#1e293b' }}
-                onMouseDown={(e) => handleMouseDown('table', e)}
-                onDoubleClick={() => setTableWidth(prev => prev === 0 ? 500 : 0)}
-            />
-
-            {/* === 右侧地图 + AI 侧边栏 wrapper === */}
-            <div className="flex-1 flex flex-row min-w-0 relative overflow-hidden">
-
-                {/* 地图区 */}
-                <div className="flex-1 flex flex-col min-w-0 relative">
-                    {/* 地图顶栏：标题 + AI 按钮 */}
-                    <div className="h-11 flex items-center justify-between px-4 border-b border-geo-border shrink-0 bg-geo-panel/80 backdrop-blur-sm">
-                        <span className="text-xs font-semibold text-geo-text-secondary tracking-widest uppercase">地图可视化</span>
-                        <div className="flex items-center gap-2">
-                            {selectedFileIds.length > 0 && (
-                                <span className="text-[10px] bg-blue-500/20 text-blue-400 px-2 py-0.5 rounded-full border border-blue-500/30">
-                                    {selectedFileIds.length} 个图层已选
-                                </span>
-                            )}
-                            <Tooltip title={aiPanelOpen ? '收起 AI 助手' : '展开 AI 助手'} placement="bottomRight">
-                                <Button
-                                    type={aiPanelOpen ? 'primary' : 'default'}
-                                    size="small"
-                                    icon={<RobotOutlined />}
-                                    onClick={onToggleAI}
-                                    className={`text-xs transition-all ${
-                                        aiPanelOpen
-                                            ? 'bg-blue-600 border-blue-500 text-white shadow-[0_0_12px_rgba(59,130,246,0.5)]'
-                                            : 'bg-geo-panel/60 border-geo-border text-geo-text-secondary hover:border-blue-500 hover:text-blue-400'
-                                    }`}
-                                >
-                                    GeoPivot
-                                </Button>
-                            </Tooltip>
+                    <div className="workbench-view-stack">
+                        <div id="workbench-view-map" className="workbench-map-layout" role="tabpanel" aria-labelledby="workbench-tab-map"
+                            aria-hidden={view !== 'map'}
+                            ref={element => { if (element) element.inert = view !== 'map'; }}
+                            style={{ gridTemplateRows: 'minmax(0, 1fr) ' + SEPARATOR_SIZE + 'px ' + bottom + 'px' }}>
+                            <section className="workbench-map" aria-label="地图">{map}</section>
+                            <PanelSeparator
+                                horizontal reverse label="调整属性表高度" controls="workbench-table"
+                                value={bottom} min={MIN_TABLE} max={tableMax} onResize={setTableHeight}
+                            />
+                            <section id="workbench-table" className="workbench-table" aria-label="属性表">{table}</section>
                         </div>
+                        <section id="workbench-view-results" className="workbench-results" role="tabpanel" aria-labelledby="workbench-tab-results"
+                            aria-hidden={view !== 'results'}
+                            ref={element => { if (element) element.inert = view !== 'results'; }}
+                            tabIndex={view === 'results' ? 0 : -1}>
+                            <AnalysisResultView analysis={result} />
+                        </section>
                     </div>
-                    {/* 地图容器 */}
-                    <div className="flex-1 overflow-hidden relative">
-                        {childrenArray[2]}
-                    </div>
-                </div>
+                </main>
 
-                {/* AI 侧边栏：可折叠，宽度 380px */}
-                <div
-                    className="shrink-0 flex flex-col border-l border-geo-border bg-geo-panel/95 backdrop-blur-md overflow-hidden"
-                    style={{
-                        width: aiPanelOpen ? '380px' : '0px',
-                        transition: 'width 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
-                    }}
-                >
-                    <div className="w-[380px] h-full flex flex-col">
-                        {/* AI 面板内容由第 4 个 child（GeoAIAgent）提供 */}
-                        {childrenArray[3]}
-                    </div>
-                </div>
+                <PanelSeparator
+                    reverse label="调整助手宽度" controls="workbench-assistant"
+                    value={right} min={MIN_ASSISTANT} max={Math.min(560, sidesAvailable - left)}
+                    onResize={setAssistantWidth}
+                />
+
+                <aside id="workbench-assistant" className="workbench-assistant" aria-labelledby="agent-heading">
+                    {assistant}
+                </aside>
             </div>
         </div>
     );
-};
-
-export default MainLayout;
+}
