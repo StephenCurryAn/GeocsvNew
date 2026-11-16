@@ -1,5 +1,5 @@
 export type ThemeMode = 'light' | 'dark' | 'system';
-export type ThemeFamily = 'tenon' | 'green';
+export type ThemeFamily = 'tenon' | 'green' | 'blue';
 type ResolvedMode = Exclude<ThemeMode, 'system'>;
 
 interface WorkbenchPalette {
@@ -59,7 +59,23 @@ export const workbenchThemes: Record<ThemeFamily, {
             },
         },
     },
-
+    blue: {
+        label: '雾蓝', radius: 9,
+        palettes: {
+            light: {
+                background: '#e9eef3', panel: '#f6f9fc', inset: '#e3eaf2', border: '#cbd8e5',
+                text: '#263649', muted: '#52687b', accent: '#365e80', onAccent: '#fff',
+                selected: '#dce8f4', focus: '#9c5037', focusSurface: '#f0e1d7',
+                mapSurface: '#e7eef2', mapLow: '#d4e0eb', mapHigh: '#537b9d', mapOutline: '#456786',
+            },
+            dark: {
+                background: '#141d27', panel: '#1d2936', inset: '#263747', border: '#3a4e62',
+                text: '#e9f0f6', muted: '#aebfd1', accent: '#a2c5e6', onAccent: '#1a2c3d',
+                selected: '#2c445d', focus: '#efb391', focusSurface: '#44352f',
+                mapSurface: '#253541', mapLow: '#3a5268', mapHigh: '#89b0d1', mapOutline: '#a0c0db',
+            },
+        },
+    },
 };
 
 export const workbenchModes: { key: ThemeMode; label: string }[] = [

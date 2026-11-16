@@ -41,15 +41,16 @@
 
 ## 整体主题与内嵌结果
 
-暖白采用 NeoGIS Tenon 暖纸、细边框与低饱和蓝的方向，苔绿沿用相同结构，采用浅苔与暗林配色。两套主题分别支持浅色、深色、跟随系统，风格和明暗独立保存。资源面板、助手、地图工具与图例、属性表、提示浮层和结果图表继承同一套界面颜色。主地图底图可独立选择。
+暖白采用 NeoGIS Tenon 暖纸、细边框与低饱和蓝的方向，苔绿沿用相同结构，采用浅苔与暗林配色。雾蓝在同一结构上使用低饱和灰蓝和深海军蓝。三套主题都支持浅色、深色、跟随系统，风格和明暗独立保存。资源面板、助手、地图工具与图例、属性表、提示浮层和结果图表继承同一套界面颜色。主地图底图可独立选择。
 
 中央提供「工作地图」和「分析结果」。从左侧工具或右侧助手打开历史结果时，中央切换到结果页签，左右栏继续可用。往返时工作地图与结果地图各自保留相机和选中项。两处入口使用同一份运行历史，各自的任务、结果与预览状态由工作台持有。完成后台任务时不抢占当前页签。
 
-用独立的 Chrome 生产预览和合成数据，核对两套主题的四种面貌、跟随系统即时切换及刷新恢复。验证两侧均可打开结果、键盘切换页签、地图与表格保留视角及选中、拖动侧栏后的结果布局、CSV 下载和减少动态效果。1024 像素下中央地图置顶，图表和明细在下方并排，更窄时纵向排列。
+用独立的 Chrome 生产预览和合成数据，核对暖白、苔绿和雾蓝的浅深色、跟随系统即时切换及刷新恢复。验证两侧均可打开结果、键盘切换页签、地图与表格保留视角及选中、拖动侧栏后的结果布局、CSV 下载和减少动态效果。1024 像素下中央地图置顶，图表和明细在下方并排，更窄时纵向排列。
 
 | 画面 | 浅色 | 深色 |
 | --- | --- | --- |
 | 暖白工作地图 | [浅色](09-workbench-ui/tenon-light.png) | [深色](09-workbench-ui/tenon-dark.png) |
 | 苔绿工作地图 | [浅色](09-workbench-ui/green-light.png) | [深色](09-workbench-ui/green-dark.png) |
+| 雾蓝工作地图 | [浅色](09-workbench-ui/blue-light.png) | [深色](09-workbench-ui/blue-dark.png) |
 
-[暖白内嵌结果](09-workbench-ui/integrated-results-warm.png) · [苔绿浅色内嵌结果](09-workbench-ui/integrated-results-green.png) · [苔绿深色内嵌结果](09-workbench-ui/integrated-results-green-dark.png) · [窄桌面内嵌结果](09-workbench-ui/integrated-results-narrow.png)
+[暖白内嵌结果](09-workbench-ui/integrated-results-warm.png) · [苔绿浅色内嵌结果](09-workbench-ui/integrated-results-green.png) · [苔绿深色内嵌结果](09-workbench-ui/integrated-results-green-dark.png) · [窄桌面内嵌结果](09-workbench-ui/integrated-results-narrow.png) · [雾蓝深色内嵌结果](09-workbench-ui/blue-results.png)
