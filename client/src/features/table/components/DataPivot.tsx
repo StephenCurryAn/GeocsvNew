@@ -9,14 +9,6 @@ import { geoService } from '../../../services/geoService';
 import apiClient from '../../../services/apiClient';
 import DeferredGrid from './DeferredGrid';
 
-// 多文件 Tab 条目类型
-export interface FileTabInfo {
-    fileId: string;
-    fileName: string;
-    data: any[];
-    pagination?: { total: number; page: number; pageSize: number; totalPages?: number };
-}
-
 interface DataPivotProps {
     data: any;          
     fileName: string;
@@ -38,9 +30,7 @@ interface DataPivotProps {
     onDeleteColumn?: (fieldName: string) => void;
     onDeleteColumns?: (fieldNames: string[]) => void; // 🌟 新增：支持接收字符串数组的批量删除函数
     onRenameColumn?: (oldFieldName: string, newFieldName: string) => void;
-    // 多文件 Tab 支持
-    selectedFilesData?: FileTabInfo[];
-    onFileTabChange?: (fileId: string, fileName: string) => void;
+
 }
 
 function syncSelectedFeature(api: GridApi | undefined, selectedFeature: DataPivotProps['selectedFeature'], scroll = false) {
@@ -299,7 +289,7 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
     onRowClick, selectedFeature, scrollToSelectedFeature, onDataChange,
     onAddRow, onDeleteRow, onAddColumn, onDeleteColumn, onRenameColumn,
     onDeleteColumns,
-    selectedFilesData, onFileTabChange }) => {
+}) => {
     //     2: 获取上下文感知的 message 实例
     // 注意：MapView 必须被包裹在 <App> 组件中（通常在 main.tsx 或 App.tsx 已经包了）
     const { message } = App.useApp();
@@ -511,25 +501,12 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
         }
     };
 
-    const fileTabs = selectedFilesData && selectedFilesData.length > 1 && (
-        <div className="data-tabs" aria-label="属性表文件">
-            {selectedFilesData.map(file => (
-                <button
-                    key={file.fileId} type="button"
-                    aria-pressed={file.fileId === fileId}
-                    onClick={() => onFileTabChange?.(file.fileId, file.fileName)}
-                    title={file.fileName}
-                >
-                    {file.fileName}
-                </button>
-            ))}
-        </div>
-    );
-
     if (!data || rowData.length === 0) {
         return (
             <div className="data-table">
-                {fileTabs}
+                {fileName && <div className="data-toolbar">
+                    <span className="data-table-heading" title={fileName}>{fileName}</span>
+                </div>}
                 <div className="data-table-empty">
                     <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={emptyMessage ?? '请在左侧选择文件以查看属性表'} />
                 </div>
@@ -539,11 +516,8 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
 
     return (
     <div className="data-table">
-        {fileTabs}
         <div className="data-toolbar">
-            {selectedFilesData && selectedFilesData.length > 1
-                ? <span className="data-table-heading">属性表</span>
-                : <span className="data-table-heading" title={fileName}>{fileName}</span>}
+            <span className="data-table-heading" title={fileName}>{fileName}</span>
         {/* 操作按钮组 */}
         <Space size={4}>
             {/* 在“增行”左边添加“导出CSV”按钮 */}

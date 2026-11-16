@@ -1,18 +1,32 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Tree, Button, Empty, Input, Dropdown, type InputRef, type MenuProps, App as AntdApp } from 'antd';
+import { Tree, Button, ColorPicker, Empty, Input, Dropdown, type InputRef, type MenuProps, App as AntdApp } from 'antd';
 import { FolderAddOutlined, CloudUploadOutlined, FileTextOutlined, GlobalOutlined,
-         FileImageOutlined, TableOutlined, FolderFilled, CheckOutlined,
+         FileImageOutlined, TableOutlined, FolderFilled, EyeOutlined, EyeInvisibleOutlined,
          DownOutlined, DeleteOutlined, EditOutlined, ExclamationCircleOutlined,
          PictureOutlined } from '@ant-design/icons';
 import { geoService } from '../../../services/geoService';
 import { getApiUrl } from '../../../services/apiConfig';
 import { sceneFilesPath } from '../../../services/sceneService';
 import { readSceneSelection, saveSceneSelection } from '../scenePreferences';
+import { useAnalysisStore } from '../../../stores/useAnalysisStore';
+import { defaultLayerColor, LAYER_PALETTE } from '../../map/fileLayers';
+import type { DrawStatus } from '../../map/components/MapView';
+
+export interface WorkspaceLayer {
+  totalFeatures?: number;
+  loadFailed?: boolean;
+  hidden: boolean;
+  drawStatus?: DrawStatus;
+}
 
 interface FileTreeProps {
   sceneId: string;
   isCurrentScene: (sceneId: string) => boolean;
   onSelectFiles: (fileNames: string[], fileIds: string[]) => void;
+  activeFileId: string;
+  onActivateFile: (fileId: string, fileName: string) => void;
+  onToggleFileVisibility: (fileId: string) => void;
+  layers: Record<string, WorkspaceLayer>;
 }
 
 interface TreeNode {
@@ -35,11 +49,16 @@ function folderKeys(nodes: TreeNode[]): string[] {
   return nodes.flatMap(node => node.type === 'folder' ? [node.key, ...folderKeys(node.children ?? [])] : []);
 }
 
-const FileTree: React.FC<FileTreeProps> = ({ sceneId, isCurrentScene, onSelectFiles }) => {
+const FileTree: React.FC<FileTreeProps> = ({
+  sceneId, isCurrentScene, onSelectFiles, activeFileId, onActivateFile, onToggleFileVisibility, layers,
+}) => {
   const { message, modal } = AntdApp.useApp();
+  const layerColors = useAnalysisStore(state => state.layerColors);
+  const setLayerColor = useAnalysisStore(state => state.setLayerColor);
   const endpoint = sceneFilesPath(sceneId);
-  const [selectedKeys, setSelectedKeys] = useState(() => readSceneSelection(sceneId));
-  const selectedKeysRef = useRef(selectedKeys);
+  const [initialSelection] = useState(() => readSceneSelection(sceneId));
+  const selectedKeysRef = useRef(initialSelection);
+  const [uploadFolder, setUploadFolder] = useState<string | null>(null);
   const publishedFilesRef = useRef<TreeNode[]>([]);
   const [treeData, setTreeData] = useState<TreeNode[]>([]);
   const [expandedKeys, setExpandedKeys] = useState<string[]>([]);
@@ -70,7 +89,6 @@ const FileTree: React.FC<FileTreeProps> = ({ sceneId, isCurrentScene, onSelectFi
     const previousKeys = selectedKeysRef.current;
     if (previousKeys.length !== validKeys.length || previousKeys.some((key, index) => key !== validKeys[index])) {
       selectedKeysRef.current = validKeys;
-      setSelectedKeys(validKeys);
     }
 
     const files = selected.filter(node => node.type === 'file');
@@ -143,15 +161,23 @@ const FileTree: React.FC<FileTreeProps> = ({ sceneId, isCurrentScene, onSelectFi
       default: return <FileTextOutlined className="text-gray-400!" />;
     }
   };
-  // 辅助函数:标题渲染逻辑：实现"右侧对勾"效果
-  // node 参数是由 Ant Design 的 <Tree /> 组件在内部调用时自动传过来的
   const titleRender = (node: TreeNode) => {
-    const isSelected = selectedKeys.includes(node.key);
     const isEditing = editingKey === node.key; // 判断是否处于编辑模式
     const icon = getIcon(node);
+    const layer = node.type === 'file' ? layers[node.key] : undefined;
+    const color = layerColors[node.key] || defaultLayerColor(node.key);
+    const status = !layer ? '' : layer.loadFailed ? '数据加载失败' : layer.totalFeatures === 0 ? '无要素'
+        : layer.hidden ? '' : layer.drawStatus === 'error' ? '瓦片加载失败'
+        : layer.drawStatus !== 'ready' ? '加载中…' : '';
+    const visibilityAction = layer?.hidden ? '显示地图图层' : '隐藏地图图层';
 
     // 定义右键菜单项
     const menuItems: MenuProps['items'] = [
+        ...(layer ? [{
+            key: 'remove-layer',
+            label: '从工作台移除',
+            onClick: () => syncSelection(selectedKeysRef.current.filter(key => key !== node.key), treeData),
+        }] : []),
         {
             key: 'rename',
             label: '重命名',
@@ -175,7 +201,7 @@ const FileTree: React.FC<FileTreeProps> = ({ sceneId, isCurrentScene, onSelectFi
     // 渲染内容
     const content = (
         <div 
-            className="flex items-center w-full pr-2 group h-8"
+            className="resource-tree-row"
             // 双击触发重命名
             onDoubleClick={(e) => {
                 e.stopPropagation(); // 防止触发展开折叠
@@ -183,8 +209,27 @@ const FileTree: React.FC<FileTreeProps> = ({ sceneId, isCurrentScene, onSelectFi
                 setEditingValue(node.title);
             }}
         >
-            <span className="mr-2 flex items-center justify-center shrink-0 min-w-5">
-                {icon}
+            <span className="resource-tree-icon">
+                {layer && !isEditing ? (
+                    <span onClick={event => event.stopPropagation()}
+                        onDoubleClick={event => event.stopPropagation()}
+                        onKeyDown={event => event.stopPropagation()}>
+                        <ColorPicker
+                            size="small"
+                            value={color}
+                            defaultFormat="rgb"
+                            disabledAlpha
+                            disabled={layer.loadFailed || !layer.totalFeatures}
+                            presets={[{ label: '柔和主题色', colors: LAYER_PALETTE }]}
+                            onChangeComplete={value => setLayerColor(node.key, value.toHexString())}
+                        >
+                            <button type="button" className="resource-layer-swatch" aria-label={`图层颜色 ${node.title}`}
+                                title="图层颜色" disabled={layer.loadFailed || !layer.totalFeatures}>
+                                <span style={{ backgroundColor: color }} />
+                            </button>
+                        </ColorPicker>
+                    </span>
+                ) : icon}
             </span>
 
             {/* 编辑模式 vs 浏览模式 */}
@@ -204,12 +249,29 @@ const FileTree: React.FC<FileTreeProps> = ({ sceneId, isCurrentScene, onSelectFi
                     className="flex-1 h-6 text-xs"
                 />
             ) : (
-                <span className={`flex-1 truncate transition-colors ${isSelected ? 'text-blue-300 font-medium' : 'text-gray-200 group-hover:text-blue-400'}`}>
-                    {node.title}
-                </span>
+                <div className="resource-tree-label">
+                    <span className="resource-tree-name" title={node.title}>{node.title}</span>
+                    {status && <span className="resource-tree-status" role="status" data-error={status.endsWith('失败') || undefined}>
+                        {status}
+                    </span>}
+                </div>
             )}
 
-            {isSelected && !isEditing && <CheckOutlined className="text-blue-500 text-sm ml-2" />}
+            {layer && !isEditing && (
+                <div className="resource-tree-actions"
+                    onClick={event => event.stopPropagation()}
+                    onDoubleClick={event => event.stopPropagation()}
+                    onKeyDown={event => event.stopPropagation()}>
+                    <Button
+                        type="text" size="small" className="resource-layer-visibility"
+                        icon={layer.hidden ? <EyeInvisibleOutlined /> : <EyeOutlined />}
+                        aria-label={`${visibilityAction} ${node.title}`}
+                        title={layer.hidden ? visibilityAction : '隐藏地图图层（仍可参与分析）'}
+                        disabled={layer.loadFailed || layer.totalFeatures === 0}
+                        onClick={() => onToggleFileVisibility(node.key)}
+                    />
+                </div>
+            )}
         </div>
     );
     // 如果正在编辑，不需要右键菜单（或者你可以保留）
@@ -219,7 +281,7 @@ const FileTree: React.FC<FileTreeProps> = ({ sceneId, isCurrentScene, onSelectFi
 
     // 使用 Dropdown 实现右键菜单
     return (
-        <Dropdown menu={{ items: menuItems }} trigger={['contextMenu']}>
+        <Dropdown menu={{ items: menuItems, onClick: ({ domEvent }) => domEvent.stopPropagation() }} trigger={['contextMenu']}>
             {content}
         </Dropdown>
     );
@@ -269,8 +331,17 @@ const FileTree: React.FC<FileTreeProps> = ({ sceneId, isCurrentScene, onSelectFi
     });
   };
 
-  const selectedFolderId = () => selectedKeysRef.current
-    .find(key => findNodeByKey(treeData, key)?.type === 'folder') ?? null;
+  const selectedFolderId = () => uploadFolder && findNodeByKey(treeData, uploadFolder) ? uploadFolder : null;
+
+  const openResource = (node: TreeNode) => {
+    if (node.type === 'folder') {
+      setUploadFolder(folder => folder === node.key ? null : node.key);
+      return;
+    }
+    setUploadFolder(null);
+    if (selectedKeysRef.current.includes(node.key)) onActivateFile(node.key, node.title);
+    else syncSelection([...selectedKeysRef.current, node.key], treeData);
+  };
 
   const expandFolder = (parentId: string | null) => {
     if (parentId) setExpandedKeys(keys => keys.includes(parentId) ? keys : [...keys, parentId]);
@@ -290,7 +361,7 @@ const FileTree: React.FC<FileTreeProps> = ({ sceneId, isCurrentScene, onSelectFi
         expandFolder(parentId);
         message.success(`已上传 ${uploaded.length} 个资源`);
       }
-      await refreshAfterMutation({ keys: uploaded.map(file => file._id), previous });
+      await refreshAfterMutation({ keys: [...previous, ...uploaded.map(file => file._id)], previous });
     } catch (error) {
       if (isActive()) {
         const description = (error as { response?: { data?: { message?: string } } }).response?.data?.message;
@@ -323,9 +394,7 @@ const FileTree: React.FC<FileTreeProps> = ({ sceneId, isCurrentScene, onSelectFi
     }
   };
 
-  const handleTreeClick = (event: React.MouseEvent) => {
-    if (!(event.target as HTMLElement).closest('.ant-tree-treenode')) syncSelection([], treeData);
-  };
+  const focusedId = selectedFolderId() ?? activeFileId;
 
   return (
     <div className="flex flex-col h-full bg-[#111827]">
@@ -374,70 +443,7 @@ const FileTree: React.FC<FileTreeProps> = ({ sceneId, isCurrentScene, onSelectFi
 
       {/* 2. 树形列表区域 (Tree)
       */}
-      <div className="min-h-0 flex-1 overflow-y-auto py-2" onClick={treeStatus === 'ready' ? handleTreeClick : undefined}>
-        {/* 🎨 样式注入：覆盖 Ant Design 默认的白色样式，适配黑色炫酷主题 */}
-        <style>{`
-          /* 1.  ：强制移除 Tree 组件的默认白色背景和黑色文字 */
-          .dark-tree.ant-tree {
-            background: transparent !important;
-            color: #ffffff !important; /* ✨ 从 #9ca3af 改为 #e5e7eb (更亮) */
-            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-          }
-
-          /* 2. 节点行样式 */
-          .dark-tree .ant-tree-node-content-wrapper {
-            display: flex !important;
-            align-items: center;
-            transition: all 0.2s;
-            height: 32px !important;
-            padding: 0 6px !important;
-            color: #e5e7eb !important; /* ✨ 同样改为 #e5e7eb */
-            border-radius: 4px;
-          }
-
-          /* 3. 悬停效果 (Hover)：淡淡的白色微光 */
-          .dark-tree .ant-tree-node-content-wrapper:hover {
-            background-color: rgba(255, 255, 255, 0.08) !important;
-            color: #e5e7eb !important; /* text-gray-200 */
-          }
-
-          /* 4. 选中效果 (Selected)：科技蓝背景 + 高亮文字 */
-          .dark-tree .ant-tree-treenode-selected .ant-tree-node-content-wrapper {
-            background-color: rgba(37, 99, 235, 0.15) !important; /* 深蓝透明背景 */
-            color: #60a5fa !important; /* text-blue-400 */
-          }
-
-          /* 5. 选中时的左侧高亮指示条 (装饰性细节) */
-          .dark-tree .ant-tree-treenode-selected .ant-tree-node-content-wrapper::before {
-             content: '';
-             position: absolute;
-             left: 0;
-             top: 50%;
-             transform: translateY(-50%);
-             height: 14px;
-             width: 3px;
-             background-color: #3b82f6; /* blue-500 */
-             border-radius: 0 2px 2px 0;
-             box-shadow: 0 0 8px rgba(59, 130, 246, 0.6); /* 加一点发光效果 */
-          }
-
-          /* 6. 修正图标位置 */
-          .dark-tree .ant-tree-iconEle {
-             display: flex !important;
-             align-items: center;
-             justify-content: center;
-             margin-right: 8px !important;
-          }
-
-          /* 7. 修正展开/折叠小箭头的颜色 */
-          .dark-tree .ant-tree-switcher {
-            background: transparent !important;
-          }
-          .dark-tree .ant-tree-switcher-icon {
-            color: #6b7280 !important; /* gray-500 */
-          }
-        `}</style>
-
+      <div className="min-h-0 flex-1 overflow-y-auto py-2">
         {treeStatus === 'error' ? (
           <div className="flex items-center justify-center gap-2 p-2 text-sm">
             <span>资源加载失败</span>
@@ -450,42 +456,17 @@ const FileTree: React.FC<FileTreeProps> = ({ sceneId, isCurrentScene, onSelectFi
             <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={<span className="text-gray-500">暂无数据</span>} />
           </div>
         ) : (
-          <Tree
-            multiple // 允许多选
-            blockNode // 这个很重要，让整行都能点击
+          <Tree<TreeNode>
+            className="workspace-resource-tree"
+            blockNode
             showIcon={false}
             expandedKeys={expandedKeys}
             onExpand={keys => setExpandedKeys(keys.map(String))}
-            selectedKeys={selectedKeys}
-            onSelect={keys => syncSelection(keys.map(String), treeData)}
-            // 对于这一步的treeData中的数据，<Tree /> 组件在渲染时，会遍历 treeData 数组里的每一个元素
-            // treeData在组件内部循环
+            selectedKeys={focusedId ? [focusedId] : []}
+            onSelect={(_, { node }) => openResource(node)}
             treeData={treeData}
-            // icon={getIcon}
             titleRender={titleRender}
-            // 是Ant Design 的父级容器带着小三角图标转了 90 度
-            // 稍微美化一下展开的小三角
-            switcherIcon={({ expanded }) => (
-              <span
-                className="
-                  flex items-center justify-center
-                  text-gray-400       /* 1.  颜色：这里改成浅灰色，你可以改 */
-                  hover:text-white    /* 可选：鼠标悬停时变亮 */
-                  transition-transform duration-200 /* 可选：添加平滑过渡效果 */
-                "
-              >
-                {expanded ? (
-                  <DownOutlined
-                    /* 2.  粗细：Ant Design 图标默认很细，通过加描边来实现“加粗”效果 */
-                    style={{ strokeWidth: '150', stroke: 'currentColor' }}
-                  />
-                ) : (
-                  <DownOutlined
-                    style={{ strokeWidth: '150', stroke: 'currentColor' }}
-                  />
-                )}
-              </span>
-            )}
+            switcherIcon={<DownOutlined />}
           />
         )}
       </div>

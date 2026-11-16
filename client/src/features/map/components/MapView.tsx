@@ -4,14 +4,13 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import { bbox } from '@turf/turf';
 //   [ ] 引入所需的 Ant Design 组件
 import { 
-    Button, Tooltip, App, Checkbox, Spin, Select, Popover, Segmented, Slider, ColorPicker
+    Button, Tooltip, App, Checkbox, Spin, Select, Popover, Segmented, Slider
 } from 'antd';
 import ChartOverlay, { THEME_COLORS, CONTRAST_PALETTES } from './ChartOverlay';
 import { geoService } from '../../../services/geoService';
 //   [ ] 引入图标
 import { 
     BarChartOutlined, 
-    UnorderedListOutlined,
     DeploymentUnitOutlined, // 网格入口图标
     AppstoreOutlined,       // Hex 图标
     BorderOutlined,         // Square 图标
@@ -40,7 +39,7 @@ export interface FileLayerInfo {
     tileVersion?: number;
 }
 
-type DrawStatus = 'loading' | 'ready' | 'empty' | 'error';
+export type DrawStatus = 'ready' | 'error';
 const fileLayers = (fileId: string) => layerIds('file-' + fileId);
 const gridLayers = layerIds('grid');
 const defaultBasemap = PROTOMAPS_KEY ? 'protomaps-light' : 'blank';
@@ -109,7 +108,8 @@ interface MapViewProps {
     onFeatureClick?: (fileId: string, feature: Record<string, unknown> | null) => void;
     selectionOrigin?: 'map' | 'table';
     focusFileId?: string;
-    onFileTabChange?: (fileId: string, fileName: string) => void;
+    hiddenFileIds: string[];
+    onDrawStatusChange: (fileId: string, status?: DrawStatus) => void;
     // 多图层支持
     selectedFilesInfo?: FileLayerInfo[];
 }
@@ -275,7 +275,7 @@ function interpolateColor(color1: string, color2: string, factor: number) {
     return rgbToHex(r, g, b);
 }
 
-const MapView: React.FC<MapViewProps> = ({ data, fileId, selectedFeature, onFeatureClick, selectionOrigin, focusFileId, onFileTabChange, selectedFilesInfo = [] }) => {
+const MapView: React.FC<MapViewProps> = ({ data, fileId, selectedFeature, onFeatureClick, selectionOrigin, focusFileId, hiddenFileIds, onDrawStatusChange, selectedFilesInfo = [] }) => {
     //     2: 获取上下文感知的 message 实例
     // 注意：MapView 必须被包裹在 <App> 组件中（通常在 main.tsx 或 App.tsx 已经包了）
     const { message } = App.useApp();
@@ -293,9 +293,6 @@ const MapView: React.FC<MapViewProps> = ({ data, fileId, selectedFeature, onFeat
     const activeFileRef = useRef(fileId);
     activeFileRef.current = fileId;
     const fullDataRequest = useRef(0);
-    const [hiddenFileIds, setHiddenFileIds] = useState<string[]>([]);
-    const [legendOpen, setLegendOpen] = useState(true);
-    const [drawStatuses, setDrawStatuses] = useState<Record<string, DrawStatus>>({});
     const [gridSelection, setGridSelection] = useState<Record<string, unknown> | null>(null);
     const activeHidden = Boolean(fileId && hiddenFileIds.includes(fileId));
 
@@ -354,7 +351,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileId, selectedFeature, onFeat
         isMapLinkageEnabled, highlightedCategory, mapColorTheme,// 联动状态
         //   [新增] 获取 activeColumn
         activeColumn , 
-        layerColors, setLayerColor, assignLayerColors,
+        layerColors, assignLayerColors,
         validIds // 新增：获取 validIds 用于地图过滤
     } = useAnalysisStore();
 
@@ -367,10 +364,6 @@ const MapView: React.FC<MapViewProps> = ({ data, fileId, selectedFeature, onFeat
 
     useEffect(() => {
         assignLayerColors(selectedFilesInfo.map(file => file.fileId));
-        setHiddenFileIds(prev => {
-            const remaining = prev.filter(id => selectedFilesInfo.some(file => file.fileId === id));
-            return remaining.length === prev.length ? prev : remaining;
-        });
     }, [selectedFilesInfo, assignLayerColors]);
 
     const colorForFile = (id?: string) => {
@@ -458,11 +451,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileId, selectedFeature, onFeat
             stop();
             removeFileLayers(map, fileLayers(id));
             openFiles.current.delete(id);
-            setDrawStatuses(prev => {
-                const next = { ...prev };
-                delete next[id];
-                return next;
-            });
+            onDrawStatusChange(id);
         }
 
         for (const file of visibleFiles) {
@@ -476,9 +465,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileId, selectedFeature, onFeat
                 }
                 continue;
             }
-            const update = (status: DrawStatus) => setDrawStatuses(prev =>
-                prev[file.fileId] === status ? prev : { ...prev, [file.fileId]: status });
-            const stop = watchLayerSource(map, ids.source, update);
+            const stop = watchLayerSource(map, ids.source, status => onDrawStatusChange(file.fileId, status));
             addFileLayers(map, ids, tileUrls(file.fileId, version));
             paintFileLayers(map, ids, colorForFile(file.fileId), { dense: (file.totalFeatures ?? 0) > DENSE_LAYER_SIZE });
             openFiles.current.set(file.fileId, { version, stop });
@@ -492,7 +479,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileId, selectedFeature, onFeat
                 for (const group of groups) map.moveLayer(group[index]);
             }
         }
-    }, [selectedFilesInfo, isMapLoaded]);
+    }, [selectedFilesInfo, isMapLoaded, onDrawStatusChange]);
 
     //   [ ] 字段提取逻辑分离：
     // 1. numericFields (数值): 从 displayData 提取，用于当前地图的颜色渲染（支持网格的 value 字段）
@@ -1540,13 +1527,6 @@ const MapView: React.FC<MapViewProps> = ({ data, fileId, selectedFeature, onFeat
                         <Button size="small" icon={<BarChartOutlined />} aria-label="显示透视分析图表" onClick={() => setChartVisible(true)} />
                     </Tooltip>
                 )}
-                <Button
-                    size="small" className="map-layer-button" icon={<UnorderedListOutlined />}
-                    aria-controls="map-layer-list" aria-expanded={legendOpen}
-                    onClick={() => setLegendOpen(open => !open)}
-                >
-                    图层
-                </Button>
             </div>
 
             <div className="map-stage">
@@ -1558,58 +1538,6 @@ const MapView: React.FC<MapViewProps> = ({ data, fileId, selectedFeature, onFeat
                 )}
                 {loading && <div className="map-notice" role="status"><Spin size="small" /> 正在加载全量数据…</div>}
                 <ChartOverlay />
-                <div id="map-layer-list" className="map-layer-list" aria-label="图层图例" role="region" hidden={!legendOpen}>
-                    {!selectedFilesInfo.length && <p className="map-layer-empty">未选择图层</p>}
-                    {selectedFilesInfo.map(file => {
-                        const primary = file.fileId === fileId;
-                        const vector = !(primary && isGridMode);
-                        const hidden = hiddenFileIds.includes(file.fileId);
-                        const drawStatus = primary && isGridMode
-                            ? (gridData?.features.length ? 'ready' : 'empty')
-                            : drawStatuses[file.fileId];
-                        let status = '加载中…';
-                        if (file.loadFailed) status = '数据加载失败';
-                        else if (file.totalFeatures === undefined) status = '加载中…';
-                        else if (file.totalFeatures === 0 || drawStatus === 'empty') status = '无要素';
-                        else if (drawStatus === 'error') status = vector ? '瓦片加载失败' : '图层加载失败';
-                        else if (hidden) status = '已隐藏';
-                        else if (drawStatus === 'ready') status = '可见';
-
-                        return (
-                            <div key={file.fileId} className="map-layer-row">
-                                <Checkbox
-                                    aria-label={'显示 ' + file.fileName}
-                                    checked={!hidden}
-                                    disabled={file.loadFailed || file.totalFeatures === 0}
-                                    onChange={event => setHiddenFileIds(prev => event.target.checked
-                                        ? prev.filter(id => id !== file.fileId)
-                                        : [...prev, file.fileId])}
-                                />
-                                <ColorPicker
-                                    size="small"
-                                    value={colorForFile(file.fileId)}
-                                    defaultFormat="rgb"
-                                    disabledAlpha
-                                    presets={[{ label: '柔和主题色', colors: LAYER_PALETTE }]}
-                                    disabled={file.loadFailed || !file.totalFeatures}
-                                    onChangeComplete={color => setLayerColor(file.fileId, color.toHexString())}
-                                    aria-label={'图层颜色 ' + file.fileName}
-                                />
-                                <div className="map-layer-caption">
-                                    <button type="button" className="map-layer-name" title={file.fileName} aria-current={primary || undefined}
-                                        onClick={() => onFileTabChange?.(file.fileId, file.fileName)}>
-                                        {file.fileName}
-                                    </button>
-                                    <div className="map-layer-status" role="status" data-error={status.endsWith('失败') || undefined}>
-                                        {status}
-                                        {status === '可见' && vector && ' · MVT'}
-                                        {primary && ' · 当前'}
-                                    </div>
-                                </div>
-                            </div>
-                        );
-                    })}
-                </div>
             </div>
         </div>
     );

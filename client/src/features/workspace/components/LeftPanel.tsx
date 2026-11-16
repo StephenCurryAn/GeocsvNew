@@ -2,19 +2,19 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { App as AntdApp, Button, Input, Modal, Segmented, Select } from 'antd';
 import { AppstoreOutlined, ToolOutlined } from '@ant-design/icons';
-import type { PaginatedGeoResponse } from '../../../services/geoService';
 import { sceneService, type Scene } from '../../../services/sceneService';
 import { readActiveSceneId, saveActiveSceneId } from '../scenePreferences';
-import FileTree from './FileTree';
+import FileTree, { type WorkspaceLayer } from './FileTree';
 // 1. 引入新组件
 import AnalysisPanel from '../../analysis/components/AnalysisPanel';
 
 // 定义接口，接收从 App.tsx 传下来的回调
 interface LeftPanelProps {
-  /** @deprecated Resource selection is now published through onSelectFiles. */
-  onDataLoaded?: (fileName: string, data: PaginatedGeoResponse, fileId: string) => void;
   onSelectFiles?: (fileNames: string[], fileIds: string[]) => void;
   onSceneChange?: (scene: Scene) => void;
+  onActivateFile: (fileId: string, fileName: string) => void;
+  onToggleFileVisibility: (fileId: string) => void;
+  layers: Record<string, WorkspaceLayer>;
   selectedFileIds: string[];
   activeFileId: string;
   activeFileFields: string[];
@@ -22,7 +22,10 @@ interface LeftPanelProps {
 
 const LeftPanel: React.FC<LeftPanelProps> = ({ 
   onSceneChange,
-  onSelectFiles, 
+  onSelectFiles,
+  onActivateFile,
+  onToggleFileVisibility,
+  layers,
   selectedFileIds, 
   activeFileId, 
   activeFileFields 
@@ -161,6 +164,10 @@ const LeftPanel: React.FC<LeftPanelProps> = ({
                 sceneId={activeScene.id}
                 isCurrentScene={isCurrentScene}
                 onSelectFiles={notifySelection}
+                activeFileId={activeFileId}
+                onActivateFile={onActivateFile}
+                onToggleFileVisibility={onToggleFileVisibility}
+                layers={layers}
               />
             </div>
           )}

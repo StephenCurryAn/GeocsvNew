@@ -1,21 +1,13 @@
-import React, { useRef, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import './App.css';
 import MainLayout from './layouts/MainLayout';
 import LeftPanel from './features/workspace/components/LeftPanel';
 import SplitTablePanel from './features/table/components/SplitTablePanel';
 import DataPivot from './features/table/components/DataPivot';
-import MapView, { type FileLayerInfo } from './features/map/components/MapView';
+import MapView, { type DrawStatus, type FileLayerInfo } from './features/map/components/MapView';
 import GeoAIAgent from './features/agent/components/GeoAIAgent';
 import { geoService, type PaginatedGeoResponse } from './services/geoService';
 import { App as AntdApp, Input } from 'antd';
-
-// 多文件 Tab 条目类型
-export interface FileTabInfo {
-    fileId: string;
-    fileName: string;
-    data: any[];
-    pagination?: { total: number; page: number; pageSize: number; totalPages: number };
-}
 
 type LayerMetadata = Pick<FileLayerInfo, 'totalFeatures' | 'loadFailed' | 'tileVersion'>;
 
@@ -36,6 +28,20 @@ function App() {
     const [activeFileId, setActiveFileId] = useState<string>('');
     const [activeFileName, setActiveFileName] = useState<string>('');
     const [focusFileId, setFocusFileId] = useState('');
+    const [hiddenFileIds, setHiddenFileIds] = useState<string[]>([]);
+    const [drawStatuses, setDrawStatuses] = useState<Record<string, DrawStatus>>({});
+
+    const reportDrawStatus = useCallback((fileId: string, status?: DrawStatus) => {
+        setDrawStatuses(prev => {
+            if (prev[fileId] === status) return prev;
+            const next = { ...prev };
+            if (status) next[fileId] = status;
+            else delete next[fileId];
+            return next;
+        });
+    }, []);
+    const toggleFileVisibility = (fileId: string) => setHiddenFileIds(prev =>
+        prev.includes(fileId) ? prev.filter(id => id !== fileId) : [...prev, fileId]);
 
     // 选中的地图要素（表格 ↔ 地图联动）
     const [selectedFeature, setSelectedFeature] = useState<any>(null);
@@ -87,16 +93,6 @@ function App() {
     };
 
     // ===== 回调函数 =====
-    const handleDataLoaded = (fileName: string, data: any, fileId: string) => {
-        loadVersionByFileRef.current[fileId] = (loadVersionByFileRef.current[fileId] || 0) + 1;
-        setUploadedFilesData(prev => ({ ...prev, [fileId]: data }));
-        updateLayerMetadata(fileId, { totalFeatures: data.pagination.total });
-        setActiveFileName(fileName);
-        setActiveFileId(fileId);
-        setFocusFileId(fileId);
-        setSelectedFeature(null);
-    };
-
     const handlePageChange = async (page: number, pageSize: number) => {
         if (!activeFileId || !activeFileName) return;
         setSelectedFeature(null);
@@ -243,6 +239,10 @@ function App() {
     const handleSelectFiles = async (fileNames: string[], fileIds: string[]) => {
         setSelectedFileIds(fileIds);
         setSelectedFilesInfo(fileNames.map((n, i) => ({ fileId: fileIds[i], fileName: n })));
+        setHiddenFileIds(prev => {
+            const remaining = prev.filter(id => fileIds.includes(id));
+            return remaining.length === prev.length ? prev : remaining;
+        });
 
         if (fileIds.length === 0) {
             setActiveFileId('');
@@ -272,13 +272,16 @@ function App() {
         );
     };
 
-    const activateFileTab = (fileId: string, fileName: string) => {
-        if (fileId === activeFileId) return;
-        setActiveFileId(fileId);
-        setActiveFileName(fileName);
-        setFocusFileId('');
-        setSelectedFeature(null);
-        if (!uploadedFilesData[fileId]) void loadFileData(fileId, fileName);
+    const activateFile = (fileId: string, fileName: string) => {
+        if (fileId !== activeFileId) {
+            setActiveFileId(fileId);
+            setActiveFileName(fileName);
+            setFocusFileId('');
+            setSelectedFeature(null);
+        }
+        if (!uploadedFilesData[fileId] && (fileId !== activeFileId || layerMetadata[fileId]?.loadFailed)) {
+            void loadFileData(fileId, fileName);
+        }
     };
 
     const handleMapFeature = (fileId: string, feature: Record<string, unknown> | null) => {
@@ -302,20 +305,15 @@ function App() {
         }
     };
 
-    // 构造传给 DataPivot 的多文件数据对象
-    const selectedFilesData: FileTabInfo[] = selectedFilesInfo.map(f => ({
-        fileId: f.fileId,
-        fileName: f.fileName,
-        data: uploadedFilesData[f.fileId]?.features || [],
-        pagination: uploadedFilesData[f.fileId]?.pagination,
-    }));
-
-    const mapLayersInfo = React.useMemo<FileLayerInfo[]>(() => {
-        const files = activeFileId && !selectedFilesInfo.some(file => file.fileId === activeFileId)
-            ? [...selectedFilesInfo, { fileId: activeFileId, fileName: activeFileName }]
-            : selectedFilesInfo;
-        return files.map(file => ({ ...file, ...layerMetadata[file.fileId] }));
-    }, [selectedFilesInfo, activeFileId, activeFileName, layerMetadata]);
+    const mapLayersInfo = React.useMemo<FileLayerInfo[]>(() =>
+        selectedFilesInfo.map(file => ({ ...file, ...layerMetadata[file.fileId] })),
+    [selectedFilesInfo, layerMetadata]);
+    const workspaceLayers = React.useMemo(() => Object.fromEntries(mapLayersInfo.map(file => [file.fileId, {
+        totalFeatures: file.totalFeatures,
+        loadFailed: file.loadFailed,
+        hidden: hiddenFileIds.includes(file.fileId),
+        drawStatus: drawStatuses[file.fileId],
+    }])), [mapLayersInfo, hiddenFileIds, drawStatuses]);
     const mapData = React.useMemo(() => currentData
         ? { type: 'FeatureCollection', features: currentData.features }
         : null, [currentData]);
@@ -324,9 +322,11 @@ function App() {
         <MainLayout
             workspace={
                 <LeftPanel
-                    onDataLoaded={handleDataLoaded}
                     onSelectFiles={handleSelectFiles}
                     onSceneChange={scene => setActiveSceneId(scene.id)}
+                    onActivateFile={activateFile}
+                    onToggleFileVisibility={toggleFileVisibility}
+                    layers={workspaceLayers}
                     selectedFileIds={selectedFileIds}
                     activeFileId={activeFileId}
                     activeFileFields={activeFileFields}
@@ -340,7 +340,8 @@ function App() {
                     selectedFeature={selectedFeature}
                     selectionOrigin={selectionOrigin}
                     onFeatureClick={handleMapFeature}
-                    onFileTabChange={activateFileTab}
+                    hiddenFileIds={hiddenFileIds}
+                    onDrawStatusChange={reportDrawStatus}
                     selectedFilesInfo={mapLayersInfo}
                 />
             }
@@ -370,8 +371,6 @@ function App() {
                         onDeleteColumn={handleDeleteColumn}
                         onDeleteColumns={handleDeleteColumns}
                         onRenameColumn={handleRenameColumn}
-                        selectedFilesData={selectedFilesData}
-                        onFileTabChange={activateFileTab}
                     />
                 </SplitTablePanel>
             }

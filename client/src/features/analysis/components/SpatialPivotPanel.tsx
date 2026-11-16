@@ -127,11 +127,11 @@ const SpatialPivotPanel = ({ selectedFileIds }: { selectedFileIds: string[] }) =
         </Typography.Paragraph>
 
         {requestError && <Alert type="error" showIcon closable title={requestError} onClose={() => setRequestError(null)} />}
-        {selectedFileIds.length === 0 && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="请先勾选参与分析的数据图层" />}
+        {selectedFileIds.length === 0 && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="请先在资源管理中打开参与分析的图层" />}
         {datasetsLoading && <div className="py-2 text-center"><Spin size="small" /><span className="ml-2 text-xs text-slate-400">读取图层字段信息…</span></div>}
 
         {!datasetsLoading && selectedFileIds.length > 0 && datasets.length === 0 && !requestError && (
-          <Alert type="warning" showIcon title="当前勾选文件没有可用的空间图层信息" />
+          <Alert type="warning" showIcon title="已打开的文件中没有可用的空间图层" />
         )}
 
         {!datasetsLoading && datasets.length > 0 && (
@@ -202,7 +202,7 @@ const SpatialPivotPanel = ({ selectedFileIds }: { selectedFileIds: string[] }) =
         )}
 
         {!datasetsLoading && datasets.length > 0 && !hasValidLayerPair && (
-          <Alert type="warning" showIcon title="请勾选至少一个面图层和一个不同的点图层" />
+          <Alert type="warning" showIcon title="请从资源管理打开至少一个面图层和一个点图层" />
         )}
 
         {plan && (

@@ -143,7 +143,7 @@ const UnifiedAnalysisAssistant = ({ sceneId, selectedFileIds, onSwitchToLegacy }
       <Card size="small" className="assistant-plan-card" title="分析需求">
         <div className="space-y-3">
           <Typography.Paragraph className="!mb-0 text-xs text-slate-400">
-            支持面内点计数和 Moran/LISA 空间自相关。可勾选图层，也可在需求中写出当前场景的图层名称。
+            支持面内点计数和 Moran/LISA 空间自相关。可从左侧打开图层，也可在需求中写出当前场景的图层名称。
           </Typography.Paragraph>
           {selectedFileIds.length === 0 && hasReusableContext && <Alert type="info" showIcon title="可复用当前场景中已打开的运行结果来更换图表。" />}
           <Input.TextArea
