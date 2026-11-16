@@ -23,6 +23,6 @@ export interface PlannerDependencies {
   complete?: (context: PlanningContext) => Promise<unknown>;
 }
 
-export const clarification = (...questions: string[]): NaturalPlan => ({
+export const clarification = (...questions: string[]): Extract<NaturalPlan, { status: 'clarification' }> => ({
   status: 'clarification', message: '需要补充或确认分析条件。', questions,
 });

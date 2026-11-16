@@ -2,11 +2,30 @@ import type { AnalysisErrorCode } from './errors';
 
 export interface OperatorRef { id: string; version: number }
 
+export interface OperatorInput {
+  geometryTypes: readonly string[];
+  fields?: Record<string, { type: 'any' | 'numeric'; required: boolean; description: string }>;
+}
+
+export type OperatorParameter = { description: string } & (
+  | { type: 'string'; enum: readonly string[]; default: string }
+  | { type: 'integer'; minimum: number; maximum: number; default: number }
+);
+
+export interface OperatorParameterSchema {
+  type: 'object';
+  properties: Record<string, OperatorParameter>;
+  additionalProperties: false;
+}
+
 export interface OperatorDescriptor extends OperatorRef {
   name: string;
+  description: string;
+  aliases: readonly string[];
   executor: string;
-  inputs: Record<string, { geometryTypes: readonly string[] }>;
+  inputs: Record<string, OperatorInput>;
   parameterSchema: string;
+  planningParameters: OperatorParameterSchema;
   output: { format: string; schemaVersion: number };
 }
 

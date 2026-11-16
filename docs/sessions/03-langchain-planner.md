@@ -48,3 +48,67 @@ SELECT count(*) FROM geocsv_analysis_runs;
 - 芝加哥 311 API 在数值字段歧义时返回澄清，在请求异场景图层时返回 `DATASET_NOT_FOUND`，在请求 SQL 或 DBSCAN 时返回不支持。新旧入口对同一面内分类计数需求都返回规则计划，分类字段为 `category`，排除边界。新增两份计数计划，Run 数仍为 0。空间透视的确认按钮、任务与历史仍沿用原流程。
 - Moran/LISA 助手卡片本阶段交付到待确认。工作流持久化、澄清会话恢复和工作台中的 Moran/LISA 执行交互留待后续阶段。
 - Compose 五个镜像首次构建成功。Docker Hub 后续查询基础镜像时返回 EOF，验收实例用首次构建的本地镜像更新最终源码和编译产物。8083 保留供浏览。CARTO 底图在验收环境提示需要 Key，规划卡片和数据目录正常工作。
+
+## 原评审记录 · 专业模型的规划信息
+
+当前 Python 的 `SystemMessage` 同时包含通用规划指令、Moran/LISA 和空间透视的业务语义、默认参数及示例。随着专业模型增多，这段提示词可能要随每次模型接入改动，且其中的默认值可能与 Express 算子代码产生偏差。示例使用的 `layer_1` 也是临时引用，在不同请求里对应不同图层。
+
+用户提出，每个专业模型应有自己可登记的信息，例如能力说明、输入图层与字段要求、参数约束和默认值。待主会话评审，这些信息是否由现有算子注册表统一提供，运行时怎样把适用算子的信息交给 LangChain，以及通用 `SystemMessage`、Pydantic 草案结构和 Express 业务校验各自承担哪些职责。此处记录疑问，架构方案待评审。
+
+## 2026-11-17 · 算子目录复验
+
+在公共基线 `7812a9e` 上完成。GeoCSV 采用 NeoGIS 的版本化算子目录思路。两个算子分别登记能力、别名、图层和字段角色、版本及参数定义。目录保留完整 Plan Spec 的 Schema 引用，并提供模型可填写的参数定义。Moran/LISA 用同一份参数定义生成候选、校验草案和解析现有 Plan Spec。[NeoGIS 模型注册表](https://github.com/GeoScenarioScripter/neogis-server-micro-service/blob/1edf89032e5a5e379563d15b4c22f8f586fe83b8/ngis-geoanalysis/ngis_geoanalysis/registry/tool_registry.py) · [NeoGIS 模型检索](https://github.com/GeoScenarioScripter/neogis-server-micro-service/blob/1edf89032e5a5e379563d15b4c22f8f586fe83b8/ngis-ai/ngis_ai/tools/retrieval_tools.py) · [Moran/LISA 注册](../../server/src/modules/operators/moranLisa.ts) · [空间透视注册](../../server/src/modules/operators/spatialPivot.ts)
+
+[规划客户端](../../server/src/integrations/agent/client.ts)按算子名称、输入几何和字段要求准备候选，把每个角色的 `eligibleRefs` 放入 `HumanMessage`。点名 Moran/LISA 时，芝加哥 311 请求点图层被筛出，两个社区面图层保留。`SystemMessage` 提供通用选择与澄清规则。Python 校验 `operator`、`inputs`、`parameters` 的结构，Express 复查版本和输入引用，再由注册项校验用户明确给出的参数并补足缺项。[通用提示与调用](../../agent_service/planner.py) · [私有草案契约](../../agent_service/contracts.py) · [保存待确认计划](../../server/src/modules/analysisPlanner/sceneRouter.ts)
+
+在 [独立实例](http://127.0.0.1:8083/) 选择 Chicago 311，保留图层未选中，展开「空间分析助手 → 自然语言」，依次输入以下两句并点击「规划分析」。
+
+1. 用 Chicago-311-community-counts 图层的 pothole_requests 做 Moran/LISA，采用 Queen 邻接，199 次置换
+2. 对同一图层的 pothole_requests 用 Rook 共边邻接计算空间自相关
+
+| 验收项 | 实际参数 | 计划 ID | 证据 |
+| --- | --- | --- | --- |
+| 浏览器 Queen | `queen`，199 次，种子 42 | `3d7049ae-05a5-4273-a4d8-14f4d14ec58b` | [截图](../screenshots/phase3-catalog-chicago-queen.jpg) |
+| 浏览器 Rook | `rook`，199 次，种子 42 | `9bd317d9-8019-4cec-9649-9c3d017e7211` | [截图](../screenshots/phase3-catalog-chicago-rook.jpg) |
+| API 明确给 0 | `rook`，0 次，种子 0 | `25560745-3e1b-46f3-94c3-266696a084d8` | [计划](http://127.0.0.1:8083/api/analysis/plans/25560745-3e1b-46f3-94c3-266696a084d8) |
+
+三条计划均由 DeepSeek `deepseek-flash` 规划。算子为 `spatial_autocorrelation@2`，图层 ID 为 `b64dacd7-fdf4-4ee0-a71f-8c80eda1b37e`，77 个面，字段为 `pothole_requests`，数据库记录的确认时间均为空。10000 次置换和同时指定 Queen/Rook 均返回澄清，跨场景引用返回 `DATASET_NOT_FOUND`。旧计数入口仍生成 `category` 分组、排除边界的规则计划。四份有效计划让 Plan 从 6 增至 10，Run 保持为 0。
+
+固定响应测试还让模型在用户省略置换次数和种子时返回 `123`、`99`，保存值仍为目录默认的 `199`、`42`。中文及英文显式 `0` 均被保留。第三个测试算子「点抽样」经同一通用提示、Python 草案契约和 Express 路由生成计划，按其角色只看到点图层。服务端 23 项、Python 6 项、前端分析历史 3 项测试和 13 份协议样例通过，前后端构建通过。GHCR 在最终重建时鉴权超时，8083 使用本轮已构建镜像和最终服务端编译产物完成部署。
+
+### Rook 请求怎样流过新契约
+
+以下为脱敏的契约示例，字段和有效参数对照已保存的 Rook 计划。服务日志记录状态与用量。额外抓取完整模型草案的复送遇到提供商连接错误。
+
+```json
+{
+  "userPrompt": "对同一图层的 pothole_requests 用 Rook 共边邻接计算空间自相关",
+  "datasets": [
+    { "ref": "layer_1", "name": "Chicago-311-community-counts.geojson", "numericFields": ["community_id", "pothole_requests", "total_requests"] },
+    { "ref": "layer_2", "name": "Chicago-community-areas.geojson", "numericFields": ["community_id"] }
+  ],
+  "operators": [{
+    "id": "spatial_autocorrelation", "version": 2, "eligibleRefs": { "target": ["layer_1", "layer_2"] },
+    "planningParameters": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "contiguity": { "type": "string", "enum": ["queen", "rook"], "default": "queen" },
+        "permutations": { "type": "integer", "minimum": 0, "maximum": 9999, "default": 199 },
+        "seed": { "type": "integer", "minimum": 0, "maximum": 4294967295, "default": 42 }
+      }
+    }
+  }],
+  "history": { "operator": { "id": "spatial_autocorrelation", "version": 2 }, "inputs": { "target": "layer_1" } }
+}
+```
+
+```json
+{
+  "status": "ready",
+  "operator": { "id": "spatial_autocorrelation", "version": 2 },
+  "inputs": { "target": { "ref": "layer_1", "fields": { "valueField": "pothole_requests" } } },
+  "parameters": { "contiguity": "rook" }
+}
+```
+
+Express 用本次引用表还原目标文件 ID，核对字段和明确请求的 Rook，使用注册项的 199 与 42 补足缺项，然后保存 [Rook 计划](http://127.0.0.1:8083/api/analysis/plans/9bd317d9-8019-4cec-9649-9c3d017e7211)。

@@ -1,5 +1,5 @@
 import type { DatasetSummary } from '../spatialPivot/datasets';
-import { SPATIAL_PIVOT_OPERATOR, type SpatialPivotSpec } from '../spatialPivot/plan';
+import { SPATIAL_PIVOT_OPERATOR, SPATIAL_PIVOT_PARAMETERS, type SpatialPivotSpec } from '../spatialPivot/plan';
 import { clarification, type AnalysisView, type NaturalPlan } from './types';
 
 const charts = [
@@ -126,7 +126,7 @@ export const rulePlan = (prompt: string, datasets: DatasetSummary[], previous?: 
   const spec: SpatialPivotSpec = {
     schemaVersion: 1, kind: 'spatial_pivot', operatorVersion: 1,
     target: { fileId: target.fileId, labelField }, join: { fileId: join.fileId, categoryField },
-    boundaryPolicy: boundary || previous?.boundaryPolicy || 'exclude',
+    boundaryPolicy: boundary || previous?.boundaryPolicy || SPATIAL_PIVOT_PARAMETERS.properties.boundaryPolicy.default,
   };
   if (!previous && !/每|各|内|中|包含|落在/.test(prompt)) {
     return clarification('请确认是否需要“每个目标面内”的点计数；单独统计图层总数不等同于空间透视。');
@@ -135,7 +135,8 @@ export const rulePlan = (prompt: string, datasets: DatasetSummary[], previous?: 
   if (previous && !grouped && !totalOnly && categoryField !== null) assumptions.push(`沿用上一分析的分类字段 ${categoryField}。`);
   if (boundary === null) assumptions.push(`沿用${previous ? '上一分析的' : '默认的'}${spec.boundaryPolicy === 'exclude' ? '排除' : '纳入'}边界规则。`);
   return {
-    status: 'ready', source: 'rules', spec, view: { chartType: requestedCharts(prompt)[0] || 'bar' }, assumptions,
+    status: 'ready', source: 'rules', spec,
+    view: { chartType: requestedCharts(prompt)[0] || SPATIAL_PIVOT_PARAMETERS.properties.chartType.default }, assumptions,
     inputs: { targetName: target.name, joinName: join.name }, message: '已匹配经过验证的空间透视计数算子，请检查计划后执行。',
   };
 };

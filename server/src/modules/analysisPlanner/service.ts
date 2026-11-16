@@ -1,4 +1,4 @@
-import { AnalysisInputError, parseSpatialPivotSpec, type SpatialPivotSpec } from '../spatialPivot/plan';
+import { AnalysisInputError, parseSpatialPivotSpec, SPATIAL_PIVOT_PARAMETERS, type SpatialPivotSpec } from '../spatialPivot/plan';
 import type { DatasetSummary } from '../spatialPivot/datasets';
 import { boundaryChoice, isUnclearChartFollowup, isViewOnly, requestedCharts, requestedLabel, rulePlan, unsupportedRequirement } from './rules';
 import { clarification, type AnalysisView, type NaturalPlan, type PlannerDependencies } from './types';
@@ -79,10 +79,13 @@ export class NaturalAnalysisPlanner {
     } catch {
       return clarification('模型解析暂不可用，请稍后重试，或改用明确的面内计数表述与分析表单。未提交任何计算。');
     }
-    return this.reviewProposal(proposal, datasets, prompt, previous);
+    return NaturalAnalysisPlanner.reviewProposal(proposal, datasets, prompt, previous, this.dependencies.validatePlan);
   }
 
-  async reviewProposal(proposal: unknown, datasets: DatasetSummary[], prompt: string, previous?: SpatialPivotSpec): Promise<NaturalPlan> {
+  static async reviewProposal(
+    proposal: unknown, datasets: DatasetSummary[], prompt: string,
+    previous?: Pick<SpatialPivotSpec, 'boundaryPolicy'>, validatePlan?: PlannerDependencies['validatePlan'],
+  ): Promise<NaturalPlan> {
     if (!object(proposal)) return clarification('模型没有返回有效的结构化计划，请补充具体图层、字段与计算方法。');
     if (proposal.status === 'clarification') {
       const valid = questions(proposal.questions);
@@ -121,14 +124,14 @@ export class NaturalAnalysisPlanner {
       return clarification('模型返回的分类字段与需求不一致，请确认真实字段。');
     }
     const explicitBoundary = boundaryChoice(prompt);
-    if (spec.boundaryPolicy !== (explicitBoundary || previous?.boundaryPolicy || 'exclude')) {
+    if (spec.boundaryPolicy !== (explicitBoundary || previous?.boundaryPolicy || SPATIAL_PIVOT_PARAMETERS.properties.boundaryPolicy.default)) {
       return clarification('模型返回的边界规则与需求不一致，请明确是否纳入边界点。');
     }
     const explicitLabel = requestedLabel(prompt);
     if (explicitLabel && spec.target.labelField !== explicitLabel.field) {
       return clarification('模型返回的目标标识字段与需求不一致，请确认标签字段。');
     }
-    try { spec = await this.dependencies.validatePlan(spec); }
+    try { if (validatePlan) spec = await validatePlan(spec); }
     catch (error) {
       if (!(error instanceof AnalysisInputError)) throw error;
       return clarification(error.message);

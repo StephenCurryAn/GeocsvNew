@@ -1,5 +1,6 @@
 import type { PoolClient } from 'pg';
 import type { AnalysisArtifact, AnalysisSpec, InputVersions, OperatorDescriptor } from '../analysis/protocol';
+import type { OperatorDraftContext, OperatorDraftResult } from './planning';
 import type { PythonExecution, PythonWorker } from './pythonWorker';
 
 export interface ArtifactDraft {
@@ -27,6 +28,7 @@ interface PreparedPython {
   executor: 'python';
   spec: AnalysisSpec;
   capture(client: PoolClient): Promise<PythonSnapshot>;
+  validatePlanningFields?(client: PoolClient): Promise<void>;
   execute(worker: PythonWorker, execution: PythonExecution): Promise<ArtifactDraft>;
 }
 
@@ -34,5 +36,6 @@ export type PreparedOperator = PreparedPostgis | PreparedPython;
 
 export interface Operator {
   descriptor: OperatorDescriptor;
+  planDraft(context: OperatorDraftContext): Promise<OperatorDraftResult> | OperatorDraftResult;
   prepare(input: unknown): PreparedOperator;
 }

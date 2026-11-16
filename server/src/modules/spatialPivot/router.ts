@@ -6,6 +6,7 @@ import { readDataset, validateDatasets } from './datasets';
 import { AnalysisInputError, parseSpatialPivotSpec, SPATIAL_PIVOT_OPERATOR } from './plan';
 import { NaturalAnalysisPlanner } from '../analysisPlanner/service';
 import { isAgentConfigured, requestDraft } from '../../integrations/agent/client';
+import { pivotPlanningHistory, spatialPivot } from '../operators/spatialPivot';
 
 const moranColumns = `feature_id AS "featureId",local_i AS "localI",expected_i AS "expectedI",z,
   lag_z AS "lagZ",neighbor_count AS "neighborCount",p_value AS "pValue",quadrant`;
@@ -33,9 +34,14 @@ export const createSpatialPivotRouter = (db: Pool, service = new AnalysisService
         ? { ...run, spec: parseSpatialPivotSpec(run.spec) } : null;
     },
     ...(isAgentConfigured() ? {
-      complete: ({ userPrompt, datasets, previousSpec }) => requestDraft({
-        userPrompt, datasets, previousPivot: previousSpec, pivotOnly: true,
-      }),
+      async complete({ userPrompt, datasets, previousSpec }) {
+        const result = await requestDraft({
+          userPrompt, datasets, history: previousSpec ? pivotPlanningHistory(previousSpec) : undefined,
+        }, [spatialPivot]);
+        return result.status === 'ready'
+          ? { status: 'ready', spec: result.spec, view: result.view, unsupportedRequirements: [] }
+          : result;
+      },
     } : {}),
   });
   const route = analysisRoute(service);

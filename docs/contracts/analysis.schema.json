@@ -32,6 +32,13 @@
         "name": {
           "type": "string"
         },
+        "description": {
+          "type": "string"
+        },
+        "aliases": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
         "executor": {
           "type": "string"
         },
@@ -45,6 +52,19 @@
                 "items": {
                   "type": "string"
                 }
+              },
+              "fields": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "object",
+                  "properties": {
+                    "type": { "enum": ["any", "numeric"] },
+                    "required": { "type": "boolean" },
+                    "description": { "type": "string" }
+                  },
+                  "required": ["type", "required", "description"],
+                  "additionalProperties": false
+                }
               }
             },
             "required": [
@@ -55,6 +75,9 @@
         },
         "parameterSchema": {
           "type": "string"
+        },
+        "planningParameters": {
+          "$ref": "#/$defs/OperatorPlanningParameters"
         },
         "output": {
           "type": "object",
@@ -83,6 +106,45 @@
         "parameterSchema",
         "output"
       ],
+      "additionalProperties": false
+    },
+    "OperatorPlanningParameters": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "object" },
+        "properties": {
+          "type": "object",
+          "additionalProperties": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "type": { "const": "string" },
+                  "description": { "type": "string" },
+                  "enum": { "type": "array", "items": { "type": "string" } },
+                  "default": { "type": "string" }
+                },
+                "required": ["type", "description", "enum", "default"],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": { "const": "integer" },
+                  "description": { "type": "string" },
+                  "minimum": { "type": "integer" },
+                  "maximum": { "type": "integer" },
+                  "default": { "type": "integer" }
+                },
+                "required": ["type", "description", "minimum", "maximum", "default"],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "additionalProperties": { "const": false }
+      },
+      "required": ["type", "properties", "additionalProperties"],
       "additionalProperties": false
     },
     "AnalysisSpec": {

@@ -10,6 +10,7 @@ const registry = new Map<string, Operator>(
 );
 
 export const listOperators = () => entries.map(entry => entry.descriptor);
+export const listRegisteredOperators = (): readonly Operator[] => entries;
 
 export const requireOperator = (input: unknown): Operator => {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new AnalysisInputError('分析计划必须是对象', 'INVALID_SPEC');

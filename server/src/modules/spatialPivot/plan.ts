@@ -1,4 +1,6 @@
 import { AnalysisInputError } from '../analysis/errors';
+import type { OperatorParameterSchema } from '../analysis/protocol';
+import { readOperatorParameters } from '../operators/parameters';
 export { AnalysisInputError } from '../analysis/errors';
 
 export interface SpatialPivotSpec {
@@ -15,6 +17,15 @@ export const SPATIAL_PIVOT_OPERATOR = Object.freeze({
   targetGeometry: ['ST_Polygon', 'ST_MultiPolygon'],
   joinGeometry: ['ST_Point', 'ST_MultiPoint'],
 });
+
+export const SPATIAL_PIVOT_PARAMETERS = {
+  type: 'object', additionalProperties: false,
+  properties: {
+    boundaryPolicy: { type: 'string', enum: ['exclude', 'include'], default: 'exclude',
+      description: '是否计入边界点。exclude 排除，include 纳入' },
+    chartType: { type: 'string', enum: ['bar', 'line', 'pie'], default: 'bar', description: '柱状图、折线图或饼图' },
+  },
+} as const satisfies OperatorParameterSchema;
 
 const record = (value: unknown): Record<string, unknown> => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -48,14 +59,13 @@ export const parseSpatialPivotSpec = (value: unknown): SpatialPivotSpec => {
   if (input.schemaVersion !== 1 || input.kind !== 'spatial_pivot' || input.operatorVersion !== 1) {
     throw new AnalysisInputError('不支持的分析协议或算子版本', 'INVALID_SPEC');
   }
-  if (input.boundaryPolicy !== 'include' && input.boundaryPolicy !== 'exclude') {
-    throw new AnalysisInputError('必须明确边界点是否计入', 'INVALID_SPEC');
-  }
+  if (input.boundaryPolicy === undefined) throw new AnalysisInputError('必须明确边界点是否计入', 'INVALID_SPEC');
+  const { boundaryPolicy } = readOperatorParameters(SPATIAL_PIVOT_PARAMETERS, { boundaryPolicy: input.boundaryPolicy });
   const spec: SpatialPivotSpec = {
     schemaVersion: 1, kind: 'spatial_pivot', operatorVersion: 1,
     target: { fileId: text(target.fileId, '目标图层')!, labelField: text(target.labelField, '目标标签字段', true) },
     join: { fileId: text(join.fileId, '关联图层')!, categoryField: text(join.categoryField, '分类字段', true) },
-    boundaryPolicy: input.boundaryPolicy,
+    boundaryPolicy,
   };
   if (spec.target.fileId === spec.join.fileId) throw new AnalysisInputError('目标与 POI 必须是不同图层', 'INVALID_SPEC');
   return spec;

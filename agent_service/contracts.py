@@ -9,7 +9,8 @@ class Contract(BaseModel):
 
 LayerRef = Annotated[str, StringConstraints(pattern=r"^layer_[1-9][0-9]*$")]
 FieldName = Annotated[str, StringConstraints(min_length=1, max_length=255)]
-OperatorId = Literal["spatial_pivot", "spatial_autocorrelation"]
+Name = Annotated[str, StringConstraints(pattern=r"^[A-Za-z][A-Za-z0-9_]*$", max_length=64)]
+Scalar = str | int | float | bool
 
 
 class Dataset(Contract):
@@ -20,69 +21,76 @@ class Dataset(Contract):
     numericFields: list[FieldName]
 
 
-class Operator(Contract):
-    id: OperatorId
-    version: int
+class OperatorRef(Contract):
+    id: Name
+    version: Annotated[int, Field(ge=1)]
+
+
+class FieldDefinition(Contract):
+    type: Literal["any", "numeric"]
+    required: bool
+    description: str
+
+
+class InputDefinition(Contract):
+    geometryTypes: list[str]
+    fields: dict[Name, FieldDefinition] | None = None
+
+
+class StringParameter(Contract):
+    type: Literal["string"]
+    enum: list[str]
+    default: str
+    description: str
+
+
+class IntegerParameter(Contract):
+    type: Literal["integer"]
+    minimum: int
+    maximum: int
+    default: int
+    description: str
+
+
+class ParameterSchema(Contract):
+    type: Literal["object"]
+    additionalProperties: Literal[False]
+    properties: dict[Name, StringParameter | IntegerParameter]
+
+
+class Operator(OperatorRef):
     name: str
-    inputs: dict[str, dict[Literal["geometryTypes"], list[str]]]
+    aliases: list[str]
+    description: str
+    inputs: dict[Name, InputDefinition]
+    parameterSchema: str
+    planningParameters: ParameterSchema
+    eligibleRefs: dict[Name, list[LayerRef]]
 
 
-class PivotTarget(Contract):
-    fileId: LayerRef
-    labelField: FieldName | None
-
-
-class PivotJoin(Contract):
-    fileId: LayerRef
-    categoryField: FieldName | None
-
-
-class PivotSpec(Contract):
-    schemaVersion: Literal[1]
-    kind: Literal["spatial_pivot"]
-    operatorVersion: Literal[1]
-    target: PivotTarget
-    join: PivotJoin
-    boundaryPolicy: Literal["exclude", "include"]
-
-
-class MoranTarget(Contract):
-    fileId: LayerRef
-    valueField: FieldName
-
-
-class MoranSpec(Contract):
-    schemaVersion: Literal[1]
-    kind: Literal["spatial_autocorrelation"]
-    operatorVersion: Literal[2]
-    target: MoranTarget
-    contiguity: Literal["queen", "rook"]
-    permutations: Annotated[int, Field(ge=0, le=9999)]
-    seed: Annotated[int, Field(ge=0, le=4294967295)]
+class PlanningHistory(Contract):
+    operator: OperatorRef
+    inputs: dict[Name, LayerRef]
+    parameters: dict[Name, Scalar] | None = None
 
 
 class PlanningRequest(Contract):
     userPrompt: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=4000)]
     datasets: Annotated[list[Dataset], Field(min_length=1, max_length=30)]
-    operators: Annotated[list[Operator], Field(min_length=1, max_length=2)]
-    previousTarget: LayerRef | None = None
-    previousPivot: PivotSpec | None = None
+    operators: Annotated[list[Operator], Field(min_length=1, max_length=30)]
+    history: PlanningHistory | None = None
 
 
-class View(Contract):
-    chartType: Literal["bar", "line", "pie"]
+class InputBinding(Contract):
+    ref: LayerRef
+    fields: dict[Name, FieldName]
 
 
-class PivotDraft(Contract):
+class ReadyDraft(Contract):
     status: Literal["ready"]
-    spec: PivotSpec
-    view: View
-    unsupportedRequirements: Annotated[list[str], Field(max_length=0)]
-
-
-class MoranDraft(Contract):
-    status: Literal["ready"]
-    spec: MoranSpec
+    operator: OperatorRef
+    inputs: dict[Name, InputBinding]
+    parameters: dict[Name, Scalar]
 
 
 class Clarification(Contract):
@@ -98,5 +106,5 @@ class Unsupported(Contract):
     message: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1000)]
 
 
-Draft = PivotDraft | MoranDraft | Clarification | Unsupported
+Draft = ReadyDraft | Clarification | Unsupported
 draft_adapter = TypeAdapter(Draft)

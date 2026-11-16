@@ -17,18 +17,26 @@ CONTEXT = {
     }],
     "operators": [{
         "id": "spatial_autocorrelation", "version": 2, "name": "Moran/LISA",
-        "inputs": {"target": {"geometryTypes": ["ST_Polygon"]}},
+        "aliases": ["Moran", "LISA"], "description": "计算全局与局部空间自相关",
+        "inputs": {"target": {"geometryTypes": ["ST_Polygon"],
+                              "fields": {"valueField": {"type": "numeric", "required": True, "description": "数值字段"}}}},
+        "parameterSchema": "#/$defs/MoranLisaSpec",
+        "planningParameters": {"type": "object", "additionalProperties": False, "properties": {
+            "contiguity": {"type": "string", "enum": ["queen", "rook"], "default": "queen", "description": "邻接规则"},
+            "permutations": {"type": "integer", "minimum": 0, "maximum": 9999, "default": 199, "description": "置换次数"},
+        }},
+        "eligibleRefs": {"target": ["layer_1"]},
     }],
 }
 
 
 def moran(**overrides):
-    spec = {
-        "schemaVersion": 1, "kind": "spatial_autocorrelation", "operatorVersion": 2,
-        "target": {"fileId": "layer_1", "valueField": "total_requests"},
-        "contiguity": "rook", "permutations": 199, "seed": 42,
+    draft = {
+        "status": "ready", "operator": {"id": "spatial_autocorrelation", "version": 2},
+        "inputs": {"target": {"ref": "layer_1", "fields": {"valueField": "total_requests"}}},
+        "parameters": {"contiguity": "rook", "permutations": 199},
     }
-    return json.dumps({"status": "ready", "spec": spec | overrides})
+    return json.dumps(draft | overrides)
 
 
 def completion(content, finish_reason="stop"):
@@ -72,6 +80,32 @@ class PlannerContractTest(unittest.TestCase):
         self.assertNotIn("tools", sent)
         self.assertEqual([item["role"] for item in sent["messages"]], ["system", "user"])
         self.assertEqual(json.loads(sent["messages"][1]["content"]), CONTEXT)
+        self.assertNotIn("spatial_autocorrelation", sent["messages"][0]["content"])
+        self.assertNotIn("total_requests", sent["messages"][0]["content"])
+
+    def test_custom_catalog_entry_uses_identical_system_message_and_draft_shape(self):
+        third = {
+            "id": "test_point_sample", "version": 3, "name": "点抽样",
+            "aliases": ["抽取样本"], "description": "从点图层抽样",
+            "inputs": {"source": {"geometryTypes": ["ST_Point"]}},
+            "parameterSchema": "#/test/PointSampleSpec",
+            "planningParameters": {"type": "object", "additionalProperties": False, "properties": {
+                "limit": {"type": "integer", "minimum": 1, "maximum": 10, "default": 3, "description": "样本量"},
+            }},
+            "eligibleRefs": {"source": ["layer_1"]},
+        }
+        draft = {"status": "ready", "operator": {"id": third["id"], "version": 3},
+                 "inputs": {"source": {"ref": "layer_1", "fields": {}}}, "parameters": {}}
+        point = {"ref": "layer_1", "name": "设施.geojson", "geometryTypes": ["ST_Point"],
+                 "fields": [], "numericFields": []}
+        result, calls = self.request(completion(json.dumps(draft)), body={
+            "userPrompt": "在设施图层抽取样本", "operators": [third], "datasets": [point],
+        })
+        _, original_calls = self.request(completion(moran()))
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(result.json(), draft)
+        self.assertEqual(calls[0]["messages"][0], original_calls[0]["messages"][0])
+        self.assertEqual(json.loads(calls[0]["messages"][1]["content"])["operators"], [third])
 
     def test_clarification_and_unsupported(self):
         for draft in [{"status": "clarification", "questions": ["请选择字段。"]},
@@ -88,10 +122,9 @@ class PlannerContractTest(unittest.TestCase):
             (moran()[:-1], "stop"),
             (moran(), "length"),
             (moran(), "content_filter"),
-            (moran(operatorVersion=8), "stop"),
-            (moran(permutations=10000), "stop"),
-            (moran(permutations="199"), "stop"),
-            (moran(contiguity="knn"), "stop"),
+            (moran(operator={"id": "spatial_autocorrelation", "version": "2"}), "stop"),
+            (moran(parameters={"permutations": [199]}), "stop"),
+            (moran(inputs={"target": {"ref": "real-file-id", "fields": {}}}), "stop"),
             (moran(sql="SELECT 1"), "stop"),
         ]:
             with self.subTest(content=content, finish=finish):

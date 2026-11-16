@@ -19,6 +19,8 @@ Moran/LISA (`spatial_autocorrelation@2`) 使用同一 Plan、Run 和 Artifact �
 
 场景规划请求接受 `{ userPrompt, fileIds, contextRunId?, contextPlanId? }`。有勾选时只使用所选场景内图层。未勾选时可点名使用当前场景中的图层。`contextRunId` 用于同场景空间透视结果复用。`contextPlanId` 可为“同一图层”提供上一份 Moran/LISA 计划的目标图层，服务端重新校验图层归属。`ready` 响应新增 `confirmationStatus: "pending_confirmation"`，返回已验证并保存的 `plan`（协议状态为 `validated`，`confirmedAt` 为 `null`）。规划与读取计划均不创建 Run。
 
+`GET /operators` 可读取每个版本的能力说明、别名、输入角色和字段类型。`parameterSchema` 引用完整 Plan Spec，`planningParameters` 描述模型可以识别的显式参数和服务端默认值。Express 按场景和角色构建候选，再将私有草案 `{ operator, inputs, parameters }` 交给选中的注册项转换为现有 Spec。`inputs` 使用单次请求内的图层引用，`parameters` 按用户需求填写。
+
 ## 阶段 2 接线字段
 
 | 对象 | 字段与使用约定 |

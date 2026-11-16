@@ -1,18 +1,8 @@
 import { AnalysisError, AnalysisInputError } from '../../modules/analysis/errors';
-import { listOperators } from '../../modules/operators/registry';
-import type { DatasetSummary } from '../../modules/spatialPivot/datasets';
-import type { SpatialPivotSpec } from '../../modules/spatialPivot/plan';
-
-export interface DraftContext {
-  userPrompt: string;
-  datasets: DatasetSummary[];
-  previousTargetId?: string;
-  previousPivot?: SpatialPivotSpec | null;
-  pivotOnly?: boolean;
-}
-
-export const record = (value: unknown): value is Record<string, unknown> =>
-  value !== null && typeof value === 'object' && !Array.isArray(value);
+import { clarification } from '../../modules/analysisPlanner/types';
+import { explicitlyRequested, fitsInput, record, resolveDraftInputs, sameOperator,
+  type DraftContext, type OperatorDraftResult } from '../../modules/operators/planning';
+import type { Operator } from '../../modules/operators/types';
 
 const unavailable = () => new AnalysisError(503, 'PLANNER_UNAVAILABLE',
   '模型规划暂不可用，请检查规划服务和模型配置，或使用空间透视表单。');
@@ -22,39 +12,74 @@ export const invalidDraft = () => new AnalysisError(502, 'PLANNER_INVALID_RESPON
 
 export const isAgentConfigured = () => Boolean(process.env.AGENT_SERVICE_URL && process.env.AGENT_SERVICE_TOKEN);
 
-export async function requestDraft(context: DraftContext): Promise<unknown> {
+export async function requestDraft(context: DraftContext, registered: readonly Operator[]): Promise<OperatorDraftResult> {
+  const named = registered.filter(operator => explicitlyRequested(context.userPrompt, operator));
+  const namedIds = new Set(named.map(operator => operator.descriptor.id));
+  if (namedIds.size > 1) return clarification('请一次选择一个分析方法。');
+  const versions = [...context.userPrompt.normalize('NFKC').matchAll(
+    /\b([a-z][a-z0-9_]*?)@(\d+)|(?:算子)?版本\s*(?:为|是|[:=])?\s*(\d+)/gi,
+  )].flatMap(match => !match[1] || namedIds.has(match[1].toLowerCase()) ? [Number(match[2] ?? match[3])] : []);
+  const selectable = named.length ? named.filter(operator => versions.every(version => version === operator.descriptor.version))
+    : registered;
+  if (named.length && !selectable.length) {
+    return { status: 'unsupported', message: '当前目录没有指定的算子版本。' };
+  }
+  const candidates = selectable.map(operator => ({
+    operator,
+    inputs: Object.fromEntries(Object.entries(operator.descriptor.inputs).map(([role, input]) =>
+      [role, context.datasets.filter(dataset => fitsInput(dataset, input))])),
+  }));
+  const available = candidates.filter(candidate => Object.values(candidate.inputs).every(datasets => datasets.length > 0));
+  if (named.length && available.length !== candidates.length) {
+    const missing = candidates.find(candidate => !available.includes(candidate))!;
+    const roles = Object.keys(missing.inputs).filter(role => !missing.inputs[role].length);
+    const details = roles.map(role => {
+      const input = missing.operator.descriptor.inputs[role];
+      const fields = Object.values(input.fields ?? {}).filter(field => field.required).map(field => field.description);
+      return input.geometryTypes.join('/') + (fields.length ? '，含' + fields.join('、') : '');
+    });
+    return clarification('请在当前场景为「' + missing.operator.descriptor.name + '」选择匹配图层：' + details.join('；'));
+  }
+  if (!available.length) return clarification('请在当前场景选择符合分析要求的图层和字段。');
+
   const url = process.env.AGENT_SERVICE_URL;
   const token = process.env.AGENT_SERVICE_TOKEN;
   if (!url || !token) throw unavailable();
 
-  const refs = new Map(context.datasets.map(({ fileId }, index) => [fileId, 'layer_' + (index + 1)]));
-  const ids = new Map([...refs].map(([id, ref]) => [ref, id]));
-  const operators = listOperators()
-    .filter(operator => !context.pivotOnly || operator.id === 'spatial_pivot')
-    .map(({ id, version, name, inputs }) => ({ id, version, name, inputs }));
-  const previous = context.previousPivot;
-  const target = previous && refs.get(previous.target.fileId);
-  const join = previous && refs.get(previous.join.fileId);
+  const used = new Set(available.flatMap(candidate => Object.values(candidate.inputs).flat().map(dataset => dataset.fileId)));
+  const datasets = context.datasets.filter(dataset => used.has(dataset.fileId));
+  const refs = new Map(datasets.map(({ fileId }, index) => [fileId, 'layer_' + (index + 1)]));
+  const operators = available.map(({ operator, inputs }) => {
+    const { id, version, name, aliases, description, inputs: roles, parameterSchema, planningParameters } = operator.descriptor;
+    return { id, version, name, aliases, description, inputs: roles, parameterSchema, planningParameters,
+      eligibleRefs: Object.fromEntries(Object.entries(inputs).map(([role, layers]) =>
+        [role, layers.map(layer => refs.get(layer.fileId))])) };
+  });
+  const history = context.history;
+  const priorInputs = history && available.some(({ operator }) => sameOperator(operator.descriptor, history.operator))
+    && Object.values(history.fileIds).every(id => refs.has(id))
+    ? Object.fromEntries(Object.entries(history.fileIds).map(([role, id]) => [role, refs.get(id)])) : undefined;
   const body = {
     userPrompt: context.userPrompt,
-    datasets: context.datasets.map(({ fileId, name, geometryTypes, fields, numericFields }) => ({
+    datasets: datasets.map(({ fileId, name, geometryTypes, fields, numericFields }) => ({
       ref: refs.get(fileId), name, geometryTypes,
       fields: fields.filter(field => field.length > 0 && field.length <= 255),
       numericFields: numericFields?.filter(field => field.length > 0 && field.length <= 255) ?? [],
     })),
     operators,
-    previousTarget: context.previousTargetId && refs.get(context.previousTargetId),
-    previousPivot: previous && target && join ? {
-      ...previous, target: { ...previous.target, fileId: target }, join: { ...previous.join, fileId: join },
-    } : undefined,
+    history: history && priorInputs ? { operator: history.operator, inputs: priorInputs, parameters: history.parameters } : undefined,
   };
+  const payload = JSON.stringify(body);
+  if (operators.length > 30 || Buffer.byteLength(payload) > 64 * 1024) {
+    return clarification('候选图层或算子过多，请勾选本次要用的图层并指明分析方法。');
+  }
   const signal = AbortSignal.timeout(32000);
   let response: Response;
   try {
     response = await fetch(new URL('/plan', url), {
       method: 'POST', redirect: 'error', signal,
       headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      body: payload,
     });
   } catch {
     throw signal.aborted ? timeout() : unavailable();
@@ -68,13 +93,28 @@ export async function requestDraft(context: DraftContext): Promise<unknown> {
     if (record(result) && result.detail === 'model_invalid_response') throw invalidDraft();
     throw unavailable();
   }
-  if (!record(result) || result.status !== 'ready' || !record(result.spec)) return result;
-  const resolve = (value: unknown) => {
-    if (!record(value) || typeof value.fileId !== 'string') throw invalidDraft();
-    const fileId = ids.get(value.fileId);
-    if (!fileId) throw new AnalysisInputError('模型引用了候选范围外的图层，请明确当前场景中的图层名称', 'DATASET_NOT_FOUND');
-    return { ...value, fileId };
-  };
-  const spec = { ...result.spec, target: resolve(result.spec.target) };
-  return { ...result, spec: 'join' in result.spec ? { ...spec, join: resolve(result.spec.join) } : spec };
+  if (!record(result)) throw invalidDraft();
+  if (result.status === 'clarification' && Object.keys(result).length === 2
+    && Array.isArray(result.questions) && result.questions.length > 0 && result.questions.length <= 5
+    && result.questions.every(item => typeof item === 'string' && item.trim() && item.length <= 500)) {
+    return clarification(...result.questions);
+  }
+  if (result.status === 'unsupported' && Object.keys(result).length === 2
+    && typeof result.message === 'string' && result.message.trim() && result.message.length <= 1000) {
+    return { status: 'unsupported', message: result.message };
+  }
+  if (result.status !== 'ready' || Object.keys(result).length !== 4 || !record(result.operator)
+    || Object.keys(result.operator).length !== 2 || typeof result.operator.id !== 'string'
+    || typeof result.operator.version !== 'number' || !record(result.parameters)) throw invalidDraft();
+  const ref = { id: result.operator.id, version: result.operator.version };
+  const selected = available.find(({ operator }) => sameOperator(operator.descriptor, ref));
+  if (!selected) throw new AnalysisInputError('模型选择了候选范围外的算子或版本', 'UNSUPPORTED_OPERATOR');
+  const datasetsByRef = new Map(datasets.map(dataset => [refs.get(dataset.fileId)!, dataset]));
+  try {
+    const inputs = resolveDraftInputs(selected.operator.descriptor.inputs, result.inputs, datasetsByRef);
+    return await selected.operator.planDraft({ ...context, inputs, parameters: result.parameters });
+  } catch (error) {
+    if (error instanceof AnalysisInputError && error.errorCode === 'UNKNOWN_FIELD') return clarification(error.message);
+    throw error;
+  }
 }

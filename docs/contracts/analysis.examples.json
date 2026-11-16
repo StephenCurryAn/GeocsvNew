@@ -3,22 +3,34 @@
     "id": "spatial_pivot",
     "version": 1,
     "name": "行政区内分类 POI 统计",
+    "description": "统计每个目标面内的点数，可按点字段分类。",
+    "aliases": ["空间透视", "面内点计数"],
     "executor": "postgis",
     "inputs": {
       "target": {
         "geometryTypes": [
           "ST_Polygon",
           "ST_MultiPolygon"
-        ]
+        ],
+        "fields": { "labelField": { "type": "any", "required": false, "description": "目标面的标识字段" } }
       },
       "join": {
         "geometryTypes": [
           "ST_Point",
           "ST_MultiPoint"
-        ]
+        ],
+        "fields": { "categoryField": { "type": "any", "required": false, "description": "点分类字段" } }
       }
     },
     "parameterSchema": "#/$defs/SpatialPivotSpec",
+    "planningParameters": {
+      "type": "object",
+      "properties": {
+        "boundaryPolicy": { "type": "string", "description": "是否计入边界点", "enum": ["exclude", "include"], "default": "exclude" },
+        "chartType": { "type": "string", "description": "图表类型", "enum": ["bar", "line", "pie"], "default": "bar" }
+      },
+      "additionalProperties": false
+    },
     "output": {
       "format": "spatial_counts",
       "schemaVersion": 1

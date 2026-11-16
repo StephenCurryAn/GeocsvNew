@@ -1,6 +1,10 @@
 import type { PoolClient } from 'pg';
 import { AnalysisError, AnalysisInputError } from '../analysis/errors';
-import type { AnalysisSpec } from '../analysis/protocol';
+import type { AnalysisSpec, OperatorParameterSchema } from '../analysis/protocol';
+import { clarification } from '../analysisPlanner/types';
+import { readDataset } from '../spatialPivot/datasets';
+import { readOperatorParameters } from './parameters';
+import { fitsInput, mentions, namedDatasets, sameOperator, type OperatorDraftContext } from './planning';
 import { sha256, type MoranParameters } from './pythonWorker';
 import type { Operator, PythonSnapshot } from './types';
 
@@ -22,11 +26,15 @@ const stringField = (value: unknown, message: string, max: number) => {
   if (typeof value !== 'string' || !value.trim() || value.length > max || value.includes('\0')) throw invalid(message);
   return value;
 };
-const integerField = (value: unknown, fallback: number, max: number, message: string) => {
-  if (value === undefined) return fallback;
-  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0 || value > max) throw invalid(message);
-  return value;
-};
+const parameters = {
+  type: 'object', additionalProperties: false,
+  properties: {
+    contiguity: { type: 'string', enum: ['queen', 'rook'], default: 'queen',
+      description: '邻接规则。queen 表示共点或共边，rook 表示仅共边' },
+    permutations: { type: 'integer', minimum: 0, maximum: 9999, default: 199, description: '置换次数，0 表示不进行置换检验' },
+    seed: { type: 'integer', minimum: 0, maximum: 4294967295, default: 42, description: '随机种子' },
+  },
+} as const satisfies OperatorParameterSchema;
 
 export const parseMoranSpec = (input: unknown): MoranSpec => {
   const raw = readObject(input, ['schemaVersion', 'kind', 'operatorVersion', 'target', 'contiguity', 'permutations', 'seed']);
@@ -34,18 +42,72 @@ export const parseMoranSpec = (input: unknown): MoranSpec => {
     throw invalid('不支持的空间自相关协议或算子版本');
   }
   const target = readObject(raw.target, ['fileId', 'valueField']);
-  const contiguity = raw.contiguity === undefined ? 'queen' : raw.contiguity;
-  if (contiguity !== 'queen' && contiguity !== 'rook') throw invalid('邻接规则必须为 queen 或 rook');
+  const effective = readOperatorParameters(parameters, {
+    contiguity: raw.contiguity, permutations: raw.permutations, seed: raw.seed,
+  });
   return {
     schemaVersion: 1, kind: 'spatial_autocorrelation', operatorVersion: 2,
     target: {
       fileId: stringField(target.fileId, '请选择有效的面图层', 50),
       valueField: stringField(target.valueField, '请选择有效的数值字段', 255),
     },
-    contiguity,
-    permutations: integerField(raw.permutations, 199, 9999, '置换次数须为 0–9999 的整数'),
-    seed: integerField(raw.seed, 42, 4294967295, '随机种子须为无符号 32 位整数'),
+    ...effective,
   };
+};
+
+const numberPattern = '([+-]?(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d+)?(?:e[+-]?\\d+)?)';
+const permutationsPattern = new RegExp(numberPattern + '\\s*次\\s*置换|置换(?:次数)?\\s*(?:为|是|[:=])?\\s*' + numberPattern
+  + '|' + numberPattern + '\\s+permutations\\b|\\bpermutations\\s*(?:[:=]\\s*)?' + numberPattern, 'gi');
+const seedPattern = new RegExp('(?:随机种子|种子|\\bseed)\\s*(?:为|是|[:=])?\\s*' + numberPattern, 'gi');
+// undefined means the user left the parameter at its default; null means it needs clarification.
+const requestedNumber = (prompt: string, pattern: RegExp, parameter: RegExp): number | null | undefined => {
+  const values = [...prompt.matchAll(pattern)]
+    .map(match => Number(match.slice(1).find(value => value !== undefined)?.replace(/,/g, '')));
+  if (values.length) return values.every(value => value === values[0]) ? values[0] : null;
+  return parameter.test(prompt) ? null : undefined;
+};
+
+const planDraft = (context: OperatorDraftContext) => {
+  const { dataset, fields } = context.inputs.target;
+  const effective = readOperatorParameters(parameters, context.parameters);
+  const target = { fileId: dataset.fileId, valueField: fields.valueField };
+  const prompt = context.userPrompt.normalize('NFKC');
+  const explicitLayers = namedDatasets(prompt, context.datasets);
+  const previous = context.history && sameOperator(context.history.operator, moranLisa.descriptor)
+    ? context.history.fileIds.target : undefined;
+  const eligible = context.datasets.filter(item => fitsInput(item, moranLisa.descriptor.inputs.target));
+  const choices = explicitLayers.length ? explicitLayers : previous ? eligible.filter(item => item.fileId === previous)
+    : context.hasSelection ? eligible : [];
+  if (choices.length !== 1 || choices[0].fileId !== dataset.fileId) {
+    return clarification('请指明一个面图层的名称或只勾选要分析的面图层。');
+  }
+  const explicitFields = dataset.fields.filter(field => mentions(prompt, field));
+  const numericFields = dataset.numericFields ?? [];
+  if (explicitFields.length > 1 || (explicitFields.length === 1 && explicitFields[0] !== target.valueField)
+    || (!explicitFields.length && numericFields.length > 1)) {
+    return clarification('请在需求中指明一个数值字段：' + numericFields.join('、').slice(0, 450));
+  }
+  if (/\bknn\b|最近邻|距离权重|自定义权重/i.test(prompt)) {
+    return { status: 'unsupported' as const, message: 'Moran/LISA 当前提供 Queen 和 Rook 邻接。' };
+  }
+  const queen = /\bqueen\b|共点/i.test(prompt);
+  const rook = /\brook\b|仅共边|只共边/i.test(prompt);
+  const contiguity = queen ? 'queen' : rook || /共边/.test(prompt) ? 'rook' : undefined;
+  const permutations = requestedNumber(prompt, permutationsPattern, /置换|\bpermutations?\b/i);
+  const seed = requestedNumber(prompt, seedPattern, /随机种子|种子|\bseed\b/i);
+  if ((queen && rook) || (contiguity && contiguity !== context.parameters.contiguity)
+    || permutations === null || (permutations !== undefined && permutations !== context.parameters.permutations)
+    || seed === null || (seed !== undefined && seed !== context.parameters.seed)) {
+    return clarification('请确认唯一的 Queen 或 Rook 邻接规则、0–9999 次置换和有效的随机种子。');
+  }
+  const spec: MoranSpec = {
+    schemaVersion: 1, kind: 'spatial_autocorrelation', operatorVersion: 2, target,
+    contiguity: contiguity === undefined ? parameters.properties.contiguity.default : effective.contiguity,
+    permutations: permutations === undefined ? parameters.properties.permutations.default : effective.permutations,
+    seed: seed === undefined ? parameters.properties.seed.default : effective.seed,
+  };
+  return { status: 'ready' as const, source: 'llm' as const, message: 'Moran/LISA 空间自相关',
+    spec, inputs: { targetName: dataset.name } };
 };
 
 const maxFeatures = 20000;
@@ -123,15 +185,27 @@ function checkResult(output: unknown, spec: MoranSpec, payload: Buffer): MoranRe
 export const moranLisa: Operator = {
   descriptor: {
     id: 'spatial_autocorrelation', version: 2, name: 'Moran/LISA 空间自相关',
-    executor: 'python', inputs: { target: { geometryTypes: ['ST_Polygon', 'ST_MultiPolygon'] } },
+    aliases: ['Moran', 'LISA', '莫兰', '空间自相关', 'Queen', 'Rook'],
+    description: '根据一个面图层中的数值字段计算全局 Moran’s I 和局部 LISA。适用 Queen 或 Rook 邻接。',
+    executor: 'python',
+    inputs: { target: { geometryTypes: ['ST_Polygon', 'ST_MultiPolygon'],
+      fields: { valueField: { type: 'numeric', required: true, description: '分析使用的数值字段' } } } },
     parameterSchema: '#/$defs/MoranLisaSpec', output: { format: 'moran_lisa', schemaVersion: 1 },
+    planningParameters: parameters,
   },
+  planDraft,
   prepare(input) {
     const spec = parseMoranSpec(input);
     return {
       spec,
       executor: 'python',
       capture: client => capture(client, spec),
+      async validatePlanningFields(client) {
+        const data = await readDataset(client, spec.target.fileId, true);
+        if (!data.numericFields?.includes(spec.target.valueField)) {
+          throw invalid('所选字段须包含至少三个有效数值');
+        }
+      },
       async execute(worker, execution) {
         const { result: output, algorithmVersion, dependencyLockDigest } = await worker.moran(execution, spec);
         const result = checkResult(output, spec, execution.payload);
