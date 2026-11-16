@@ -73,9 +73,19 @@ export async function loadBasemap(key: string, config: BasemapConfig, signal: Ab
 }
 
 type BasemapMap = Pick<LibreMap, 'addLayer' | 'addSource' | 'getLayer' | 'getSource' | 'removeLayer' | 'removeSource'
-  | 'getGlyphs' | 'setGlyphs' | 'getSprite' | 'setSprite' | 'isSourceLoaded' | 'isStyleLoaded' | 'on' | 'off'>;
+  | 'getGlyphs' | 'setGlyphs' | 'getSprite' | 'setSprite' | 'isSourceLoaded' | 'on' | 'off'>;
 type Installed = { layers: string[]; sources: string[] };
 type Loader = (key: string, signal: AbortSignal) => Promise<StyleSpecification>;
+
+const TIANDITU_TILE_ERRORS: Partial<Record<number, string>> = {
+  403: '天地图拒绝访问，请检查服务端 Key 权限和服务器出口 IP 白名单',
+  429: '天地图瓦片请求过多，请稍后重试',
+  502: '天地图瓦片服务暂不可用，请检查 GeoCSV 后端能否访问天地图',
+  503: '天地图服务端 Key 尚未配置',
+  504: '天地图瓦片请求超时，请检查 GeoCSV 后端网络',
+};
+
+class TiandituTileError extends Error {}
 
 /** Owns only basemap layers below the anchor. Never replaces business sources or the camera. */
 export class BasemapController {
@@ -112,7 +122,7 @@ export class BasemapController {
         if (abort.signal.aborted || this.disposed || request !== this.request) return false;
         candidate = { layers: style.layers.map(layer => layer.id), sources: Object.keys(style.sources) };
         // Attach readiness/error listeners before adding resources, including synchronous validation errors.
-        const ready = this.waitForSources(candidate.sources, abort.signal);
+        const ready = this.waitForSources(candidate.sources, abort.signal, key.startsWith('tianditu-'));
         try {
           if (style.glyphs && style.glyphs !== glyphs) { assetsChanged = true; this.map.setGlyphs(style.glyphs); }
           if (typeof style.sprite === 'string' && style.sprite !== sprite) { assetsChanged = true; this.map.setSprite(style.sprite); }
@@ -127,13 +137,14 @@ export class BasemapController {
         this.installed = candidate;
         candidate = undefined;
         return true;
-      } catch {
+      } catch (error) {
         if (candidate && !this.disposed) this.remove(candidate);
         if (assetsChanged && !this.disposed) {
           this.map.setGlyphs(glyphs);
           this.map.setSprite(sprite);
         }
         if (this.disposed || request !== this.request) return false;
+        if (error instanceof TiandituTileError) throw error;
         throw new Error('底图加载失败，已保留原底图。请检查配置、网络或服务额度。');
       } finally {
         clearTimeout(timer);
@@ -154,7 +165,7 @@ export class BasemapController {
     for (const id of group.sources) if (this.map.getSource(id)) this.map.removeSource(id);
   }
 
-  private waitForSources(ids: string[], signal: AbortSignal): Promise<void> {
+  private waitForSources(ids: string[], signal: AbortSignal, isTianditu: boolean): Promise<void> {
     return new Promise((resolve, reject) => {
       const finish = (error?: Error) => {
         clearInterval(interval);
@@ -163,11 +174,14 @@ export class BasemapController {
         if (error) reject(error); else resolve();
       };
       const onAbort = () => finish(new Error('cancelled'));
-      const onError = (event: { sourceId?: string }) => {
-        if (!event.sourceId || ids.includes(event.sourceId)) finish(new Error('provider failed'));
+      const onError = (event: { sourceId?: string; error?: { status?: number } }) => {
+        if (event.sourceId && !ids.includes(event.sourceId)) return;
+        const status = event.error?.status;
+        const reason = isTianditu && event.sourceId && status !== undefined ? TIANDITU_TILE_ERRORS[status] : undefined;
+        finish(reason ? new TiandituTileError(`${reason}。已保留原底图。`) : new Error('provider failed'));
       };
       const interval = setInterval(() => {
-        if (this.map.isStyleLoaded() && ids.every(id => this.map.getSource(id) && this.map.isSourceLoaded(id))) finish();
+        if (ids.every(id => this.map.getSource(id) && this.map.isSourceLoaded(id))) finish();
       }, 50);
       this.map.on('error', onError);
       signal.addEventListener('abort', onAbort, { once: true });

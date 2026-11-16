@@ -36,7 +36,7 @@ class MapDouble {
   isStyleLoaded() { return this.ready; }
   on(_type, fn) { this.handlers.add(fn); }
   off(_type, fn) { this.handlers.delete(fn); }
-  fail(sourceId) { for (const handler of this.handlers) handler({ sourceId }); }
+  fail(sourceId, error) { for (const handler of this.handlers) handler({ sourceId, error }); }
 }
 
 const vectorStyle = () => ({
@@ -112,6 +112,29 @@ test('tile timeout removes staged resources and restores glyphs and sprites', as
   assert.equal(map.sprite, null);
   assert.equal(map.handlers.size, 0);
   assert.deepEqual(Object.keys(map.sources), ['business']);
+});
+
+test('basemap readiness ignores pending and failed business tiles', async () => {
+  const map = new MapDouble();
+  map.isStyleLoaded = () => false;
+  const controller = new BasemapController(map, async () => vectorStyle());
+  const switching = controller.switchTo('protomaps-light');
+  await new Promise(resolve => setImmediate(resolve));
+  map.fail('business', { status: 502 });
+  assert.equal(await switching, true);
+});
+
+test('TianDiTu proxy statuses are translated without exposing provider URLs', async () => {
+  const map = new MapDouble();
+  const controller = new BasemapController(map, async key => key.startsWith('tianditu')
+    ? rasterStyle(key, '/api') : vectorStyle());
+  assert.equal(await controller.switchTo('protomaps-light'), true);
+  const switching = controller.switchTo('tianditu-imagery');
+  await new Promise(resolve => setImmediate(resolve));
+  map.fail('basemap-2-img', { status: 403, message: 'https://provider?key=secret' });
+  await assert.rejects(switching, error => /服务端 Key/.test(error.message) && !error.message.includes('secret'));
+  assert.ok(map.getSource('basemap-1-world'));
+  assert.equal(map.getSource('basemap-2-img'), undefined);
 });
 
 test('synchronous layer validation failure rolls back partially installed sources', async () => {

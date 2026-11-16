@@ -1,4 +1,5 @@
 import { Router, type Request, type Response, type NextFunction } from 'express';
+import { createTiandituTransport, type TileFetch } from './tiandituTransport';
 
 const UPSTREAM_HOST = 't0.tianditu.gov.cn';
 const ALLOWED_LAYERS = new Set(['vec', 'cva', 'img', 'cia']);
@@ -7,7 +8,7 @@ const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0
 
 export type BasemapRouterOptions = {
   getKey?: () => string | undefined;
-  fetchImpl?: typeof fetch;
+  fetchImpl?: TileFetch;
   timeoutMs?: number;
   maxBytes?: number;
   maxInFlight?: number;
@@ -42,7 +43,7 @@ const loopbackOnly = (req: Request, res: Response, next: NextFunction) => {
 export const createBasemapRouter = (options: BasemapRouterOptions = {}) => {
   const router = Router();
   const getKey = options.getKey || (() => process.env.TIANDITU_SERVER_KEY);
-  const fetchImpl = options.fetchImpl || fetch;
+  const fetchImpl = options.fetchImpl ?? createTiandituTransport(UPSTREAM_HOST);
   const timeoutMs = options.timeoutMs ?? 8000;
   const maxBytes = options.maxBytes ?? 2 * 1024 * 1024;
   const maxInFlight = options.maxInFlight ?? 32;
@@ -109,13 +110,20 @@ export const createBasemapRouter = (options: BasemapRouterOptions = {}) => {
         TILEMATRIX: String(z), TILEROW: String(y), TILECOL: String(x), tk: key,
       }).toString();
       const response = await fetchImpl(upstream, { signal: controller.signal, redirect: 'manual' });
-      if (!response.ok || response.status >= 300 && response.status < 400) {
+      if (!response.ok) {
         await response.body?.cancel().catch(() => undefined);
-        jsonError(res, 502, 'Tianditu tile provider returned an unsuccessful response');
+        if (response.status === 401 || response.status === 403) {
+          jsonError(res, 403, 'Tianditu tile request was rejected by the provider');
+        } else if (response.status === 429) {
+          jsonError(res, 429, 'Tianditu tile provider is rate limiting requests');
+        } else {
+          jsonError(res, 502, 'Tianditu tile provider returned an unsuccessful response');
+        }
         return;
       }
 
-      const mime = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase() || '';
+      const declaredMime = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase() || '';
+      const mime = declaredMime === 'image/jpg' ? 'image/jpeg' : declaredMime;
       if (!MIME_TYPES.has(mime)) {
         await response.body?.cancel().catch(() => undefined);
         jsonError(res, 502, 'Tianditu tile provider returned an unsupported image type');

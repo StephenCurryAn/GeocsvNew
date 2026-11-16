@@ -143,6 +143,28 @@ test('MIME and image signatures must agree; declared and streamed bodies are siz
   assert.equal(response.status, 502);
 });
 
+test('provider authentication and throttling failures return actionable statuses without exposing upstream content', async t => {
+  let providerStatus = 401;
+  const service = await serve({ fetchImpl: async () => new Response(key, { status: providerStatus }) });
+  t.after(() => service.close());
+  for (const [status, expected] of [[401, 403], [403, 403], [429, 429]]) {
+    providerStatus = status;
+    const response = await fetch(`${service.base}/basemap-tiles/tianditu/img/0/0/0`);
+    assert.equal(response.status, expected);
+    assert.ok(!(await response.text()).includes(key));
+  }
+});
+
+test('provider image/jpg is validated and normalized for browser raster sources', async t => {
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
+  const service = await serve({ fetchImpl: async () => imageResponse(jpeg, 'image/jpg') });
+  t.after(() => service.close());
+  const response = await fetch(`${service.base}/basemap-tiles/tianditu/img/3/2/5`);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('content-type'), 'image/jpeg');
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), jpeg);
+});
+
 test('timeout and concurrency guard fail safely and release request capacity', async t => {
   let began;
   const started = new Promise(resolve => { began = resolve; });

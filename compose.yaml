@@ -69,6 +69,8 @@ services:
       AGENT_SERVICE_URL: http://agent:8100
       AGENT_SERVICE_TOKEN: ${AGENT_SERVICE_TOKEN:-}
       TIANDITU_SERVER_KEY: ${TIANDITU_SERVER_KEY:-}
+      TIANDITU_PROXY_URL: ${TIANDITU_PROXY_URL:-}
+      TIANDITU_DOH_URL: ${TIANDITU_DOH_URL:-}
     networks: [default, planner]
     volumes:
       - uploads:/app/server/uploads

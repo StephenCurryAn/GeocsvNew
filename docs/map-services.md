@@ -94,7 +94,14 @@ npm run build
 
 2026-11-16 实测：两把 Key 已写入被 Git 忽略的本地配置。Protomaps light 与 dark 在浏览器中成功加载，南京道路、水系和注记可见，街道面与四个设施点在切换后保留。切换天地图矢量时请求失败，页面恢复原 Protomaps 底图，业务图层仍保留。截图见 [Protomaps 与业务图层](screenshots/map-services-2026-11-16.png)。
 
-天地图在线验收仍受网络阻塞：Node HTTPS 直连 t0/t1、系统代理请求，以及显式使用本机既有代理 127.0.0.1:7897 的请求均未取得 HTTP 响应；Node 返回 ECONNRESET。本机 t0 DNS 解析落到 198.18.0.73 的 fake-IP 网段，提示请求经过本机网络代理，但不足以断定具体故障原因。代理接口向前端返回脱敏 502。尚不能判断 Key 是否有效，也没有验收真实天地图影像与中文注记；未更改系统代理、DNS 或降低 HTTPS 校验。后续应检查现有代理中天地图域名的分流及可达性，再重复上述清单。
+如果 Docker 中天地图域名被本机代理解析为 fake-IP，且连接被重置，可以在 Compose 项目目录的本地 `.env` 中指定天地图专用的出站代理和 DNS-over-HTTPS 解析器。例如本机已有 HTTP 代理监听 7897 时：
+
+```dotenv
+TIANDITU_PROXY_URL=http://host.docker.internal:7897
+TIANDITU_DOH_URL=https://cloudflare-dns.com/dns-query
+```
+
+Compose 重新创建 server 和 web 后应用此配置。正常可以直连官方域名的环境可留空。启用后只通过代理为天地图定向解析并连接，TLS 仍验证官方域名，DNS 请求不携带 Key。影像服务返回的 `image/jpg` 会按 JPEG 签名验证并以 `image/jpeg` 返回。
 
 自动验证：服务端 20 项测试、前端底图 9 项、分析状态 3 项、流协议 6 项通过；前后端构建通过。前端既有大包体积警告仍在，本次没有引入新的地图依赖。
 
