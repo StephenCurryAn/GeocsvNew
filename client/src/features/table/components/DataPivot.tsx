@@ -1,17 +1,12 @@
-import 'ag-grid-community/styles/ag-grid.css'; 
-import 'ag-grid-community/styles/ag-theme-alpine.css'; 
 import React, { useEffect, useState, useRef } from 'react';
 import { createPortal } from 'react-dom'; //    ：引入传送门技术
-import { AgGridReact } from 'ag-grid-react'; 
-import { type ColDef, ModuleRegistry, AllCommunityModule } from 'ag-grid-community'; 
+import type { ColDef, GridApi } from 'ag-grid-community';
+import type { AgGridReact } from 'ag-grid-react';
 import { App, Empty, Button, Space, Popconfirm, Pagination, Modal, Select } from 'antd'; // ... 引入 antd 组件
 import { PlusOutlined, DeleteOutlined, TableOutlined, MinusSquareOutlined, DownloadOutlined } from '@ant-design/icons';
 import { geoService } from '../../../services/geoService';
 import apiClient from '../../../services/apiClient';
-
-// 注册模块
-// 向 AG Grid 的全局系统注册‘社区版’的所有功能模块，以便表格能正常运行
-ModuleRegistry.registerModules([ AllCommunityModule ]);
+import DeferredGrid from './DeferredGrid';
 
 // 多文件 Tab 条目类型
 export interface FileTabInfo {
@@ -32,7 +27,7 @@ interface DataPivotProps {
     };
     onPageChange?: (page: number, pageSize: number) => void;
     onRowClick?: (record: any) => void;
-    selectedFeature?: any;
+    selectedFeature?: { id?: string | number; name?: string } | null;
     onDataChange?: (recordId: string | number, newData: any) => void;
     onAddRow?: () => void;
     onDeleteRow?: (recordId: string | number) => void;
@@ -43,6 +38,24 @@ interface DataPivotProps {
     // 多文件 Tab 支持
     selectedFilesData?: FileTabInfo[];
     onFileTabChange?: (fileId: string, fileName: string) => void;
+}
+
+function syncSelectedFeature(api: GridApi | undefined, selectedFeature: DataPivotProps['selectedFeature']) {
+    if (!api) return;
+    if (!selectedFeature) {
+        api.deselectAll();
+        return;
+    }
+
+    api.forEachNode((node) => {
+        const row = node.data;
+        const isMatch = (row.id && row.id === selectedFeature.id) ||
+            (row.name && row.name === selectedFeature.name);
+        if (isMatch) {
+            node.setSelected(true);
+            api.ensureNodeVisible(node, 'middle');
+        }
+    });
 }
 
 
@@ -345,32 +358,8 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
 
     }, [data, fileName, modelList]);
 
-    // 监听 selectedFeature，同步高亮表格行
     useEffect(() => {
-    // 先把 API 赋值给局部变量，解决 "gridRef.current is possibly null" 报错
-    // 使用可选链 ?. 确保安全访问
-    // api 的值是 AG Grid 库在组件初始化完成后，自动挂载到你的 Ref 对象上的
-    // api对象里包含了数百个函数，全是用来控制表格的，“万能操作面板”
-    const api = gridRef.current?.api;
-    // 如果 api 不存在，直接结束
-    if (!api) return;
-
-    if (selectedFeature) {
-        // 使用局部变量 api 进行操作，TS 就不会报错了
-        api.forEachNode((node) => {
-            const nodeData = node.data;
-            // 匹配逻辑：优先比对 ID，没有 ID 比对 Name
-            const isMatch = (nodeData.id && nodeData.id === selectedFeature.id) || 
-                            (nodeData.name && nodeData.name === selectedFeature.name);
-            if (isMatch) {
-                node.setSelected(true);
-                api.ensureNodeVisible(node, 'middle'); // 滚动到该行
-            }
-        });
-    } else {
-        // 如果 selectedFeature 为空，取消所有选中
-        api.deselectAll();
-    }
+        syncSelectedFeature(gridRef.current?.api, selectedFeature);
     }, [selectedFeature]);
 
     /**
@@ -788,10 +777,11 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
             }
         `}</style>
         
-        <AgGridReact
+        <DeferredGrid
 
             // 绑定 ref
             ref={gridRef}
+            onFirstDataRendered={({ api }) => syncSelectedFeature(api, selectedFeature)}
 
             // 解决 Error #239
             // 加上这个属性，允许你继续使用 ag-theme-alpine.css 和你的自定义样式

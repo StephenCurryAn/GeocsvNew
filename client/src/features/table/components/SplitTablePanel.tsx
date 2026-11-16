@@ -3,14 +3,8 @@ import { Button, Empty } from 'antd';
 import { CloseOutlined, ExpandAltOutlined, MoreOutlined } from '@ant-design/icons';
 import { useAnalysisStore } from '../../../stores/useAnalysisStore';
 
-// AG Grid 相关依赖
-import { AgGridReact } from 'ag-grid-react'; 
-import { type ColDef, ModuleRegistry, AllCommunityModule } from 'ag-grid-community'; 
-import 'ag-grid-community/styles/ag-grid.css'; 
-import 'ag-grid-community/styles/ag-theme-alpine.css'; 
-
-// 注册模块
-ModuleRegistry.registerModules([ AllCommunityModule ]);
+import type { ColDef } from 'ag-grid-community';
+import DeferredGrid from './DeferredGrid';
 
 const SNAP_THRESHOLD = 50;     
 const DEFAULT_BOTTOM_HEIGHT = 350; 
@@ -176,7 +170,7 @@ const SplitTablePanel: React.FC<SplitTablePanelProps> = ({ children }) => {
                      {/* 表格内容区 */}
                      <div className="flex-1 w-full h-full ag-theme-alpine-dark">
                         {pivotData ? (
-                            <AgGridReact
+                            <DeferredGrid
                                 rowData={pivotData}
                                 columnDefs={agColumnDefs}
                                 defaultColDef={defaultColDef}
