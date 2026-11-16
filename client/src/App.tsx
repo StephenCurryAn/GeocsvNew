@@ -4,10 +4,10 @@ import MainLayout from './layouts/MainLayout';
 import LeftPanel from './features/workspace/components/LeftPanel';
 import SplitTablePanel from './features/table/components/SplitTablePanel';
 import DataPivot from './features/table/components/DataPivot';
-import MapView from './features/map/components/MapView';
+import MapView, { type FileLayerInfo } from './features/map/components/MapView';
 import GeoAIAgent from './features/agent/components/GeoAIAgent';
 import { geoService, type PaginatedGeoResponse } from './services/geoService';
-import { App as AntdApp } from 'antd';
+import { App as AntdApp, Input } from 'antd';
 
 // 多文件 Tab 条目类型
 export interface FileTabInfo {
@@ -17,12 +17,7 @@ export interface FileTabInfo {
     pagination?: { total: number; page: number; pageSize: number; totalPages: number };
 }
 
-// 地图多图层信息类型
-export interface FileLayerInfo {
-    fileId: string;
-    fileName: string;
-    totalFeatures: number;
-}
+type LayerMetadata = Pick<FileLayerInfo, 'totalFeatures' | 'loadFailed'>;
 
 function App() {
     const { message, modal } = AntdApp.useApp();
@@ -43,8 +38,15 @@ function App() {
     // 选中的地图要素（表格 ↔ 地图联动）
     const [selectedFeature, setSelectedFeature] = useState<any>(null);
 
-    // AI 侧边栏开关
-    const [aiPanelOpen, setAiPanelOpen] = useState<boolean>(false);
+    // 地图只在文件选择、要素总数或加载状态变化时更新图层列表。
+    const [layerMetadata, setLayerMetadata] = useState<Record<string, LayerMetadata>>({});
+    const updateLayerMetadata = (fileId: string, metadata: LayerMetadata) => {
+        setLayerMetadata(prev => {
+            const current = prev[fileId];
+            if (current?.totalFeatures === metadata.totalFeatures && current?.loadFailed === metadata.loadFailed) return prev;
+            return { ...prev, [fileId]: metadata };
+        });
+    };
 
     // 当前主文件数据快捷引用
     const currentData = uploadedFilesData[activeFileId];
@@ -63,17 +65,20 @@ function App() {
     const loadFileData = async (fileId: string, fileName: string, page = 1, pageSize = 20) => {
         const requestVersion = (loadVersionByFileRef.current[fileId] || 0) + 1;
         loadVersionByFileRef.current[fileId] = requestVersion;
+        if (!uploadedFilesData[fileId]) updateLayerMetadata(fileId, {});
         const messageKey = `loading-${fileId}`;
         try {
             if (fileId === activeFileId) message.loading({ content: '加载数据中...', key: messageKey });
             const res = await geoService.getFileData(fileId, page, pageSize);
             if (loadVersionByFileRef.current[fileId] !== requestVersion) return;
             setUploadedFilesData(prev => ({ ...prev, [fileId]: res }));
+            updateLayerMetadata(fileId, { totalFeatures: res.pagination.total });
             if (fileId === activeFileId) message.success({ content: `加载第 ${page} 页成功`, key: messageKey });
             return res;
         } catch (err: any) {
             if (loadVersionByFileRef.current[fileId] !== requestVersion) return;
             console.error(err);
+            if (!uploadedFilesData[fileId]) updateLayerMetadata(fileId, { loadFailed: true });
             if (fileId === activeFileId) message.error({ content: `“${fileName}”数据加载失败`, key: messageKey });
         }
     };
@@ -82,6 +87,7 @@ function App() {
     const handleDataLoaded = (fileName: string, data: any, fileId: string) => {
         loadVersionByFileRef.current[fileId] = (loadVersionByFileRef.current[fileId] || 0) + 1;
         setUploadedFilesData(prev => ({ ...prev, [fileId]: data }));
+        updateLayerMetadata(fileId, { totalFeatures: data.pagination.total });
         setActiveFileName(fileName);
         setActiveFileId(fileId);
         setSelectedFeature(null);
@@ -149,8 +155,7 @@ function App() {
         modal.confirm({
             title: '新增列',
             content: (
-                <input
-                    className="border p-1 w-full text-blue-100"
+                <Input
                     placeholder="请输入新列名 (英文)"
                     onChange={(e) => value = e.target.value}
                 />
@@ -259,79 +264,73 @@ function App() {
         pagination: uploadedFilesData[f.fileId]?.pagination,
     }));
 
-    // Only pass known feature counts so MapView never treats unloaded metadata as a small layer.
-    // Primitive keys keep page changes from rebuilding all extra map layers.
-    const selectedLayerIdsKey = selectedFilesInfo.map(file => file.fileId).join('|');
-    const selectedLayerCountsKey = selectedFilesInfo
-        .map(file => uploadedFilesData[file.fileId]?.pagination?.total ?? '')
-        .join('|');
-    const mapLayersInfo: FileLayerInfo[] = React.useMemo(() => selectedFilesInfo.flatMap(file => {
-        const totalFeatures = uploadedFilesData[file.fileId]?.pagination?.total;
-        return totalFeatures === undefined ? [] : [{ fileId: file.fileId, fileName: file.fileName, totalFeatures }];
-    }), [selectedLayerIdsKey, selectedLayerCountsKey]);
+    const mapLayersInfo = React.useMemo<FileLayerInfo[]>(() => {
+        const files = activeFileId && !selectedFilesInfo.some(file => file.fileId === activeFileId)
+            ? [...selectedFilesInfo, { fileId: activeFileId, fileName: activeFileName }]
+            : selectedFilesInfo;
+        return files.map(file => ({ ...file, ...layerMetadata[file.fileId] }));
+    }, [selectedFilesInfo, activeFileId, activeFileName, layerMetadata]);
+    const mapData = React.useMemo(() => currentData
+        ? { type: 'FeatureCollection', features: currentData.features }
+        : null, [currentData]);
 
     return (
         <MainLayout
-            selectedFileIds={selectedFileIds}
-            aiPanelOpen={aiPanelOpen}
-            onToggleAI={() => setAiPanelOpen(p => !p)}
-        >
-            {/* 左侧：资源管理 + 分析工具 */}
-            <LeftPanel
-                onDataLoaded={handleDataLoaded}
-                onSelectFiles={handleSelectFiles}
-                selectedFileIds={selectedFileIds}
-                activeFileId={activeFileId}
-                activeFileFields={activeFileFields}
-            />
-
-            {/* 中间：多文件属性表 */}
-            <SplitTablePanel>
-                <DataPivot
-                    data={currentData?.features || []}
+            workspace={
+                <LeftPanel
+                    onDataLoaded={handleDataLoaded}
+                    onSelectFiles={handleSelectFiles}
+                    selectedFileIds={selectedFileIds}
+                    activeFileId={activeFileId}
+                    activeFileFields={activeFileFields}
+                />
+            }
+            map={
+                <MapView
+                    data={mapData}
                     fileName={activeFileName}
                     fileId={activeFileId}
-                    pagination={currentData?.pagination}
-                    onPageChange={handlePageChange}
-                    onRowClick={(record) => setSelectedFeature(record)}
                     selectedFeature={selectedFeature}
-                    onDataChange={handleDataChange}
-                    onAddRow={handleAddRow}
-                    onDeleteRow={handleDeleteRow}
-                    onAddColumn={handleAddColumn}
-                    onDeleteColumn={handleDeleteColumn}
-                    onDeleteColumns={handleDeleteColumns}
-                    onRenameColumn={handleRenameColumn}
-                    // 多文件 Tab 支持
-                    selectedFilesData={selectedFilesData}
-                    onFileTabChange={async (fileId, fileName) => {
-                        setActiveFileId(fileId);
-                        setActiveFileName(fileName);
-                        setSelectedFeature(null);
-                        if (!uploadedFilesData[fileId]) {
-                            await loadFileData(fileId, fileName, 1, 20);
-                        }
-                    }}
+                    onFeatureClick={setSelectedFeature}
+                    selectedFilesInfo={mapLayersInfo}
                 />
-            </SplitTablePanel>
-
-            {/* 右侧：地图（多图层 + MVT）*/}
-            <MapView
-                data={currentData ? { type: 'FeatureCollection', features: currentData.features } : null}
-                fileName={activeFileName}
-                fileId={activeFileId}
-                selectedFeature={selectedFeature}
-                onFeatureClick={(feature) => setSelectedFeature(feature)}
-                selectedFilesInfo={mapLayersInfo}
-            />
-
-            {/* AI 侧边栏（嵌入 MainLayout 右侧） */}
-            <GeoAIAgent
-                selectedFileIds={selectedFileIds}
-                isOpen={aiPanelOpen}
-                onClose={() => setAiPanelOpen(false)}
-            />
-        </MainLayout>
+            }
+            table={
+                <SplitTablePanel>
+                    <DataPivot
+                        data={currentData?.features || []}
+                        fileName={activeFileName}
+                        fileId={activeFileId}
+                        pagination={currentData?.pagination}
+                        emptyMessage={activeFileId
+                            ? layerMetadata[activeFileId]?.loadFailed
+                                ? '数据加载失败，请重新选择文件'
+                                : currentData ? '暂无属性数据' : '正在读取属性数据…'
+                            : undefined}
+                        onPageChange={handlePageChange}
+                        onRowClick={setSelectedFeature}
+                        selectedFeature={selectedFeature}
+                        onDataChange={handleDataChange}
+                        onAddRow={handleAddRow}
+                        onDeleteRow={handleDeleteRow}
+                        onAddColumn={handleAddColumn}
+                        onDeleteColumn={handleDeleteColumn}
+                        onDeleteColumns={handleDeleteColumns}
+                        onRenameColumn={handleRenameColumn}
+                        selectedFilesData={selectedFilesData}
+                        onFileTabChange={async (fileId, fileName) => {
+                            setActiveFileId(fileId);
+                            setActiveFileName(fileName);
+                            setSelectedFeature(null);
+                            if (!uploadedFilesData[fileId]) {
+                                await loadFileData(fileId, fileName, 1, 20);
+                            }
+                        }}
+                    />
+                </SplitTablePanel>
+            }
+            assistant={<GeoAIAgent selectedFileIds={selectedFileIds} />}
+        />
     );
 }
 

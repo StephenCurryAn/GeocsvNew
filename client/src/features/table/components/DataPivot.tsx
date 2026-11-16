@@ -18,7 +18,8 @@ export interface FileTabInfo {
 
 interface DataPivotProps {
     data: any;          
-    fileName: string;   
+    fileName: string;
+    emptyMessage?: string;
     fileId?: string;
     pagination?: {
         total: number;
@@ -47,15 +48,19 @@ function syncSelectedFeature(api: GridApi | undefined, selectedFeature: DataPivo
         return;
     }
 
-    api.forEachNode((node) => {
-        const row = node.data;
-        const isMatch = (row.id && row.id === selectedFeature.id) ||
-            (row.name && row.name === selectedFeature.name);
-        if (isMatch) {
-            node.setSelected(true);
-            api.ensureNodeVisible(node, 'middle');
-        }
-    });
+    const id = selectedFeature.id;
+    let match = id == null ? undefined : api.getRowNode(String(id));
+    if (id == null && selectedFeature.name) {
+        api.forEachNode(node => {
+            if (!match && node.data?.name === selectedFeature.name) match = node;
+        });
+    }
+    if (match) {
+        match.setSelected(true, true, 'api');
+        api.ensureNodeVisible(match, 'middle');
+    } else {
+        api.deselectAll();
+    }
 }
 
 
@@ -250,7 +255,7 @@ const FormulaCellEditor = (props: any) => {
     const DropdownPortal = () => {
         if (!showDropdown || suggestions.length === 0) return null;
         return createPortal(
-            <ul ref={listRef} className="ag-custom-component-popup fixed z-999999 bg-[#1a2332] border border-cyan-700/80 rounded-md shadow-[0_10px_40px_rgba(0,0,0,0.8)] max-h-56 overflow-y-auto custom-scrollbar m-0 p-1 list-none overscroll-contain"
+            <ul ref={listRef} className="ag-custom-component-popup fixed z-999999 bg-geo-panel border border-geo-border rounded-md shadow-md max-h-56 overflow-y-auto custom-scrollbar m-0 p-1 list-none overscroll-contain"
                 style={{ top: dropdownRect.top, left: dropdownRect.left, width: dropdownRect.width }}
                 onMouseDown={(e) => {
                     e.stopPropagation(); e.nativeEvent.stopImmediatePropagation();
@@ -263,7 +268,7 @@ const FormulaCellEditor = (props: any) => {
                 onWheel={(e) => { e.stopPropagation(); e.nativeEvent.stopImmediatePropagation(); }}
             >
                 {suggestions.map((s, i) => (
-                    <li key={s} className={`px-3 py-2 cursor-pointer text-sm font-mono transition-all rounded flex items-center ${i === focusedIndex ? 'bg-cyan-600/90 text-white font-bold' : 'text-gray-300 hover:bg-cyan-900/40'}`}
+                    <li key={s} className={`px-3 py-2 cursor-pointer text-sm font-mono transition-all rounded flex items-center ${i === focusedIndex ? 'border-l-2 border-geo-accent text-geo-accent bg-geo-dark font-bold' : 'text-geo-text-primary hover:bg-geo-dark'}`}
                         onMouseDown={(e) => { e.preventDefault(); insertSuggestion(s); }}>
                         {/*   视觉优化：模型名前面用紫色圆点，列名前面用青色圆点，一眼区分！ */}
                         <span className={`w-2 h-2 rounded-full mr-2 shrink-0 ${
@@ -279,16 +284,16 @@ const FormulaCellEditor = (props: any) => {
     };
 
     return (
-        <div ref={containerRef} className={`flex items-center w-full h-full px-2 transition-all duration-300 ease-out box-border ${isFormulaMode ? 'bg-geo-dark shadow-[inset_0_0_0_2px_#06b6d4]' : 'bg-[#1f2937] shadow-[inset_0_0_0_1px_#3b82f6]' }`}
+        <div ref={containerRef} className={`flex items-center w-full h-full px-2 transition-all duration-300 ease-out box-border ${isFormulaMode ? 'bg-geo-dark border-2 border-geo-accent' : 'bg-geo-panel border border-geo-accent' }`}
             style={{ width: isFormulaMode ? Math.max(defaultCellWidth, 300) : defaultCellWidth, height: 40, borderRadius: '4px' }}>
-            {isFormulaMode && <span className="text-cyan-400 font-mono text-sm mr-2 font-bold select-none shrink-0 drop-shadow-[0_0_4px_rgba(6,182,212,0.8)]">ƒx</span>}
-            <input ref={inputRef} value={value} onChange={handleChange} placeholder={isFormulaMode ? "等待输入模型或参数..." : "输入数值..."} className={`w-full h-full bg-transparent outline-none font-mono text-sm border-none shadow-none ${isFormulaMode ? 'text-cyan-50' : 'text-gray-100'}`} style={{ minWidth: 0 }} />
+            {isFormulaMode && <span className="text-geo-accent font-mono text-sm mr-2 font-bold select-none shrink-0">ƒx</span>}
+            <input ref={inputRef} value={value} onChange={handleChange} placeholder={isFormulaMode ? "等待输入模型或参数..." : "输入数值..."} className="w-full h-full bg-transparent outline-none font-mono text-sm text-geo-text-primary border-none shadow-none" style={{ minWidth: 0 }} />
             <DropdownPortal />
         </div>
     );
 };
 
-const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, pagination, onPageChange, 
+const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, pagination, emptyMessage, onPageChange,
     onRowClick, selectedFeature, onDataChange, 
     onAddRow, onDeleteRow, onAddColumn, onDeleteColumn, onRenameColumn,
     onDeleteColumns,
@@ -445,7 +450,7 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
         }
 
         //   终极防死修复：如果后端没传 id，强行生成一个唯一 ID，绝不允许出现 undefined！
-        let uniqueId = feature.properties?.id || feature._id || feature.id;
+        let uniqueId = feature.properties?.id ?? feature._id ?? feature.id;
         if (uniqueId === undefined || uniqueId === null) {
             uniqueId = `tmp_${Math.random().toString(36).substr(2, 9)}`;
         }
@@ -463,6 +468,7 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
             const gType = feature.geometry.type;
             const coords = feature.geometry.coordinates;
             if (gType === 'Point' && Array.isArray(coords) && coords.length >= 2) {
+                row.cp ??= coords;
                 row['_lng'] = coords[0];
                 row['_lat'] = coords[1];
             } else {
@@ -499,84 +505,61 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
         }
     };
 
-    if (!data || rowData.length === 0) {
-    return (
-        <div className="h-full flex flex-col">
-            {/* 多文件 Tab 进入清空状态时也要显示 */}
-            {selectedFilesData && selectedFilesData.length > 1 && (
-                <div className="flex items-center gap-0 overflow-x-auto border-b border-gray-700 shrink-0 bg-[#111827] px-2 pt-1">
-                    {selectedFilesData.map(f => (
-                        <button
-                            key={f.fileId}
-                            onClick={() => onFileTabChange?.(f.fileId, f.fileName)}
-                            className={`px-3 py-1.5 text-[11px] font-mono rounded-t border-b-2 transition-all whitespace-nowrap ${
-                                f.fileId === fileId
-                                    ? 'border-blue-400 text-blue-400 bg-blue-400/10'
-                                    : 'border-transparent text-gray-500 hover:text-gray-300'
-                            }`}
-                        >
-                            {f.fileName}
-                        </button>
-                    ))}
-                </div>
-            )}
-            <div className="flex-1 flex items-center justify-center bg-[#1f2937] text-gray-400">
-                <Empty description={<span className="text-gray-400">请在左侧选择文件以查看属性表</span>} />
-            </div>
+    const fileTabs = selectedFilesData && selectedFilesData.length > 1 && (
+        <div className="data-tabs" aria-label="属性表文件">
+            {selectedFilesData.map(file => (
+                <button
+                    key={file.fileId} type="button"
+                    aria-pressed={file.fileId === fileId}
+                    onClick={() => onFileTabChange?.(file.fileId, file.fileName)}
+                    title={file.fileName}
+                >
+                    {file.fileName}
+                </button>
+            ))}
         </div>
     );
+
+    if (!data || rowData.length === 0) {
+        return (
+            <div className="data-table">
+                {fileTabs}
+                <div className="data-table-empty">
+                    <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={emptyMessage ?? '请在左侧选择文件以查看属性表'} />
+                </div>
+            </div>
+        );
     }
 
     return (
-    <div className="flex flex-col h-full">
-
-        {/* 多文件切换 Tab 栏 */}
-        {selectedFilesData && selectedFilesData.length > 1 && (
-            <div className="flex items-center gap-0 overflow-x-auto border-b border-gray-700 shrink-0 bg-[#111827] px-2 pt-1">
-                {selectedFilesData.map(f => (
-                    <button
-                        key={f.fileId}
-                        onClick={() => onFileTabChange?.(f.fileId, f.fileName)}
-                        className={`px-3 py-1.5 text-[11px] font-mono rounded-t border-b-2 transition-all whitespace-nowrap ${
-                            f.fileId === fileId
-                                ? 'border-blue-400 text-blue-400 bg-blue-400/10'
-                                : 'border-transparent text-gray-500 hover:text-gray-300'
-                        }`}
-                    >
-                        <span className="truncate max-w-[120px] block">{f.fileName}</span>
-                    </button>
-                ))}
-            </div>
-        )}
-
-        {/* 工具栏 */}
-        <div className="bg-[#1f2937] px-2 py-1.5 border-b border-gray-700 flex justify-between items-center">
-        <div className="text-xs text-blue-400 font-mono">
-            <span>{fileName}</span>
-            <span className="ml-2 text-gray-500">({rowData.length} records)</span>
-        </div>
-        
+    <div className="data-table">
+        {fileTabs}
+        <div className="data-toolbar">
+            {selectedFilesData && selectedFilesData.length > 1
+                ? <span className="data-table-heading">属性表</span>
+                : <span className="data-table-heading" title={fileName}>{fileName}</span>}
         {/* 操作按钮组 */}
-        <Space size="small">
+        <Space size={4}>
             {/* 在“增行”左边添加“导出CSV”按钮 */}
             <Button 
                 size="small" 
                 icon={<DownloadOutlined />} 
-                className="bg-green-700! text-gray-200! border-green-600! hover:bg-green-600! hover:border-green-500!"
+                aria-label="导出 CSV" title="导出 CSV"
                 onClick={handleExportCSV}
                 disabled={rowData.length === 0} // 无数据时禁用
             >
-                导出CSV
+                <span className="table-action-label">导出 CSV</span>
             </Button>
 
             <Button 
                 type="primary" 
                 size="small" 
                 icon={<PlusOutlined />} 
+                aria-label="增行" title="增行"
                 onClick={onAddRow}
                 disabled={!onAddRow}
             >
-                增行
+                <span className="table-action-label">增行</span>
             </Button>
             
             <Popconfirm 
@@ -588,7 +571,7 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
                         const selectedData = selectedRows[0]; // 获取选中行的完整数据
                         
                         // 确保有 ID
-                        if (selectedData.id) {
+                        if (selectedData.id != null) {
                             // 传 ID 给父组件，而不是行号
                             onDeleteRow(selectedData.id); 
                             setSelectedRecordId(null); // 重置选中状态
@@ -605,33 +588,32 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
                     danger 
                     size="small" 
                     icon={<DeleteOutlined />}
+                    aria-label="删行" title="删行"
                     disabled={selectedRecordId === null}
                 >
-                    删行
+                    <span className="table-action-label">删行</span>
                 </Button>
             </Popconfirm>
-
-            <div className="w-px h-4 bg-gray-600 mx-1"></div>
 
             <Button 
                 size="small" 
                 icon={<TableOutlined />} 
-                className="bg-gray-700 text-white border-gray-600"
+                aria-label="增列" title="增列"
                 onClick={onAddColumn}
             >
-                增列
+                <span className="table-action-label">增列</span>
             </Button>
             
             <Button 
                 size="small" 
                 icon={<MinusSquareOutlined />} 
-                className="bg-gray-700 text-white border-gray-600"
+                aria-label="批量删列" title="批量删列"
                 onClick={() => {
                     setSelectedColsToDelete([]); // 打开时清空之前的选择
                     setIsDeleteModalVisible(true);
                 }}
             >
-                批量删列
+                <span className="table-action-label">批量删列</span>
             </Button>
         </Space>
         </div>
@@ -695,7 +677,7 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
         </Modal>
 
         <div 
-            className="ag-theme-alpine-dark flex-1 w-full h-full"
+            className="ag-theme-alpine workbench-grid data-grid"
             onDoubleClick={(e) => {
                 // 1. 获取当前双击的 DOM 元素
                 const target = e.target as HTMLElement;
@@ -727,56 +709,6 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
                 }
             }}
         >
-        {/* 注入炫酷的选中样式 */}
-        <style>{`
-            .ag-header-cell-label {
-                font-weight: 600;
-                cursor: pointer;
-                transition: color 0.2s;
-            }
-            .ag-header-cell-label:hover {
-                color: #00e5ff !important; /* 悬浮时变青色，提示可操作 */
-            }
-            .ag-theme-alpine-dark {
-                --ag-background-color: #111827; 
-                --ag-header-background-color: #1f2937; 
-                --ag-odd-row-background-color: #111827;
-                --ag-row-border-color: #374151;
-                --ag-header-foreground-color: #9ca3af;
-                --ag-foreground-color: #e5e7eb;
-                
-                /* 覆盖默认的选中行背景色 (改为半透明青色) */
-                --ag-selected-row-background-color: rgba(0, 229, 255, 0.15) !important;
-            }
-
-            /* 表头加粗 */
-            .ag-header-cell-label {
-                font-weight: 600;
-            }
-
-            /* 自定义选中行的左侧高亮条 */
-            .ag-theme-alpine-dark .ag-row-selected {
-                border-left: 4px solid #00e5ff !important; /* 左侧亮条 */
-                transition: all 0.2s;
-            }
-
-            /* 选中时文字变亮白，增加对比度 */
-            .ag-theme-alpine-dark .ag-row-selected .ag-cell {
-                color: white !important;
-                text-shadow: 0 0 10px rgba(0, 229, 255, 0.3); /* 微微发光 */
-            }
-
-            /* 去掉单元格聚焦时的那个难看的蓝色粗框 */
-            .ag-theme-alpine-dark .ag-cell-focus {
-                border-color: transparent !important;
-            }
-
-            /* 修复复选框在暗色模式下的可见性 */
-            .ag-checkbox-input-wrapper {
-                font-size: 14px;
-            }
-        `}</style>
-        
         <DeferredGrid
 
             // 绑定 ref
@@ -813,29 +745,14 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
             rowSelection={{ 
                 mode: 'singleRow', 
                 checkboxes: true,
+                enableClickSelection: true,
             }}
             
             // 无论点击行、复选框还是键盘操作，只要选中变了，这里都会触发
             onSelectionChanged={(event) => {
-                // 防死循环：如果选中操作是由 API 触发的（比如点击地图导致表格更新），就不再回传
-                if (event.source === 'api') return;
-
-                const selectedRows = event.api.getSelectedRows();
-                // 更新本地状态 (为的是控制删行按钮的禁用状态)
-                if (selectedRows.length > 0) {
-                    setSelectedRecordId(selectedRows[0].id); // 存 ID !
-                } else {
-                    setSelectedRecordId(null);
-                }
-                // 通知父组件
-                if (onRowClick) {
-                    if (selectedRows.length > 0) {
-                        onRowClick(selectedRows[0]);
-                    } else {
-                        // 如果取消选中（点击复选框取消），通知父组件清空
-                        onRowClick(null);
-                    }
-                }
+                const record = event.api.getSelectedRows()[0];
+                setSelectedRecordId(record?.id ?? null);
+                if (event.source !== 'api') onRowClick?.(record ?? null);
             }}
 
             //    ：升级单元格 事件，拦截公式输入并触发微服务计算
@@ -982,7 +899,7 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
         </div> 
         {/* 3.   新增：底部服务器分页条 */}
         {pagination && (
-            <div className="bg-[#111827] border-t border-gray-700 p-2 flex justify-end">
+            <div className="data-pagination">
                 <Pagination 
                     size="small"
                     current={pagination.page}
@@ -992,18 +909,8 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
                         if (onPageChange) onPageChange(page, pageSize);
                     }}
                     showSizeChanger
-                    showTotal={(total) => <span className="text-gray-400">共 {total} 条数据</span>}
-                    className="custom-pagination"
+                    showTotal={(total) => <span className="text-geo-text-secondary">共 {total} 条</span>}
                 />
-                {/* 注入分页条样式适配暗色模式 */}
-                <style>{`
-                    .custom-pagination .ant-pagination-item a { color: #e5e7eb; }
-                    .custom-pagination .ant-pagination-item-active { background: transparent; border-color: #3b82f6; }
-                    .custom-pagination .ant-pagination-item-active a { color: #3b82f6; }
-                    .custom-pagination .ant-pagination-prev .ant-pagination-item-link,
-                    .custom-pagination .ant-pagination-next .ant-pagination-item-link { color: #9ca3af; }
-                    .custom-pagination .ant-select-selector { background: #1f2937 !important; color: white !important; border-color: #374151 !important; }
-                `}</style>
             </div>
         )}
     </div>

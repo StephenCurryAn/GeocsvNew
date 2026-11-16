@@ -1,28 +1,23 @@
-﻿import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import * as maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { bbox } from '@turf/turf';
 //   [ ] 引入所需的 Ant Design 组件
 import { 
-    Button, Tooltip, App, Checkbox, Spin, Select, ConfigProvider, 
-    theme, Popover, Segmented, Slider, Badge , ColorPicker
+    Button, Tooltip, App, Checkbox, Spin, Select, Popover, Segmented, Slider, ColorPicker
 } from 'antd';
 import ChartOverlay, { THEME_COLORS, CONTRAST_PALETTES } from './ChartOverlay';
 import { geoService } from '../../../services/geoService';
 //   [ ] 引入图标
 import { 
     BarChartOutlined, 
-    GlobalOutlined,      
-    BgColorsOutlined,    
-    GatewayOutlined,     
-    CloudServerOutlined, 
+    UnorderedListOutlined,
     DeploymentUnitOutlined, // 网格入口图标
     AppstoreOutlined,       // Hex 图标
     BorderOutlined,         // Square 图标
     ThunderboltOutlined,    // 执行图标
     UndoOutlined,            // 重置图标
     SaveOutlined,
-    FilterOutlined
 } from '@ant-design/icons';
 import { useAnalysisStore } from '../../../stores/useAnalysisStore'
 import { API_BASE_URL, getApiUrl } from '../../../services/apiConfig';
@@ -36,8 +31,35 @@ const { Option, OptGroup } = Select;
 export interface FileLayerInfo {
     fileId: string;
     fileName: string;
-    totalFeatures: number;
+    totalFeatures?: number;
+    loadFailed?: boolean;
 }
+
+type DrawStatus = 'loading' | 'ready' | 'empty' | 'error';
+const PRIMARY_SOURCE = 'uploaded-geo-data';
+const EXTRA_SUFFIXES = ['fill', 'line', 'point'];
+const EMPTY_SELECTION: maplibregl.FilterSpecification = ['==', 1, 0];
+
+function watchLayerSource(map: maplibregl.Map, sourceId: string, update: (status: DrawStatus) => void) {
+    const onData = (event: maplibregl.MapSourceDataEvent) => {
+        if (event.sourceId === sourceId && event.sourceDataType !== 'metadata' && event.isSourceLoaded) update('ready');
+    };
+    const onError = (event: { sourceId?: string; error: Error }) => {
+        if (event.sourceId === sourceId) update('error');
+    };
+    map.on('sourcedata', onData);
+    map.on('error', onError);
+    return () => {
+        map.off('sourcedata', onData);
+        map.off('error', onError);
+    };
+}
+
+function removePrimaryLayers(map: maplibregl.Map) {
+    PRIMARY_MAP_LAYERS.forEach(id => { if (map.getLayer(id)) map.removeLayer(id); });
+    if (map.getSource(PRIMARY_SOURCE)) map.removeSource(PRIMARY_SOURCE);
+}
+
 
 // 多图层颜色调色板（每个图层分配一个主题色）
 const LAYER_PALETTE = [
@@ -289,11 +311,18 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
     const basemapRequest = useRef(0);
     const [basemapLoading, setBasemapLoading] = useState(false);
     const [tiandituStatus, setTiandituStatus] = useState<'checking' | 'available' | 'unconfigured' | 'unavailable'>('checking');
-    const popupRef = useRef<maplibregl.Popup | null>(null);
-    // 缓存上一次的文件名，防止重复 fitBounds
-    const lastFileNameRef = useRef<string>('');
+    const lastFramedFile = useRef('');
+    const activeFileRef = useRef(fileId);
+    activeFileRef.current = fileId;
+    const fullDataRequest = useRef(0);
+    const [hiddenFileIds, setHiddenFileIds] = useState<string[]>([]);
+    const [legendOpen, setLegendOpen] = useState(true);
+    const [primaryStatus, setPrimaryStatus] = useState<{ fileId?: string; status: DrawStatus }>();
+    const [extraStatuses, setExtraStatuses] = useState<Record<string, DrawStatus>>({});
+    const activeHidden = Boolean(fileId && hiddenFileIds.includes(fileId));
 
     const [isMapLoaded, setIsMapLoaded] = useState(false);
+    const [mapStartupFailed, setMapStartupFailed] = useState(false);
     const [numericFields, setNumericFields] = useState<string[]>([]); // 可用于映射的数值字段
     //   [新增] 存储文本型字段，用于分类拆分
     const [stringFields, setStringFields] = useState<string[]>([]);
@@ -306,8 +335,9 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
     const [activeFilterValues, setActiveFilterValues] = useState<(string | number)[]>([]); // 存放当前勾选的值
 
     //  状态管理 - 全量数据相关
-    const [showAll, setShowAll] = useState(false);
-    const [allData, setAllData] = useState<any>(null);
+    const [fullLayer, setFullLayer] = useState<{ fileId: string; data: Awaited<ReturnType<typeof geoService.getAllFileData>> } | null>(null);
+    const allData = fullLayer?.fileId === fileId ? fullLayer?.data : null;
+    const showAll = Boolean(allData);
     const [loading, setLoading] = useState(false);
 
     // 多图层：当前激活的操作目标文件 ID（普通渲染/网格聚合的操作对象）
@@ -316,8 +346,9 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
 
 
     //   [新增] 空间网格相关状态
-    const [isGridMode, setIsGridMode] = useState(false);
-    const [gridData, setGridData] = useState<any>(null); // 存储后端返回的 GeoJSON
+    const [gridResult, setGridResult] = useState<{ fileId: string; data: any } | null>(null);
+    const isGridMode = Boolean(fileId && gridResult?.fileId === fileId);
+    const gridData = isGridMode ? gridResult?.data : null;
     const [gridLoading, setGridLoading] = useState(false);
 
     //   [ ] 状态初始化
@@ -351,82 +382,77 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
         validIds // 新增：获取 validIds 用于地图过滤
     } = useAnalysisStore();
 
-    //  切换文件时的自动清理逻辑
     useEffect(() => {
-        // 只要 fileId 变了，或者 fileName 变了，说明切文件了
-        // 立即重置勾选框，并清空内存中的 allData
-        if (showAll || allData) {
-            console.log('切换文件，自动释放旧文件的全量数据内存...');
-            setShowAll(false);
-            setAllData(null); // 立即释放内存
+        ++fullDataRequest.current;
+        setFullLayer(null);
+        setLoading(false);
+        setActiveField(gridResult?.fileId === fileId ? 'value' : null);
+    }, [fileId]);
+
+    useEffect(() => {
+        setHiddenFileIds(prev => {
+            const remaining = prev.filter(id => selectedFilesInfo.some(file => file.fileId === id));
+            return remaining.length === prev.length ? prev : remaining;
+        });
+    }, [selectedFilesInfo]);
+
+    const colorForFile = (id?: string) => {
+        if (!id) return LAYER_PALETTE[0];
+        const index = selectedFilesInfo.findIndex(file => file.fileId === id);
+        return layerColors[id] || LAYER_PALETTE[Math.max(index, 0) % LAYER_PALETTE.length];
+    };
+
+    const handleShowAllChange = async (e: { target: { checked: boolean } }) => {
+        const request = ++fullDataRequest.current;
+        if (!e.target.checked) {
+            setFullLayer(null);
+            return;
         }
-    }, [fileId, fileName]); // 依赖项加上 fileName 双重保险
+        if (!fileId) return;
 
-    //  处理复选框点击事件
-    const handleShowAllChange = async (e: any) => {
-        const isChecked = e.target.checked;
-        
-        if (isChecked) {
-            // 勾选：去加载数据
-            if (!fileId) {
-                message.warning("无法获取文件ID，无法加载全量数据");
-                return;
-            }
-
-            // 如果已经有缓存，直接切状态，不请求
-            if (allData) {
-                setShowAll(true);
-                return;
-            }
-
-            setLoading(true);
-            try {
-                // 调用后端接口 (需要在 geoService 中实现 getAllFileData)
-                const resdata = await geoService.getAllFileData(fileId);
-                if (resdata) {
-                    setAllData(resdata); // 存入缓存
-                    setShowAll(true);     // 切换状态
-                    message.success(`全量数据加载完成: 共 ${resdata.pagination.total} 个要素`);
-                }
-            } catch (error) {
-                console.error(error);
-                message.error('加载全量数据失败');
-                setShowAll(false); 
-            } finally {
-                setLoading(false);
-            }
-        } else {
-            // 🚫 取消勾选：立即释放内存！
-            console.log('用户取消勾选，释放全量数据内存...');
-            setShowAll(false);
-            setAllData(null); // 设置为 null，垃圾回收会介入
+        setLoading(true);
+        try {
+            const result = await geoService.getAllFileData(fileId);
+            if (request !== fullDataRequest.current || activeFileRef.current !== fileId) return;
+            setFullLayer({ fileId, data: result });
+            message.success('全量数据加载完成，共 ' + result.pagination.total + ' 个要素');
+        } catch (error) {
+            if (request !== fullDataRequest.current || activeFileRef.current !== fileId) return;
+            console.error(error);
+            message.error('加载全量数据失败');
+        } finally {
+            if (request === fullDataRequest.current) setLoading(false);
         }
     };
 
     // 初始化地图
     useEffect(() => {
-        if (mapInstance.current) return;
-
-        // mapContainer.current的初始值是<div ref={mapContainer} className="w-full h-full" />给的
-        // （初始值是这个div）
-        if (mapContainer.current) {
-            // 默认使用第一个底图配置
-            mapInstance.current = new maplibregl.Map({
+        if (mapInstance.current || !mapContainer.current) return;
+        let map: maplibregl.Map;
+        try {
+            map = new maplibregl.Map({
                 container: mapContainer.current,
                 style: initialMapStyle(),
                 center: [118.7969, 32.0603],
-                zoom: 7
+                zoom: 7,
             });
-
-            mapInstance.current.on('load', () => {
-                console.log('  地图加载完成');
-                basemapController.current = new BasemapController(mapInstance.current!, (key, signal) =>
-                    loadBasemap(key, { protomapsKey: PROTOMAPS_KEY, apiBase: API_BASE_URL }, signal));
-                setIsMapLoaded(true);
-                // 确保地图撑满屏幕，防止显示bug
-                mapInstance.current?.resize();
-            });
+        } catch (error) {
+            console.error(error);
+            setMapStartupFailed(true);
+            return;
         }
+
+        setMapStartupFailed(false);
+        mapInstance.current = map;
+        map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'bottom-right');
+        map.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-left');
+        map.on('load', () => {
+            basemapController.current = new BasemapController(map, (key, signal) =>
+                loadBasemap(key, { protomapsKey: PROTOMAPS_KEY, apiBase: API_BASE_URL }, signal));
+            setIsMapLoaded(true);
+            map.resize();
+        });
+
         // 清理函数
         // 当这个地图组件被销毁（例如用户切到别的页面，或者组件被隐藏）时，
         // 彻底清除地图占用的资源，防止内存泄漏
@@ -442,118 +468,79 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
         };
     }, []);
 
-    // ===== 多图层渲染 Effect =====
-    // 当 selectedFilesInfo 变化时，为每个非主文件添加独立图层（MVT 或 GeoJSON 全量）
+    // 每次切换主文件时，其他已选文件继续作为独立图层显示。
     useEffect(() => {
         const map = mapInstance.current;
         if (!map || !isMapLoaded) return;
 
-        // 1. 清理上次渲染的额外图层
-        renderedExtraLayersRef.current.forEach(layerId => {
-            const srcId = `extra-src-${layerId}`;
-            ['fill', 'line', 'point', 'border'].forEach(suffix => {
-                if (map.getLayer(`extra-${layerId}-${suffix}`)) map.removeLayer(`extra-${layerId}-${suffix}`);
+        let disposed = false;
+        const stopWatching: (() => void)[] = [];
+        const extraFiles = selectedFilesInfo.filter(file => file.fileId !== fileId && (file.totalFeatures ?? 0) > 0);
+        renderedExtraLayersRef.current = extraFiles.map(file => file.fileId);
+        setExtraStatuses({});
+
+        for (const file of extraFiles) {
+            const source = 'extra-src-' + file.fileId;
+            const color = colorForFile(file.fileId);
+            const useMVT = (file.totalFeatures ?? 0) > MVT_THRESHOLD;
+            const update = (status: DrawStatus) => {
+                if (disposed) return;
+                setExtraStatuses(prev => {
+                    const current = prev[file.fileId];
+                    if (current === status || (current === 'error' && status === 'ready')) return prev;
+                    return { ...prev, [file.fileId]: status };
+                });
+            };
+
+            if (useMVT) stopWatching.push(watchLayerSource(map, source, update));
+            map.addSource(source, useMVT ? {
+                type: 'vector',
+                tiles: [toMapLibreTileUrl('/files/' + file.fileId + '/tiles/{z}/{x}/{y}')],
+                minzoom: 0,
+                maxzoom: 14,
+            } : {
+                type: 'geojson',
+                data: { type: 'FeatureCollection', features: [] },
             });
-            if (map.getSource(srcId)) map.removeSource(srcId);
-        });
-        renderedExtraLayersRef.current = [];
 
-        if (!selectedFilesInfo || selectedFilesInfo.length <= 1) return;
+            const vectorLayer = useMVT ? { 'source-layer': 'features' } : {};
+            map.addLayer({
+                id: 'extra-' + file.fileId + '-fill', type: 'fill', source, ...vectorLayer,
+                paint: { 'fill-color': color, 'fill-opacity': 0.5 },
+                filter: ['==', '$type', 'Polygon'],
+            });
+            map.addLayer({
+                id: 'extra-' + file.fileId + '-line', type: 'line', source, ...vectorLayer,
+                paint: { 'line-color': color, 'line-width': 2.5, 'line-opacity': 0.9 },
+                filter: ['==', '$type', 'LineString'],
+            });
+            map.addLayer({
+                id: 'extra-' + file.fileId + '-point', type: 'circle', source, ...vectorLayer,
+                paint: { 'circle-radius': 5, 'circle-color': color, 'circle-stroke-width': 1, 'circle-stroke-color': '#fff' },
+                filter: ['==', '$type', 'Point'],
+            });
 
-        // 2. 跳过主激活文件（已由 renderGeoJSON 渲染），只渲染其他文件
-        const extraFiles = selectedFilesInfo.filter(f => f.fileId !== fileId);
-        if (extraFiles.length === 0) return;
-
-        // 3. 为每个额外文件创建图层
-        extraFiles.forEach((fileInfo, idx) => {
-            const color = layerColors[fileInfo.fileId] || LAYER_PALETTE[(idx + 1) % LAYER_PALETTE.length];
-            const srcId = `extra-src-${fileInfo.fileId}`;
-            const layerIdBase = fileInfo.fileId;
-
-            // 智能判断：超过阈值用 MVT，否则加载 GeoJSON
-            const useMVT = fileInfo.totalFeatures > MVT_THRESHOLD;
-
-            if (useMVT) {
-                // MVT 矢量瓦片模式
-                map.addSource(srcId, {
-                    type: 'vector',
-                    tiles: [toMapLibreTileUrl(`/files/${fileInfo.fileId}/tiles/{z}/{x}/{y}`)],
-                    minzoom: 0,
-                    maxzoom: 14,
-                });
-                map.addLayer({
-                    id: `extra-${layerIdBase}-fill`,
-                    type: 'fill',
-                    source: srcId,
-                    'source-layer': 'features',
-                    paint: { 'fill-color': color, 'fill-opacity': 0.5 },
-                    filter: ['==', '$type', 'Polygon'],
-                });
-                map.addLayer({
-                    id: `extra-${layerIdBase}-line`,
-                    type: 'line',
-                    source: srcId,
-                    'source-layer': 'features',
-                    paint: { 'line-color': color, 'line-width': 2, 'line-opacity': 0.8 },
-                    filter: ['==', '$type', 'LineString'],
-                });
-                map.addLayer({
-                    id: `extra-${layerIdBase}-point`,
-                    type: 'circle',
-                    source: srcId,
-                    'source-layer': 'features',
-                    paint: { 'circle-radius': 5, 'circle-color': color, 'circle-stroke-width': 1, 'circle-stroke-color': '#fff' },
-                    filter: ['==', '$type', 'Point'],
-                });
-                console.log(`[MultiLayer] MVT 模式已挂载: ${fileInfo.fileName} (${fileInfo.totalFeatures} 条)`);
-            } else {
-                // 小数据量：先用空 GeoJSON 占位，异步加载数据后补充
-                map.addSource(srcId, {
-                    type: 'geojson',
-                    data: { type: 'FeatureCollection', features: [] },
-                });
-                map.addLayer({
-                    id: `extra-${layerIdBase}-fill`,
-                    type: 'fill',
-                    source: srcId,
-                    paint: { 'fill-color': color, 'fill-opacity': 0.5 },
-                    filter: ['==', '$type', 'Polygon'],
-                });
-                map.addLayer({
-                    id: `extra-${layerIdBase}-line`,
-                    type: 'line',
-                    source: srcId,
-                    paint: { 'line-color': color, 'line-width': 2.5, 'line-opacity': 0.9, 'line-blur': 0.5 },
-                    filter: ['==', '$type', 'LineString'],
-                });
-                map.addLayer({
-                    id: `extra-${layerIdBase}-point`,
-                    type: 'circle',
-                    source: srcId,
-                    paint: { 'circle-radius': 6, 'circle-color': color, 'circle-stroke-width': 1.5, 'circle-stroke-color': '#fff' },
-                    filter: ['==', '$type', 'Point'],
-                });
-
-                // 异步加载全量 GeoJSON
-                geoService.getAllFileData(fileInfo.fileId).then(res => {
-                    if (!res || !map.getSource(srcId)) return;
-                    (map.getSource(srcId) as maplibregl.GeoJSONSource).setData({
-                        type: 'FeatureCollection',
-                        features: res.features || [],
-                    });
-                    console.log(`[MultiLayer] GeoJSON 模式已加载: ${fileInfo.fileName} (${res.features?.length} 条)`);
-                }).catch(e => console.warn(`[MultiLayer] 加载图层失败: ${fileInfo.fileId}`, e));
+            if (!useMVT) {
+                geoService.getAllFileData(file.fileId).then(result => {
+                    if (disposed) return;
+                    const features = result.features;
+                    (map.getSource(source) as maplibregl.GeoJSONSource).setData({ type: 'FeatureCollection', features });
+                    update(features.length ? 'ready' : 'empty');
+                }).catch(() => update('error'));
             }
-
-            renderedExtraLayersRef.current.push(layerIdBase);
-        });
+        }
 
         bringPrimaryLayersToFront(map);
-
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+        return () => {
+            disposed = true;
+            stopWatching.forEach(stop => stop());
+            if (mapInstance.current !== map) return;
+            for (const file of extraFiles) {
+                for (const suffix of EXTRA_SUFFIXES) map.removeLayer('extra-' + file.fileId + '-' + suffix);
+                map.removeSource('extra-src-' + file.fileId);
+            }
+        };
     }, [selectedFilesInfo, isMapLoaded, fileId, layerColors]);
-
-
 
     //   [ ] 字段提取逻辑分离：
     // 1. numericFields (数值): 从 displayData 提取，用于当前地图的颜色渲染（支持网格的 value 字段）
@@ -645,84 +632,6 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
         setActiveFilterValues(uniqueVals); 
     }, [activeField, displayData, isGridMode, stringFields]);
 
-// =========================================================================
-    // 🌟 核心修复一：全图层覆盖 + 语义化智能遮罩 (不误伤背景边界图层)
-    // =========================================================================
-    useEffect(() => {
-        const map = mapInstance.current;
-        if (!map || !isMapLoaded) return;
-
-        const syncAllFilters = () => {
-            // 1. 获取当前地图上所有的图层 ID（主图层 + 所有的副图层）
-            const allLayers: { id: string, type: 'Polygon' | 'LineString' | 'Point' }[] = [
-                { id: 'geo-fill-layer', type: 'Polygon' },
-                { id: 'geo-polygon-border', type: 'Polygon' },
-                { id: 'geo-linestring-main', type: 'LineString' },
-                { id: 'geo-point-layer', type: 'Point' }
-            ];
-            
-            renderedExtraLayersRef.current.forEach(baseId => {
-                allLayers.push({ id: `extra-${baseId}-fill`, type: 'Polygon' });
-                allLayers.push({ id: `extra-${baseId}-line`, type: 'LineString' });
-                allLayers.push({ id: `extra-${baseId}-point`, type: 'Point' });
-            });
-
-            // 2. 构建智能的基础条件数组
-            let baseFilterConditions: any[] = [];
-
-            // A. 巴中市 validIds 过滤
-            const shouldApplyValidIdMask = validIds && validIds.length > 0 && !(isMapLinkageEnabled && pivotConfig.groupByCol);
-            if (shouldApplyValidIdMask) {
-                const idExp = buildFeatureIdFilter(validIds);
-                
-                // 【绝杀逻辑】：只对带有分析字段(如Slope_C)的图层应用遮罩！其他图层直接放行(true)
-                if (pivotConfig?.groupByRow) {
-                    baseFilterConditions.push(['any', ['!has', pivotConfig.groupByRow], idExp]);
-                } else {
-                    baseFilterConditions.push(idExp);
-                }
-            }
-
-            // B. 图表高亮联动过滤
-            if (isMapLinkageEnabled && highlightedCategory && pivotConfig.groupByRow) {
-                const highlightExp = [
-                    'any',
-                    ['==', pivotConfig.groupByRow, highlightedCategory],
-                    ['==', pivotConfig.groupByRow, String(highlightedCategory)],
-                    ['==', pivotConfig.groupByRow, Number(highlightedCategory)]
-                ];
-                // 同样，只针对包含该分析字段的图层生效
-                baseFilterConditions.push(['any', ['!has', pivotConfig.groupByRow], highlightExp]);
-            }
-
-            // C. 侧边栏基础属性过滤
-            const isStringField = activeField ? stringFields.includes(activeField) : false;
-            if (!isGridMode && activeField && activeField !== 'none' && isStringField) {
-                if (activeFilterValues.length === 0) {
-                    baseFilterConditions.push(['==', 'id', 'nothing_selected']);
-                } else {
-                    baseFilterConditions.push((['in', activeField] as any[]).concat(activeFilterValues));
-                }
-            }
-
-        // 3. 循环遍历所有图层并应用过滤
-        allLayers.forEach(layerInfo => {
-            if (map.getLayer(layerInfo.id)) {
-                // 拼接基础的图层几何类型判断 + 我们上面的动态条件
-                const finalFilter = ['all', ['==', '$type', layerInfo.type], ...baseFilterConditions];
-                
-                // 🌟 【核心修复】：直接使用 as any，彻底强制闭嘴！
-                map.setFilter(layerInfo.id, finalFilter as any); 
-            }
-        });
-        };
-
-        syncAllFilters();
-    }, [
-        validIds, highlightedCategory, isMapLinkageEnabled, pivotConfig.groupByRow, pivotConfig.groupByCol,
-        activeFilterValues, activeField, stringFields, isGridMode, isMapLoaded
-    ]);
-
     //   [新增] 全选/清空处理函数
     const handleSelectAllCategories = () => {
         if (gridConfig.categoryFields.length === stringFields.length) {
@@ -752,11 +661,8 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
             const res = await geoService.generateGridAggregation(fileId, gridConfig);
             
             if (res.success && res.data) {
-                setGridData(res.data); // 保存网格 GeoJSON
-                setIsGridMode(true);   // 进入网格模式
-                
-                // 2. 自动设置渲染字段为聚合结果 'value'
-                setActiveField('value'); 
+                setGridResult({ fileId, data: res.data });
+                if (activeFileRef.current === fileId) setActiveField('value');
                 
                 message.success(`生成成功: ${res.data.features.length} 个网格单元`);
             } else {
@@ -773,8 +679,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
 
     //   [新增] 重置网格，切回原始数据
     const handleResetGrid = () => {
-        setIsGridMode(false);
-        setGridData(null);
+        setGridResult(null);
         setActiveField(null); // 清空字段，让用户重新选
         message.info("已切换回原始图层");
     };
@@ -787,25 +692,11 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
         const map = mapInstance.current;
         if (!map || !map.getStyle()) return;
 
-        const sourceId = 'uploaded-geo-data';
-
-        // 清理旧图层 (注意名字变了)
-        const layersToRemove = [
-            'geo-fill-layer', 
-            'geo-polygon-border', //   新图层名
-            'geo-linestring-main', //   新图层名
-            'geo-line-layer', // 旧图层名(兼容清理)
-            'geo-point-layer', 
-            'geo-highlight-fill', 'geo-highlight-line', 'geo-highlight-point'
-        ];
-        layersToRemove.forEach(layer => {
-            if (map.getLayer(layer)) map.removeLayer(layer);
-        });
-        if (map.getSource(sourceId)) map.removeSource(sourceId);
+        const sourceId = PRIMARY_SOURCE;
 
         // 判断是否应该使用 MVT 矢量瓦片模式
         const useMVT = fileId && !isGridMode;
-        const mainLayerColor = layerColors[fileId as string] || LAYER_PALETTE[0];
+        const mainLayerColor = colorForFile(fileId);
         if (useMVT) {
             console.log(`[MapView] 启用 MVT 极速矢量瓦片渲染模式: ${fileId}`);
             map.addSource(sourceId, {
@@ -898,14 +789,11 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
 
         bringPrimaryLayersToFront(map);
 
-        if (fileName !== lastFileNameRef.current) {
-            lastFileNameRef.current = fileName; 
-            // 若为 GeoJSON 则使用 turf bbox，若为 MVT 目前我们暂不移动镜头（或应该发请求去后获取 BBox）
-            if (geoJSON && geoJSON.features && geoJSON.features.length > 0) {
-                try {
-                    const bounds = bbox(geoJSON) as [number, number, number, number];
-                    map.fitBounds(bounds, { padding: 50, maxZoom: 14, duration: 1500 });
-                } catch(e) { console.warn('BBox calc failed', e) }
+        if (fileId && fileId !== lastFramedFile.current && geoJSON.features.some((feature: any) => feature.geometry)) {
+            lastFramedFile.current = fileId;
+            const bounds = bbox(geoJSON) as [number, number, number, number];
+            if (bounds.every(Number.isFinite)) {
+                map.fitBounds(bounds, { padding: 42, maxZoom: 14, duration: 600 });
             }
         }
     };
@@ -929,7 +817,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
         const handleClick = (e: any) => {
             if (e.features && e.features.length > 0) {
                 const feature = e.features[0];
-                const props = feature.properties;
+                const props = { ...feature.properties, id: feature.properties.id ?? feature.id };
                 // ... (props.cp 处理逻辑保持不变)
                 if (typeof props.cp === 'string') { try { props.cp = JSON.parse(props.cp); } catch (err) {} }
                 if (!props.cp || !Array.isArray(props.cp)) {
@@ -1262,7 +1150,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
 
         // 1. 如果没有选字段，恢复默认颜色 (全部全亮显示)
         if (!activeField || activeField === 'none') {
-            const mainLayerColor = fileId ? (layerColors[fileId] || LAYER_PALETTE[0]) : '#00e5ff';
+            const mainLayerColor = colorForFile(fileId);
             if (map.getLayer('geo-fill-layer')) {
                 map.setPaintProperty('geo-fill-layer', 'fill-color', mainLayerColor);
                 map.setPaintProperty('geo-fill-layer', 'fill-outline-color', 'rgba(0,0,0,0)'); 
@@ -1400,13 +1288,119 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
 
 //   [ ] Effect 1: 仅处理“数据几何渲染” (Geometry)
     // 只有当文件数据变化时，重绘
+    const activeTotal = selectedFilesInfo.find(file => file.fileId === fileId)?.totalFeatures;
     useEffect(() => {
-        if (isMapLoaded && displayData) {
-            renderGeoJSON(displayData);
-            updateLinkageColors(); // 初始绘制后立即上色
+        const map = mapInstance.current;
+        if (!map || !isMapLoaded) return;
+        removePrimaryLayers(map);
+        if (!displayData || (!isGridMode && activeTotal === 0)) {
+            lastFramedFile.current = '';
+            return;
         }
-    }, [displayData, isMapLoaded]); 
 
+        setPrimaryStatus({ fileId, status: isGridMode && !displayData.features.length ? 'empty' : 'loading' });
+        const stopWatching = watchLayerSource(map, PRIMARY_SOURCE, status => {
+            setPrimaryStatus(prev => {
+                if (prev?.fileId === fileId && (prev?.status === 'empty' || prev?.status === status || (prev?.status === 'error' && status === 'ready'))) return prev;
+                return { fileId, status };
+            });
+        });
+        renderGeoJSON(displayData);
+        updateLinkageColors();
+        updateChoroplethColors();
+        return stopWatching;
+    }, [displayData, fileId, activeTotal, isGridMode, isMapLoaded]);
+
+    useEffect(() => {
+        const map = mapInstance.current;
+        if (!map || !isMapLoaded) return;
+        const setVisibility = (id: string, hidden: boolean) => {
+            if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', hidden ? 'none' : 'visible');
+        };
+        PRIMARY_MAP_LAYERS.forEach(id => setVisibility(id, activeHidden));
+        for (const id of renderedExtraLayersRef.current) {
+            EXTRA_SUFFIXES.forEach(suffix => setVisibility('extra-' + id + '-' + suffix, hiddenFileIds.includes(id)));
+        }
+    }, [isMapLoaded, fileId, displayData, activeTotal, isGridMode, selectedFilesInfo, layerColors, hiddenFileIds, activeHidden]);
+
+// =========================================================================
+    // 🌟 核心修复一：全图层覆盖 + 语义化智能遮罩 (不误伤背景边界图层)
+    // =========================================================================
+    useEffect(() => {
+        const map = mapInstance.current;
+        if (!map || !isMapLoaded) return;
+
+        const syncAllFilters = () => {
+            // 1. 获取当前地图上所有的图层 ID（主图层 + 所有的副图层）
+            const allLayers: { id: string, type: 'Polygon' | 'LineString' | 'Point' }[] = [
+                { id: 'geo-fill-layer', type: 'Polygon' },
+                { id: 'geo-polygon-border', type: 'Polygon' },
+                { id: 'geo-linestring-main', type: 'LineString' },
+                { id: 'geo-point-layer', type: 'Point' }
+            ];
+
+            renderedExtraLayersRef.current.forEach(baseId => {
+                allLayers.push({ id: `extra-${baseId}-fill`, type: 'Polygon' });
+                allLayers.push({ id: `extra-${baseId}-line`, type: 'LineString' });
+                allLayers.push({ id: `extra-${baseId}-point`, type: 'Point' });
+            });
+
+            // 2. 构建智能的基础条件数组
+            let baseFilterConditions: any[] = [];
+
+            // A. 巴中市 validIds 过滤
+            const shouldApplyValidIdMask = validIds && validIds.length > 0 && !(isMapLinkageEnabled && pivotConfig.groupByCol);
+            if (shouldApplyValidIdMask) {
+                const idExp = buildFeatureIdFilter(validIds);
+
+                // 【绝杀逻辑】：只对带有分析字段(如Slope_C)的图层应用遮罩！其他图层直接放行(true)
+                if (pivotConfig?.groupByRow) {
+                    baseFilterConditions.push(['any', ['!has', pivotConfig.groupByRow], idExp]);
+                } else {
+                    baseFilterConditions.push(idExp);
+                }
+            }
+
+            // B. 图表高亮联动过滤
+            if (isMapLinkageEnabled && highlightedCategory && pivotConfig.groupByRow) {
+                const highlightExp = [
+                    'any',
+                    ['==', pivotConfig.groupByRow, highlightedCategory],
+                    ['==', pivotConfig.groupByRow, String(highlightedCategory)],
+                    ['==', pivotConfig.groupByRow, Number(highlightedCategory)]
+                ];
+                // 同样，只针对包含该分析字段的图层生效
+                baseFilterConditions.push(['any', ['!has', pivotConfig.groupByRow], highlightExp]);
+            }
+
+            // C. 侧边栏基础属性过滤
+            const isStringField = activeField ? stringFields.includes(activeField) : false;
+            if (!isGridMode && activeField && activeField !== 'none' && isStringField) {
+                if (activeFilterValues.length === 0) {
+                    baseFilterConditions.push(['==', 'id', 'nothing_selected']);
+                } else {
+                    baseFilterConditions.push((['in', activeField] as any[]).concat(activeFilterValues));
+                }
+            }
+
+        // 3. 循环遍历所有图层并应用过滤
+        allLayers.forEach(layerInfo => {
+            if (map.getLayer(layerInfo.id)) {
+                // 拼接基础的图层几何类型判断 + 我们上面的动态条件
+                const finalFilter = ['all', ['==', '$type', layerInfo.type], ...baseFilterConditions];
+
+                // 🌟 【核心修复】：直接使用 as any，彻底强制闭嘴！
+                map.setFilter(layerInfo.id, finalFilter as any);
+            }
+        });
+        };
+
+        syncAllFilters();
+    }, [
+        validIds, highlightedCategory, isMapLinkageEnabled, pivotConfig.groupByRow, pivotConfig.groupByCol,
+        activeFilterValues, activeField, stringFields, isGridMode, isMapLoaded,
+        displayData, fileId, selectedFilesInfo, layerColors
+    ]);
 
     //   [ ] Effect 2: 仅处理“样式/颜色更新” (Paint)
     // 当联动开关、高亮状态、透视数据、或主题色变化时，只更新颜色
@@ -1417,7 +1411,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
     }, [
         isMapLinkageEnabled, pivotData, pivotConfig, 
         highlightedCategory, mapColorTheme, //   依赖新状态
-        activeField, activeScheme
+        activeField, activeScheme, layerColors
     ]);
     
     // 监听可视化配置变化（字段、配色），只更新 Paint Property，不重绘 Geometry
@@ -1425,7 +1419,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
         if (isMapLoaded && data) {
             updateChoroplethColors();
         }
-    }, [activeField, activeScheme, activeFilterValues, isMapLoaded]);
+    }, [activeField, activeScheme, activeFilterValues, isMapLoaded, layerColors, selectedFilesInfo]);
     
     useEffect(() => {
         const map = mapInstance.current;
@@ -1456,6 +1450,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
 
     useEffect(() => {
         const abort = new AbortController();
+        let disposed = false;
         const timeout = setTimeout(() => abort.abort(), 8000);
         fetch(getApiUrl('/basemaps'), { signal: abort.signal })
             .then(async response => {
@@ -1464,110 +1459,57 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                 if (typeof body.data?.tianditu?.configured !== 'boolean') throw new Error('invalid catalog');
                 if (!abort.signal.aborted) setTiandituStatus(body.data.tianditu.configured ? 'available' : 'unconfigured');
             })
-            .catch(() => { setTiandituStatus('unavailable'); })
+            .catch(() => { if (!disposed) setTiandituStatus('unavailable'); })
             .finally(() => clearTimeout(timeout));
-        return () => { clearTimeout(timeout); abort.abort(); };
+        return () => { disposed = true; clearTimeout(timeout); abort.abort(); };
     }, []);
 
-    // 监听 selectedFeature 高亮 (保持原有逻辑)
+    // 重建主图层（如分页或切换网格）后也要恢复当前选中的描边。
     useEffect(() => {
         const map = mapInstance.current;
         if (!map || !isMapLoaded) return;
-        if (!selectedFeature) {
-            if (map.getLayer('geo-highlight-fill')) map.setFilter('geo-highlight-fill', ['==', 'id', 'nothing']);
-            if (map.getLayer('geo-highlight-line')) map.setFilter('geo-highlight-line', ['==', 'id', 'nothing']);
-            popupRef.current?.remove();
-            return;
+        let filter: maplibregl.FilterSpecification = EMPTY_SELECTION;
+        if (selectedFeature?.id != null) {
+            const id = String(selectedFeature.id);
+            filter = ['any',
+                ['==', ['to-string', ['id']], id],
+                ...FEATURE_ID_FIELDS.map<maplibregl.ExpressionSpecification>(field => ['==', ['to-string', ['get', field]], id]),
+            ];
+        } else if (selectedFeature?.name) {
+            filter = ['==', 'name', selectedFeature.name];
         }
-        const uniqueKey = selectedFeature.id ? 'id' : 'name';
-        const uniqueVal = selectedFeature.id || selectedFeature.name;
-        if (uniqueVal) {
-            // 防止 ID 类型不匹配 (String vs Number)
-            // 如果是 ID，我们让它同时匹配 字符串形式 和 数字形式
-            if (uniqueKey === 'id') {
-                map.setFilter('geo-highlight-fill', [
-                    // 'any' 相当于 JavaScript 中的 ||（逻辑或）
-                    'any', 
-                    ['==', ['to-string', ['get', 'id']], String(uniqueVal)], // 把地图里的ID转字符串对比
-                    ['==', ['get', 'id'], uniqueVal] // 或者直接对比
-                ]);
-                map.setFilter('geo-highlight-line', [
-                    'any', 
-                    ['==', ['to-string', ['get', 'id']], String(uniqueVal)],
-                    ['==', ['get', 'id'], uniqueVal]
-                ]);
-            } else {
-                // 只有 name 的情况 (旧逻辑)
-                map.setFilter('geo-highlight-fill', ['==', uniqueKey, uniqueVal]);
-                map.setFilter('geo-highlight-line', ['==', uniqueKey, uniqueVal]);
-            }
+        for (const id of ['geo-highlight-fill', 'geo-highlight-line', 'geo-highlight-point']) {
+            if (map.getLayer(id)) map.setFilter(id, filter);
         }
-        // Popup 逻辑
-        // 这里的 cp 现在肯定是数组了，因为我们在 click 事件里修复了它
-        let centerCoord: [number, number] | null = null;
-        // 使用数据自带的 cp (center point) 字段
-        if (selectedFeature.cp && Array.isArray(selectedFeature.cp)) {
-            centerCoord = selectedFeature.cp as [number, number];
+    }, [selectedFeature, isMapLoaded, displayData, fileId, activeTotal, isGridMode]);
+
+    useEffect(() => {
+        const map = mapInstance.current;
+        const cp = selectedFeature?.cp;
+        if (!map || !isMapLoaded || activeHidden || !Array.isArray(cp) || !cp.slice(0, 2).every(Number.isFinite) || cp.length < 2) return;
+        const center: [number, number] = [cp[0], cp[1]];
+        const content = document.createElement('div');
+        content.className = 'map-feature-details';
+        const heading = document.createElement('strong');
+        heading.textContent = String(selectedFeature.name ?? '要素') + (selectedFeature.id == null ? '' : ' · #' + selectedFeature.id);
+        content.append(heading);
+        const attributes = document.createElement('dl');
+        for (const [key, value] of Object.entries(selectedFeature)) {
+            if (key === 'id' || key === 'cp' || key.startsWith('_')) continue;
+            const name = document.createElement('dt');
+            name.textContent = key;
+            const definition = document.createElement('dd');
+            definition.textContent = String(value ?? '—');
+            attributes.append(name, definition);
         }
+        content.append(attributes);
 
-        if (centerCoord) {
-            // 移除旧弹窗
-            popupRef.current?.remove();
-
-            // 显式提取 ID，确保它不被 ignoreKeys 过滤掉，或者单独显示
-            const displayId = selectedFeature.id || 'N/A';
-
-            // 生成弹窗内容 HTML (过滤掉不想显示的内部字段)
-            // const ignoreKeys = ['_geometry', '_geometry_type'];
-            const rowsHtml = Object.entries(selectedFeature)
-                // 过滤掉 id (因为我们在标题栏或置顶显示它)，过滤掉 geometry 相关
-                .filter(([key]) => {
-                    // 1. 不显示 id (因为标题栏有了)
-                    if (key === 'id') return false;
-                    // 2.  不显示任何以 _ 开头的临时字段
-                    if (key.startsWith('_')) return false;
-                    // 3. 不显示 cp (中心点坐标)
-                    if (key === 'cp') return false;
-                    
-                    return typeof key === 'string';
-                })
-                .map(([key, val]) => `
-                    <div class="flex justify-between py-1 border-b border-gray-700 last:border-0">
-                        <span class="text-gray-400 font-mono text-xs uppercase">${key}</span>
-                        <span class="text-cyan-400 font-bold text-xs ml-4 text-right">${val}</span>
-                    </div>
-                `).join('');
-
-            const popupContent = `
-                <div class="min-w-50">
-                    <div class="text-sm font-bold text-white mb-1 flex items-center justify-between">
-                        <div class="flex items-center">
-                            <span class="w-2 h-2 rounded-full bg-cyan-400 mr-2 shadow-[0_0_8px_#00e5ff]"></span>
-                            ${selectedFeature.name || 'Feature'}
-                        </div>
-                        <span class="text-xs font-mono text-gray-500">ID: ${displayId}</span>
-                    </div>
-                    <div class="w-full h-px bg-cyan-500/50 mb-2"></div>
-                    <div>${rowsHtml}</div>
-                </div>
-            `;
-
-            // 创建自定义样式的弹窗
-            popupRef.current = new maplibregl.Popup({
-                closeButton: true,
-                closeOnClick: false,
-                className: 'dark-cool-popup', // 对应下面的 CSS 类名
-                maxWidth: '300px',
-                offset: 15
-            })
-            .setLngLat(centerCoord)
-            .setHTML(popupContent)
-            .addTo(map);
-
-            // 飞到该位置
-            map.flyTo({ center: centerCoord, zoom: 16, speed: 1.5 });
-        }
-    }, [selectedFeature, isMapLoaded]);
+        const popup = new maplibregl.Popup({
+            closeOnClick: false, className: 'workbench-map-popup', maxWidth: '260px', offset: 12,
+        }).setLngLat(center).setDOMContent(content).addTo(map);
+        map.easeTo({ center, zoom: Math.max(14, map.getZoom()), duration: 380 });
+        return () => { popup.remove(); };
+    }, [selectedFeature, isMapLoaded, activeHidden]);
 
     //   [新增] 导出处理函数
     const handleExport = async () => {
@@ -1588,7 +1530,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
             
             {/* 1. 形状选择 */}
             <div className="flex justify-between items-center">
-                <span className="text-gray-400 text-xs">网格形状</span>
+                <span className="text-geo-text-secondary text-xs">网格形状</span>
                 <Segmented
                     value={gridConfig.shape}
                     onChange={(val: any) => setGridConfig(prev => ({ ...prev, shape: val }))}
@@ -1597,16 +1539,15 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                         { label: '正方形', value: 'square', icon: <BorderOutlined /> }
                     ]}
                     size="small"
-                    className="bg-gray-700 text-gray-200"
                 />
             </div>
 
             {/* 2. 大小滑块 */}
             <div>
-                <div className="flex justify-between text-xs text-gray-400 mb-1">
+                <div className="flex justify-between text-xs text-geo-text-secondary mb-1">
                     <span>网格大小 (Radius)</span>
                     {/*   [ ] 优化显示逻辑，小于1km显示米 */}
-                    <span className="text-cyan-400 font-mono">
+                    <span className="text-geo-accent font-mono">
                         {gridConfig.size < 1 
                             ? `${Math.round(gridConfig.size * 1000)} m` 
                             : `${gridConfig.size} km`}
@@ -1620,14 +1561,13 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                     value={gridConfig.size}
                     onChange={(val) => setGridConfig(prev => ({ ...prev, size: val }))}
                     tooltip={{ open: false }}
-                    styles={{ track: { background: '#00e5ff' }, handle: { borderColor: '#00e5ff' } }}
                 />
             </div>
 
             {/* 3. 聚合方式 */}
             <div className="grid grid-cols-2 gap-2">
                 <div>
-                    <span className="text-gray-400 text-xs block mb-1">聚合模式</span>
+                    <span className="text-geo-text-secondary text-xs block mb-1">聚合模式</span>
                     <Select
                         size="small"
                         className="w-full"
@@ -1642,13 +1582,11 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                             { label: '最大 (Max)', value: 'max' },
                             { label: '最小 (Min)', value: 'min' },
                         ]}
-                        //   [修复] 使用 styles.popup.root 替代 dropdownStyle
-                        styles={{ popup: { root: { border: '1px solid #334155' } } }}
                     />
                 </div>
                 {/* 级联显示字段选择 */}
                 <div>
-                    <span className="text-gray-400 text-xs block mb-1">聚合字段</span>
+                    <span className="text-geo-text-secondary text-xs block mb-1">聚合字段</span>
                     <Select
                         size="small"
                         className="w-full"
@@ -1658,24 +1596,23 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                         value={gridConfig.targetField}
                         onChange={(val) => setGridConfig(prev => ({ ...prev, targetField: val }))}
                         options={numericFields.filter(f => f !== 'value').map(f => ({ label: f, value: f }))} 
-                        styles={{ popup: { root: { border: '1px solid #334155' } } }}
                     />
                 </div>
             </div>
 
-            <div className="w-full h-px bg-gray-700 my-1"></div>
+            <div className="w-full h-px bg-geo-border my-1"></div>
 
 
             {/*   [ ] 导出选项：支持多选 + 全选 */}
             {isGridMode && (
-                <div className="mb-2 bg-gray-800/50 p-2 rounded border border-gray-700">
+                <div className="mb-2 bg-geo-dark p-2 rounded border border-geo-border">
                     <div className="flex justify-between items-center mb-1">
-                        <span className="text-gray-400 text-xs">
+                        <span className="text-geo-text-secondary text-xs">
                             分类拆分 (可多选)
                         </span>
                         {/* 全选按钮 */}
                         <a 
-                            className="text-xs text-cyan-500 hover:text-cyan-400 cursor-pointer select-none"
+                            className="text-xs text-geo-accent cursor-pointer select-none"
                             onClick={handleSelectAllCategories}
                         >
                             {gridConfig.categoryFields.length === stringFields.length && stringFields.length > 0 ? '清空' : '全选'}
@@ -1693,10 +1630,6 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                         value={gridConfig.categoryFields}
                         onChange={(val) => setGridConfig(prev => ({ ...prev, categoryFields: val }))}
                         options={stringFields.map(f => ({ label: f, value: f }))}
-                        //   [ ] 移除报错的 selector 属性
-                        styles={{ 
-                            popup: { root: { border: '1px solid #334155' } } 
-                        }}
                     />
                 </div>
             )}
@@ -1719,7 +1652,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                         size="small" 
                         icon={<SaveOutlined />}
                         onClick={handleExport}
-                        className="flex-1 bg-green-600 hover:bg-green-500 border-none shadow-lg shadow-green-900/50"
+                        className="flex-1"
                     >
                         保存结果
                     </Button>
@@ -1727,356 +1660,183 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
             ) : (
                 <Button 
                     type="primary" block size="small" icon={<ThunderboltOutlined />}
-                    className="bg-linear-to-r from-cyan-600 to-blue-600 border-none shadow-lg shadow-blue-900/50 hover:shadow-cyan-500/50 transition-all"
                     onClick={handleGenerateGrid}
                     loading={gridLoading}
                 >
-                    生成网格 (Generate)
+                    生成网格
                 </Button>
             )}
         </div>
     );
 
     return (
-        <div className="w-full h-full relative">
-            
-            {/*   [新增] 顶部进度条 (全局状态反馈) */}
-            {gridLoading && (
-                <div className="absolute top-0 left-0 w-full h-1 bg-gray-800 z-50">
-                    <div className="h-full bg-cyan-400 animate-progress-indeterminate shadow-[0_0_10px_#00e5ff]"></div>
-                </div>
-            )}
-            {/*  加载遮罩层 - 当请求全量数据时显示 */}
-            {loading && (
-                <div className="absolute inset-0 bg-black/60 z-50 flex flex-col items-center justify-center backdrop-blur-sm">
-                    <Spin size="large" />
-                    <span className="text-cyan-400 mt-3 font-mono">正在加载全量数据...</span>
-                </div>
-            )}
-
-            {/* 地图容器 */}
-            <div ref={mapContainer} className="w-full h-full" />
-
-            {/*   [ ] 文件名提示 (调整位置和样式，使其与下方工具条对齐) */}
-            {fileName && (
-                <div className="absolute top-4 left-4 z-10 animate-fade-in-down">
-                     <div className="bg-gray-900/80 backdrop-blur-md text-cyan-400 px-4 py-1.5 rounded-full border border-cyan-500/30 text-xs font-mono shadow-[0_0_10px_rgba(0,229,255,0.2)] flex items-center gap-2">
-                        <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse"></span>
-                        VISUALIZING: <span className="text-white font-bold">{fileName}</span>
-                     </div>
-                </div>
-            )}
-
-            {/*   [ ] HUD Toolbar: 包含网格聚合模块 */}
-            <div className="absolute top-16 left-4 z-10 transition-all duration-300 ease-in-out">
-                <ConfigProvider
-                    theme={{
-                        algorithm: theme.darkAlgorithm,
-                        token: {
-                            colorBgContainer: 'transparent',
-                            colorBorder: 'transparent',
-                            colorPrimary: '#00e5ff',
-                            colorTextPlaceholder: 'rgba(255,255,255,0.4)',
-                            controlHeight: 32,
-                        },
-                        components: {
-                            Select: {
-                                selectorBg: 'transparent',
-                                colorBgElevated: 'rgba(17, 24, 39, 0.95)',
-                                optionSelectedBg: 'rgba(6, 182, 212, 0.2)',
-                            },
-                            Segmented: {
-                                itemSelectedBg: '#00e5ff',
-                                itemSelectedColor: '#000',
-                            }
-                        }
-                    }}
+        <div className="map-workbench">
+            <div className="map-toolbar" aria-label="地图工具">
+                <Select
+                    aria-label="底图"
+                    size="small"
+                    popupMatchSelectWidth={false}
+                    value={activeBasemap}
+                    onChange={handleBasemapChange}
+                    className="map-basemap-select"
+                    loading={basemapLoading}
+                    disabled={!isMapLoaded}
                 >
-                    <div className="bg-gray-900/80 backdrop-blur-xl border border-cyan-500/30 px-2 py-1.5 rounded-full shadow-[0_4px_20px_rgba(0,0,0,0.5)] flex items-center gap-1 hover:border-cyan-400/60 transition-colors">
-                        
-                        {/* 1. 底图切换 */}
-                        <Tooltip title="切换底图风格">
-                            <div className="flex items-center px-2">
-                                <GlobalOutlined className="text-cyan-500 mr-2 text-lg" />
-                                <Select
-                                    variant="borderless"
-                                    popupMatchSelectWidth={false}
-                                    value={activeBasemap}
-                                    onChange={handleBasemapChange}
-                                    className="w-44 font-bold text-gray-200"
-                                    loading={basemapLoading}
-                                    disabled={!isMapLoaded}
-                                    suffixIcon={null}
-                                    styles={{ popup: { root: { border: '1px solid #334155', borderRadius: '8px' } } }}
-                                >
-                                    {BASEMAP_OPTIONS.map(b => {
-                                        const reason = b.key.startsWith('protomaps-') && !PROTOMAPS_KEY ? '未配置'
-                                            : b.key.startsWith('tianditu-') && tiandituStatus !== 'available'
-                                                ? ({ checking: '检查中', unconfigured: '未配置', unavailable: '服务不可用' } as const)[tiandituStatus as 'checking' | 'unconfigured' | 'unavailable']
-                                                : '';
-                                        return <Option key={b.key} value={b.key} disabled={Boolean(reason)}>{b.name}{reason ? `（${reason}）` : ''}</Option>;
-                                    })}
-                                </Select>
-                            </div>
-                        </Tooltip>
-
-                        <div className="w-px h-5 bg-gray-600 mx-1" />
-
-                        {/*   [新增] 2. 空间网格聚合模块 */}
-                        <Popover 
-                            content={gridConfigContent} 
-                            trigger="hover" 
-                            placement="bottom"
-                            //   [删除] styles={{ body: ... }} 或 overlayInnerStyle
-                            //   [新增] 使用 CSS 类名
-                            overlayClassName="grid-config-popover"
-                            arrow={false}
-                        >
-                            <div className={`flex items-center px-3 cursor-pointer rounded-full transition-all ${isGridMode ? 'bg-cyan-500/20 text-cyan-300' : 'hover:bg-white/10 text-gray-300'}`}>
-                                <Badge dot={isGridMode} color="#00e5ff" offset={[-2, 2]}>
-                                    <DeploymentUnitOutlined className={`text-lg mr-2 ${isGridMode ? 'animate-pulse' : 'text-yellow-500'}`} />
-                                </Badge>
-                                <span className="text-xs font-bold whitespace-nowrap">
-                                    {isGridMode ? '网格视图' : '网格聚合'}
-                                </span>
-                            </div>
-                        </Popover>
-
-                        <div className="w-px h-5 bg-gray-600 mx-1" />
-
-                        {/* 3. 普通渲染 (互斥逻辑) */}
-                        <Tooltip title={isGridMode ? "网格模式下不可用 (已自动映射)" : "选择字段进行着色"}>
-                            <div className={`flex items-center px-2 transition-opacity ${isGridMode ? 'opacity-50 cursor-not-allowed' : ''}`}>
-                                <GatewayOutlined className="text-purple-400 mr-2 text-lg" />
-                                <Select
-                                    variant="borderless"
-                                    popupMatchSelectWidth={false}
-                                    //   [ ] 提示文案变化
-                                    placeholder={isGridMode ? "聚合值" : "普通渲染"}
-                                    value={activeField}
-                                    onChange={setActiveField}
-                                    allowClear={!isGridMode}
-                                    //   [ ] 禁用逻辑
-                                    disabled={isGridMode || (numericFields.length === 0 && stringFields.length === 0)} 
-                                    className="min-w-25 max-w-35 text-gray-200"
-                                    styles={{ popup: { root: { border: '1px solid #334155', borderRadius: '8px' } } }}
-                                >
-                                    <Option value="none">-- 默认纯色 --</Option>
-
-                                    {/*   [  2] 分组渲染数值字段 */}
-                                    {numericFields.length > 0 && (
-                                        <OptGroup label="数值字段 (渐变映射)">
-                                            {numericFields.map(field => (
-                                                <Option key={field} value={field}>{field}</Option>
-                                            ))}
-                                        </OptGroup>
-                                    )}
-                                    
-                                    {/*   [  3] 分组渲染文本字段 */}
-                                    {stringFields.length > 0 && (
-                                        <OptGroup label="文本字段 (分类映射)">
-                                            {stringFields.map(field => (
-                                                <Option key={field} value={field}>{field}</Option>
-                                            ))}
-                                        </OptGroup>
-                                    )}
-
-                                    {/* 网格模式下可能包含 value 字段 */}
-                                    {isGridMode && <Option value="value">聚合值 (Value)</Option>}
-                                </Select>
-                            </div>
-                        </Tooltip>
-
-                        {/* 4. 颜色方案 */}
-                        {activeField && activeField !== 'none' && (
-                            <>
-                                <div className="w-px h-5 bg-gray-600 mx-1" />
-                                <Tooltip title="颜色方案">
-                                    <div className="flex items-center px-2 animate-slide-in-left">
-                                        <BgColorsOutlined className="text-pink-400 mr-2 text-lg" />
-                                        <Select
-                                            variant="borderless"
-                                            popupMatchSelectWidth={200}
-                                            value={activeScheme}
-                                            onChange={setActiveScheme}
-                                            className="w-28 text-gray-200"
-                                            styles={{ popup: { root: { border: '1px solid #334155', borderRadius: '8px' } } }}
-                                            optionLabelProp="label"
-                                        >
-                                            {Object.entries(COLOR_SCHEMES).map(([key, scheme]) => (
-                                                <Option key={key} value={key} label={scheme.name}>
-                                                    <div className="flex items-center justify-between py-1">
-                                                        <span className="text-xs">{scheme.name}</span>
-                                                        <div className="flex h-2 w-10 ml-2 rounded overflow-hidden">
-                                                            {scheme.colors.map((c, i) => (
-                                                                <div key={i} style={{ backgroundColor: c, flex: 1 }} />
-                                                            ))}
-                                                        </div>
-                                                    </div>
-                                                </Option>
-                                            ))}
-                                        </Select>
-                                    </div>
-                                </Tooltip>
-                            </>
-                        )}
-
-                        {/*       [新增] 值过滤模块       */}
-                        {/*       [修改] 值过滤模块：仅在文本字段下才渲染下拉过滤组件       */}
-                        {activeField && activeField !== 'none' && !isGridMode && stringFields.includes(activeField) && (
-                            <>
-                                <div className="w-px h-5 bg-gray-600 mx-1" />
-                                <Tooltip title="值过滤 (取消勾选可隐藏对应数据)">
-                                    <div className="flex items-center px-2 animate-slide-in-left">
-                                        <FilterOutlined className="text-orange-400 mr-2 text-lg" />
-                                        <Select
-                                            mode="multiple"
-                                            variant="borderless"
-                                            placeholder="筛选数据..."
-                                            value={activeFilterValues}
-                                            onChange={(val) => setActiveFilterValues(val)}
-                                            allowClear
-                                            maxTagCount={1}
-                                            className="min-w-28 max-w-44 text-gray-200 custom-multi-select"
-                                            options={uniqueFieldValues.map(v => ({ label: String(v), value: v }))}
-                                            styles={{ popup: { root: { border: '1px solid #334155', borderRadius: '8px' } } }}
-                                        />
-                                    </div>
-                                </Tooltip>
-                            </>
-                        )}
-
-                        <div className="w-px h-5 bg-gray-600 mx-1" />
-
-                        {/* 5. 全量数据 (网格模式下禁用) */}
-                        <Tooltip title={isGridMode ? "网格模式下已锁定" : (fileId ? "加载该文件所有分页数据" : "需保存文件后可用")}>
-                            <div className="flex items-center px-2 cursor-pointer hover:bg-white/5 rounded transition-colors" onClick={(e) => e.stopPropagation()}>
-                                <CloudServerOutlined className={`mr-2 text-lg ${showAll ? 'text-green-400' : 'text-gray-500'}`} />
-                                <Checkbox 
-                                    checked={showAll}
-                                    onChange={handleShowAllChange}
-                                    disabled={!fileId || loading || isGridMode} 
-                                    className="text-gray-300 text-xs whitespace-nowrap"
-                                >
-                                    <span className={`${showAll ? 'text-green-400 font-bold' : 'text-gray-400'}`}>
-                                        全量
-                                    </span>
-                                </Checkbox>
-                            </div>
-                        </Tooltip>
-
-                    </div>
-                </ConfigProvider>
-            </div>
-            
-            {/*   3. 放置 HUD 图表组件 (绝对定位在地图层之上) */}
-            <ChartOverlay />
-
-            {/*   4. (可选) 增加一个悬浮按钮，用于在关闭图表后重新打开 */}
-            {!isChartVisible && pivotData && pivotData.length > 0 && (
-                <div className="absolute top-4 right-4 z-900">
-                    <Tooltip title="显示透视分析图表" placement="left">
-                        <Button 
-                            type="primary" 
-                            shape="circle" 
-                            size="large"
-                            icon={<BarChartOutlined />} 
-                            onClick={() => setChartVisible(true)}
-                            className="bg-cyan-600 border-cyan-500 shadow-lg shadow-cyan-900/50"
-                        />
-                    </Tooltip>
-                </div>
-            )}
-
-            {/* 样式 (保持原有的 Popup 样式，并添加动画) */}
-            <style>{`
-                .dark-cool-popup .maplibregl-popup-content {
-                    background: rgba(17, 24, 39, 0.95) !important;
-                    border: 1px solid #06b6d4;
-                    border-radius: 8px;
-                    padding: 12px;
-                    box-shadow: 0 0 15px rgba(6, 182, 212, 0.4);
-                    backdrop-filter: blur(4px);
-                }
-                .dark-cool-popup .maplibregl-popup-tip {
-                    border-top-color: #06b6d4 !important;
-                    border-bottom-color: #06b6d4 !important;
-                }
-                .dark-cool-popup .maplibregl-popup-close-button {
-                    color: #22d3ee;
-                }
-                .animate-slide-in-left {
-                    animation: slideIn 0.3s ease-out forwards;
-                }
-                @keyframes progress-indeterminate {
-                    0% { width: 0%; margin-left: 0%; }
-                    50% { width: 70%; margin-left: 30%; }
-                    100% { width: 0%; margin-left: 100%; }
-                }
-                .animate-progress-indeterminate {
-                    animation: progress-indeterminate 1.5s infinite ease-in-out;
-                }
-                
-                /*   [新增] Popover 样式覆盖 (解决 TS 报错和警告) */
-                .grid-config-popover .ant-popover-inner {
-                    background-color: rgba(17, 24, 39, 0.95) !important;
-                    backdrop-filter: blur(10px) !important;
-                    border: 1px solid #06b6d4 !important;
-                    border-radius: 8px !important;
-                    padding: 12px !important;
-                    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5) !important;
-                }
-
-                /*   [新增] 强制覆盖多选框的背景色 */
-                .custom-multi-select .ant-select-selector {
-                    background-color: transparent !important;
-                    border-color: rgba(255, 255, 255, 0.2) !important; /* 可选：让边框也淡一点 */
-                }
-                
-                /* 选中项标签的样式优化 (可选) */
-                .custom-multi-select .ant-select-selection-item {
-                    background-color: rgba(6, 182, 212, 0.2) !important;
-                    border: 1px solid rgba(6, 182, 212, 0.5) !important;
-                    color: #22d3ee !important;
-                }
-                
-                /* 清除图标颜色 */
-                .custom-multi-select .ant-select-clear {
-                    background: transparent !important;
-                    color: rgba(255,255,255,0.5) !important;
-                }
-            `}</style>
-
-            {/* ===== 多图层图例面板（右上角）===== */}
-            {selectedFilesInfo && selectedFilesInfo.length > 0 && ( // 改为 > 0，因为主图层现在也应该展示在这里调色
-                <div
-                    className="absolute top-4 right-4 z-10 bg-geo-dark/90 backdrop-blur-md border border-geo-border rounded-xl px-3 py-2.5 shadow-2xl"
-                    style={{ minWidth: 160 }}
+                    {BASEMAP_OPTIONS.map(option => {
+                        const reason = option.key.startsWith('protomaps-') && !PROTOMAPS_KEY ? '未配置'
+                            : option.key.startsWith('tianditu-') && tiandituStatus !== 'available'
+                                ? ({ checking: '检查中', unconfigured: '未配置', unavailable: '服务不可用' } as const)[tiandituStatus]
+                                : '';
+                        return (
+                            <Option key={option.key} value={option.key} disabled={Boolean(reason)}>
+                                {option.name}{reason ? '（' + reason + '）' : ''}
+                            </Option>
+                        );
+                    })}
+                </Select>
+                <Popover content={gridConfigContent} trigger="click" placement="bottom">
+                    <Button
+                        size="small"
+                        icon={<DeploymentUnitOutlined />}
+                        type={isGridMode ? 'primary' : 'default'}
+                        disabled={!fileId || !activeTotal}
+                        loading={gridLoading}
+                    >
+                        {isGridMode ? '网格视图' : '网格聚合'}
+                    </Button>
+                </Popover>
+                <Select
+                    aria-label="渲染字段"
+                    size="small"
+                    popupMatchSelectWidth={false}
+                    placeholder="渲染字段"
+                    value={activeField}
+                    onChange={setActiveField}
+                    allowClear={!isGridMode}
+                    disabled={isGridMode || (!numericFields.length && !stringFields.length)}
+                    className="map-field-select"
                 >
-                    <p className="text-[10px] font-semibold text-geo-text-secondary uppercase tracking-widest mb-2">图层图例</p>
-                    <div className="space-y-1.5">
-                        {selectedFilesInfo.map((f, idx) => {
-                            // 读取当前图层颜色
-                            const color = layerColors[f.fileId] || LAYER_PALETTE[idx % LAYER_PALETTE.length];
-                            const isMVT = f.totalFeatures > MVT_THRESHOLD;
-                            return (
-                                <div key={f.fileId} className="flex items-center gap-2">
-                                    {/* 替换为 Ant Design 的颜色拾取器 */}
-                                    <ColorPicker 
-                                        size="small" 
-                                        value={color} 
-                                        onChangeComplete={(c) => setLayerColor(f.fileId, c.toHexString())} 
-                                    />
-                                    <span className="text-[11px] text-geo-text-secondary truncate max-w-[120px]">{f.fileName}</span>
-                                    {isMVT && (
-                                        <span className="text-[9px] bg-violet-500/20 text-violet-400 px-1 rounded border border-violet-500/30 shrink-0">MVT</span>
-                                    )}
+                    <Option value="none">默认纯色</Option>
+                    {numericFields.length > 0 && (
+                        <OptGroup label="数值字段">
+                            {numericFields.map(field => <Option key={field} value={field}>{field}</Option>)}
+                        </OptGroup>
+                    )}
+                    {stringFields.length > 0 && (
+                        <OptGroup label="文本字段">
+                            {stringFields.map(field => <Option key={field} value={field}>{field}</Option>)}
+                        </OptGroup>
+                    )}
+                </Select>
+                {activeField && activeField !== 'none' && (
+                    <Select
+                        aria-label="配色"
+                        size="small"
+                        popupMatchSelectWidth={180}
+                        value={activeScheme}
+                        onChange={setActiveScheme}
+                        className="map-field-select"
+                        optionLabelProp="label"
+                    >
+                        {Object.entries(COLOR_SCHEMES).map(([key, scheme]) => (
+                            <Option key={key} value={key} label={scheme.name}>
+                                <div className="flex items-center justify-between gap-2">
+                                    <span>{scheme.name}</span>
+                                    <div className="flex h-2 w-10 overflow-hidden rounded">
+                                        {scheme.colors.map((color, i) => <span key={i} style={{ backgroundColor: color, flex: 1 }} />)}
+                                    </div>
                                 </div>
-                            );
-                        })}
+                            </Option>
+                        ))}
+                    </Select>
+                )}
+                {activeField && !isGridMode && stringFields.includes(activeField) && (
+                    <Select
+                        aria-label="筛选属性值"
+                        size="small"
+                        mode="multiple"
+                        placeholder="筛选"
+                        value={activeFilterValues}
+                        onChange={setActiveFilterValues}
+                        allowClear
+                        maxTagCount={0}
+                        className="map-filter-select"
+                        options={uniqueFieldValues.map(value => ({ label: String(value), value }))}
+                    />
+                )}
+                <Checkbox checked={showAll} onChange={handleShowAllChange} disabled={!activeTotal || loading || isGridMode}>
+                    全量
+                </Checkbox>
+                {!isChartVisible && pivotData && pivotData.length > 0 && (
+                    <Tooltip title="显示透视分析图表">
+                        <Button size="small" icon={<BarChartOutlined />} aria-label="显示透视分析图表" onClick={() => setChartVisible(true)} />
+                    </Tooltip>
+                )}
+                <Button
+                    size="small" className="map-layer-button" icon={<UnorderedListOutlined />}
+                    aria-controls="map-layer-list" aria-expanded={legendOpen}
+                    onClick={() => setLegendOpen(open => !open)}
+                >
+                    图层
+                </Button>
+            </div>
+
+            <div className="map-stage">
+                <div ref={mapContainer} className="map-surface" />
+                {!isMapLoaded && (
+                    <div className="map-notice" role="status">
+                        {mapStartupFailed ? '地图初始化失败，请检查浏览器的 WebGL 支持' : <><Spin size="small" /> 地图初始化中…</>}
                     </div>
+                )}
+                {loading && <div className="map-notice" role="status"><Spin size="small" /> 正在加载全量数据…</div>}
+                <ChartOverlay />
+                <div id="map-layer-list" className="map-layer-list" aria-label="图层图例" role="region" hidden={!legendOpen}>
+                    {!selectedFilesInfo.length && <p className="map-layer-empty">未选择图层</p>}
+                    {selectedFilesInfo.map(file => {
+                        const primary = file.fileId === fileId;
+                        const vector = primary ? !isGridMode : (file.totalFeatures ?? 0) > MVT_THRESHOLD;
+                        const hidden = hiddenFileIds.includes(file.fileId);
+                        const drawStatus = primary
+                            ? (primaryStatus?.fileId === file.fileId ? primaryStatus.status : undefined)
+                            : extraStatuses[file.fileId];
+                        let status = '加载中…';
+                        if (file.loadFailed) status = '数据加载失败';
+                        else if (file.totalFeatures === undefined) status = '加载中…';
+                        else if (file.totalFeatures === 0 || drawStatus === 'empty') status = '无要素';
+                        else if (drawStatus === 'error') status = vector ? '瓦片加载失败' : '图层加载失败';
+                        else if (hidden) status = '已隐藏';
+                        else if (drawStatus === 'ready') status = '可见';
+
+                        return (
+                            <div key={file.fileId} className="map-layer-row">
+                                <Checkbox
+                                    aria-label={'显示 ' + file.fileName}
+                                    checked={!hidden}
+                                    disabled={file.loadFailed || file.totalFeatures === 0}
+                                    onChange={event => setHiddenFileIds(prev => event.target.checked
+                                        ? prev.filter(id => id !== file.fileId)
+                                        : [...prev, file.fileId])}
+                                />
+                                <ColorPicker
+                                    size="small"
+                                    value={colorForFile(file.fileId)}
+                                    disabled={file.loadFailed || !file.totalFeatures}
+                                    onChangeComplete={color => setLayerColor(file.fileId, color.toHexString())}
+                                    aria-label={'图层颜色 ' + file.fileName}
+                                />
+                                <div className="map-layer-caption">
+                                    <div className="map-layer-name" title={file.fileName} aria-current={primary || undefined}>{file.fileName}</div>
+                                    <div className="map-layer-status" role="status" data-error={status.endsWith('失败') || undefined}>
+                                        {status}
+                                        {status === '可见' && vector && ' · MVT'}
+                                        {primary && ' · 当前'}
+                                    </div>
+                                </div>
+                            </div>
+                        );
+                    })}
                 </div>
-            )}
+            </div>
         </div>
     );
 };

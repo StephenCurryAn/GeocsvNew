@@ -1,0 +1,85 @@
+name: geocsv-local
+
+services:
+  db:
+    build:
+      context: .
+      dockerfile: deploy/docker/db.Dockerfile
+    environment:
+      POSTGRES_DB: geocsv
+      POSTGRES_USER: geocsv
+      POSTGRES_PASSWORD: geocsv_local_dev
+    volumes:
+      - database:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U geocsv -d geocsv && psql -U geocsv -d geocsv -Atc 'SELECT PostGIS_Version() FROM file_nodes LIMIT 0'"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
+  python:
+    build:
+      context: .
+      dockerfile: deploy/docker/python.Dockerfile
+    environment:
+      PG_URI: postgresql://geocsv:geocsv_local_dev@db:5432/geocsv
+    volumes:
+      - models:/app/python_engine/models
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/docs', timeout=2).close()"]
+      interval: 3s
+      timeout: 4s
+      retries: 30
+
+  server:
+    build:
+      context: .
+      dockerfile: deploy/docker/server.Dockerfile
+    environment:
+      DATABASE_URL: postgresql://geocsv:geocsv_local_dev@db:5432/geocsv
+      PYTHON_API_URL: http://python:8000/api
+      ALIYUN_API_KEY: ${ALIYUN_API_KEY:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      LLM_PLANNER_MODEL: ${LLM_PLANNER_MODEL:-deepseek-v3}
+      TIANDITU_SERVER_KEY: ${TIANDITU_SERVER_KEY:-}
+    volumes:
+      - uploads:/app/server/uploads
+      - models:/app/python_engine/models
+    ports:
+      # Nginx shares this network namespace so the local-only basemap routes see loopback.
+      - "127.0.0.1:${GEOCSV_WEB_PORT:-8080}:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+      python:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
+  web:
+    build:
+      context: .
+      dockerfile: deploy/docker/web.Dockerfile
+      args:
+        VITE_PROTOMAPS_API_KEY: ${VITE_PROTOMAPS_API_KEY:-}
+    network_mode: "service:server"
+    depends_on:
+      server:
+        condition: service_healthy
+        restart: true
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/api/health"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
+volumes:
+  database:
+  uploads:
+  models:

@@ -85,6 +85,7 @@ npm run test:integration
 
 - [首轮重构实施记录](docs/refactor-progress.md)
 - [环境与功能基线、代码学习路线](docs/environment-baseline.md)
+- [使用 Docker Compose 启动本地 GeoCSV](docs/docker-local.md)
 - [Protomaps 与天地图接入、配置和学习记录](docs/map-services.md)
 - [Agent 重构实施与学习计划](docs/agent-refactor-plan.md)
 - [并行会话、分支命名与合入约定](docs/parallel-development.md)

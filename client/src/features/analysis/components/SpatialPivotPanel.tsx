@@ -6,7 +6,7 @@ import {
   CheckCircleOutlined, DeploymentUnitOutlined, PlayCircleOutlined,
 } from '@ant-design/icons';
 import AnalysisRunView from './AnalysisRunView';
-import { useAnalysisRun } from './useAnalysisRun';
+import { useAnalysisWorkspace } from './AnalysisWorkspace';
 import {
   createAnalysisPlan, fetchDatasets, getRequestErrorMessage,
   type BoundaryPolicy, type DatasetSummary, type SpatialPivotPlan, type SpatialPivotSpec,
@@ -23,7 +23,7 @@ const isPointDataset = (dataset: DatasetSummary): boolean =>
 
 const SpatialPivotPanel = ({ selectedFileIds }: { selectedFileIds: string[] }) => {
   const { message } = App.useApp();
-  const analysis = useAnalysisRun();
+  const { runs: { tools: analysis } } = useAnalysisWorkspace();
   const selectedIdsKey = JSON.stringify(Array.from(new Set(selectedFileIds)));
   const [datasets, setDatasets] = useState<DatasetSummary[]>([]);
   const [datasetsLoading, setDatasetsLoading] = useState(false);
@@ -219,7 +219,7 @@ const SpatialPivotPanel = ({ selectedFileIds }: { selectedFileIds: string[] }) =
           </div>
         )}
 
-        <AnalysisRunView analysis={analysis} />
+        <AnalysisRunView source="tools" />
       </div>
     </Card>
   );

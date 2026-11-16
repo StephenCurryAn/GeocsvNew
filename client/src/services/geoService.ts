@@ -1,10 +1,24 @@
 import apiClient from './apiClient';
+import { sceneFilesPath } from './sceneService';
+
+const filesPath = (sceneId?: string) => sceneId ? sceneFilesPath(sceneId) : '/files';
 
 // 定义后端统一的响应结构 (Wrapper)
 interface ApiResponse<T> {
   code: number;
   message: string;
   data: T;
+}
+
+async function uploadFiles<T>(endpoint: string, files: FileList | File[], parentId: string | null): Promise<T> {
+  const formData = new FormData();
+  Array.from(files).forEach(file => formData.append('files', file));
+  if (parentId) formData.append('parentId', parentId);
+  const response = await apiClient.post<ApiResponse<T>>(endpoint + '/upload', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 300000,
+  });
+  return response.data.data;
 }
 
 //  定义标记页数后端响应接口
@@ -163,9 +177,9 @@ class GeoService {
    * @param page 页码 (默认 1)
    * @param pageSize 每页数量 (默认 20)
    */
-  async getFileData(id: string, page = 1, pageSize = 20): Promise<PaginatedGeoResponse> {
+  async getFileData(id: string, page = 1, pageSize = 20, sceneId?: string): Promise<PaginatedGeoResponse> {
     // 对应后端路由: GET /api/files/:id/data?page=1&pageSize=20
-    const res = await apiClient.get<ApiResponse<PaginatedGeoResponse>>(`/files/${id}/data`, {
+    const res = await apiClient.get<ApiResponse<PaginatedGeoResponse>>(`${filesPath(sceneId)}/${encodeURIComponent(id)}/data`, {
       params: { page, pageSize }
     });
     // 注意：apiClient 拦截器通常已经处理了 response.data，
@@ -191,36 +205,19 @@ class GeoService {
    * @param parentId 父文件夹ID
    */
   async uploadFile(files: FileList | File[], parentId: string | null = null): Promise<UploadResponse> {
-    const formData = new FormData();
-    // 兼容 FileList 和 Array
-    if (files instanceof FileList) {
-        Array.from(files).forEach((file) => formData.append('files', file));
-    } else {
-        files.forEach((file) => formData.append('files', file));
-    }
-    
-    // 只有当 parentId 存在且有效时才添加
-    if (parentId) {
-        formData.append('parentId', parentId);
-    }
+    return uploadFiles<UploadResponse>('/files', files, parentId);
+  }
 
-    // 对应后端路由: POST /api/files/upload
-    const res = await apiClient.post<{ data: UploadResponse }>('/files/upload', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-      timeout: 300000,
-    });
-    
-    // 返回后端响应中的 data 字段 (包含 _id, totalFeatures 等)
-    // 第一个data是默认的属性值（res.data），第二个data是我定义的变量名称
-    return res.data.data;
+  async uploadSceneFiles(sceneId: string, files: FileList | File[], parentId: string | null): Promise<UploadResponse[]> {
+    return uploadFiles<UploadResponse[]>(sceneFilesPath(sceneId), files, parentId);
   }
 
   /**
    * 重命名节点
    */
-  async renameNode(id: string, newName: string): Promise<any> {
+  async renameNode(id: string, newName: string, sceneId?: string): Promise<any> {
     try {
-        const response = await apiClient.put(`/files/${id}`, { name: newName });
+        const response = await apiClient.put(`${filesPath(sceneId)}/${encodeURIComponent(id)}`, { name: newName });
         return response.data;
     } catch (error: any) {
         // 如果后端返回 409 (重名)，抛出具体错误信息
@@ -232,12 +229,12 @@ class GeoService {
   /**
    * 删除节点
    */
-  async deleteNode(id: string): Promise<any> {
+  async deleteNode(id: string, sceneId?: string): Promise<any> {
     try {
-        const response = await apiClient.delete(`/files/${id}`);
+        const response = await apiClient.delete(`${filesPath(sceneId)}/${encodeURIComponent(id)}`);
         return response.data;
     } catch (error: any) {
-        throw new Error('删除失败: ' + error.message);
+        throw new Error(error.response?.data?.message || '删除失败');
     }
   }
 
