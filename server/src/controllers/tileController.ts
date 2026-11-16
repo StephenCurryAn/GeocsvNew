@@ -20,7 +20,7 @@ export const getVectorTile = async (req: Request, res: Response): Promise<void> 
 
         // SQL 利用 PostGIS 提供的高效内置函数 ST_TileEnvelope 和 ST_AsMVT
         // ST_TileEnvelope() 生成当前瓦片的边界矩形，使用 Web Mercator EPSG:3857。
-        // 由于我们的数据存储为 4326，必须将其 ST_Transform(geom, 3857) 后才能被正确匹配并切分。
+        // 先把瓦片范围转换到源坐标系，使用几何索引筛选，再将命中的要素投影到 3857 切片。
         const tileQuery = `
             WITH bounds AS (
                 SELECT ST_TileEnvelope($2, $3, $4) AS geom
@@ -39,8 +39,7 @@ export const getVectorTile = async (req: Request, res: Response): Promise<void> 
                     ) AS geom
                 FROM spatial_features s, bounds
                 WHERE s.file_id = $1 
-                -- 空间过滤：交集判断 (使用 3857 与 bound 判断)
-                AND ST_Intersects(ST_Transform(s.geom, 3857), bounds.geom)
+                AND ST_Intersects(s.geom, ST_Transform(bounds.geom, 4326))
             )
             SELECT ST_AsMVT(mvtgeom, 'default_layer', 4096, 'geom', 'geocsv_feature_id') AS tile
             FROM mvtgeom;

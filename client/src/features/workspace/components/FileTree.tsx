@@ -1,15 +1,15 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Tree, Button, ColorPicker, Empty, Input, Dropdown, type InputRef, type MenuProps, App as AntdApp } from 'antd';
+import { Tree, Button, ColorPicker, Empty, Input, InputNumber, Dropdown, Popover, type InputRef, type MenuProps, App as AntdApp } from 'antd';
 import { FolderAddOutlined, CloudUploadOutlined, FileTextOutlined, GlobalOutlined,
          FileImageOutlined, TableOutlined, FolderFilled, EyeOutlined, EyeInvisibleOutlined,
          DownOutlined, DeleteOutlined, EditOutlined, ExclamationCircleOutlined,
-         PictureOutlined } from '@ant-design/icons';
+         PictureOutlined, BorderOutlined, MinusOutlined, EnvironmentOutlined, HolderOutlined, SettingOutlined } from '@ant-design/icons';
 import { geoService } from '../../../services/geoService';
 import { getApiUrl } from '../../../services/apiConfig';
 import { sceneFilesPath } from '../../../services/sceneService';
 import { readSceneSelection, saveSceneSelection } from '../scenePreferences';
 import { useAnalysisStore } from '../../../stores/useAnalysisStore';
-import { defaultLayerColor, LAYER_PALETTE } from '../../map/fileLayers';
+import { defaultLayerColor, LAYER_PALETTE, DEFAULT_SELECTION_STYLE, type SelectionStyle } from '../../map/fileLayers';
 import type { DrawStatus } from '../../map/components/MapView';
 
 export interface WorkspaceLayer {
@@ -17,6 +17,7 @@ export interface WorkspaceLayer {
   loadFailed?: boolean;
   hidden: boolean;
   drawStatus?: DrawStatus;
+  geometryTypes?: string[];
 }
 
 interface FileTreeProps {
@@ -27,6 +28,10 @@ interface FileTreeProps {
   onActivateFile: (fileId: string, fileName: string) => void;
   onToggleFileVisibility: (fileId: string) => void;
   layers: Record<string, WorkspaceLayer>;
+  layerOrder?: string[];
+  onReorderLayers?: (orderedFileIds: string[]) => void;
+  selectionStyle?: SelectionStyle;
+  onSelectionStyleChange?: (style: SelectionStyle) => void;
 }
 
 interface TreeNode {
@@ -49,8 +54,19 @@ function folderKeys(nodes: TreeNode[]): string[] {
   return nodes.flatMap(node => node.type === 'folder' ? [node.key, ...folderKeys(node.children ?? [])] : []);
 }
 
+function orderTreeLayers(nodes: TreeNode[], layerOrder: string[]): TreeNode[] {
+  const rank = new Map(layerOrder.map((id, index) => [id, index]));
+  const ordered = nodes.map(node => ({ ...node, ...(node.children ? { children: orderTreeLayers(node.children, layerOrder) } : {}) }));
+  const filePositions = ordered.flatMap((node, index) => node.type === 'file' ? [index] : []);
+  const sortedFiles = filePositions.map(index => ordered[index])
+    .sort((first, second) => (rank.get(first.key) ?? Number.MAX_SAFE_INTEGER) - (rank.get(second.key) ?? Number.MAX_SAFE_INTEGER));
+  filePositions.forEach((position, index) => { ordered[position] = sortedFiles[index]; });
+  return ordered;
+}
+
 const FileTree: React.FC<FileTreeProps> = ({
   sceneId, isCurrentScene, onSelectFiles, activeFileId, onActivateFile, onToggleFileVisibility, layers,
+  layerOrder = [], onReorderLayers, selectionStyle = DEFAULT_SELECTION_STYLE, onSelectionStyleChange,
 }) => {
   const { message, modal } = AntdApp.useApp();
   const layerColors = useAnalysisStore(state => state.layerColors);
@@ -72,6 +88,8 @@ const FileTree: React.FC<FileTreeProps> = ({
   const renamePendingRef = useRef(false);
   const inputRef = useRef<InputRef>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const grabbedLayerRef = useRef<string | null>(null);
+  const [reorderAnnouncement, setReorderAnnouncement] = useState('');
 
   const isActive = useCallback(() => mountedRef.current && isCurrentScene(sceneId), [isCurrentScene, sceneId]);
 
@@ -142,6 +160,47 @@ const FileTree: React.FC<FileTreeProps> = ({
     // Re-entering the same scene before a mutation finishes may have loaded an earlier snapshot.
     window.dispatchEvent(new CustomEvent('REFRESH_FILE_TREE', { detail: { sceneId } }));
   };
+
+  const reorderLayer = (fileId: string, targetId: string, position: 'before' | 'after' = 'before') => {
+    if (!onReorderLayers || fileId === targetId) return;
+    const ordered = [...new Set([...layerOrder, ...Object.keys(layers)])];
+    const from = ordered.indexOf(fileId);
+    const to = ordered.indexOf(targetId);
+    if (from < 0 || to < 0) return;
+    ordered.splice(from, 1);
+    const destination = ordered.indexOf(targetId) + (position === 'after' ? 1 : 0);
+    ordered.splice(destination, 0, fileId);
+    onReorderLayers(ordered);
+    const label = findNodeByKey(treeData, fileId)?.title ?? '图层';
+    setReorderAnnouncement(`已将${label}移动到第 ${destination + 1} 层`);
+  };
+
+  const moveLayerByKeyboard = (fileId: string, direction: -1 | 1) => {
+    const ordered = [...new Set([...layerOrder, ...Object.keys(layers)])];
+    const index = ordered.indexOf(fileId);
+    const target = ordered[index + direction];
+    if (target) reorderLayer(fileId, target, direction < 0 ? 'before' : 'after');
+  };
+
+  const geometryKinds = (geometryTypes: string[] = []) => [
+    ...(geometryTypes.some(type => type.includes('Polygon')) ? ['polygon' as const] : []),
+    ...(geometryTypes.some(type => type.includes('LineString') || type.includes('MultiLine')) ? ['line' as const] : []),
+    ...(geometryTypes.some(type => type.includes('Point')) ? ['point' as const] : []),
+  ];
+
+  const geometryIcon = (kind: 'polygon' | 'line' | 'point') => {
+    if (kind === 'polygon') return <BorderOutlined />;
+    if (kind === 'line') return <MinusOutlined />;
+    return <EnvironmentOutlined />;
+  };
+
+  const updateSelectionStyle = <K extends keyof SelectionStyle>(kind: K, field: keyof SelectionStyle[K], value: string | number) => {
+    if (!onSelectionStyleChange) return;
+    onSelectionStyleChange({
+      ...selectionStyle,
+      [kind]: { ...selectionStyle[kind], [field]: value },
+    });
+  };
   // 辅助函数：根据文件名获取图标
   // 图标逻辑：根据文件类型返回不同颜色图标
   const getIcon = (props: TreeNode) => {
@@ -166,6 +225,8 @@ const FileTree: React.FC<FileTreeProps> = ({
     const icon = getIcon(node);
     const layer = node.type === 'file' ? layers[node.key] : undefined;
     const color = layerColors[node.key] || defaultLayerColor(node.key);
+    const kinds = geometryKinds(layer?.geometryTypes);
+    const layerPosition = layerOrder.indexOf(node.key);
     const status = !layer ? '' : layer.loadFailed ? '数据加载失败' : layer.totalFeatures === 0 ? '无要素'
         : layer.hidden ? '' : layer.drawStatus === 'error' ? '瓦片加载失败'
         : layer.drawStatus !== 'ready' ? '加载中…' : '';
@@ -202,6 +263,22 @@ const FileTree: React.FC<FileTreeProps> = ({
     const content = (
         <div 
             className="resource-tree-row"
+            data-layer-drag-target={layer ? 'true' : undefined}
+            onDragOver={event => {
+                if (layer && grabbedLayerRef.current && grabbedLayerRef.current !== node.key) {
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = 'move';
+                }
+            }}
+            onDrop={event => {
+                event.preventDefault();
+                const sourceId = event.dataTransfer.getData('text/plain') || grabbedLayerRef.current;
+                if (sourceId && layer) {
+                    const bounds = event.currentTarget.getBoundingClientRect();
+                    reorderLayer(sourceId, node.key, event.clientY < bounds.top + bounds.height / 2 ? 'before' : 'after');
+                }
+                grabbedLayerRef.current = null;
+            }}
             // 双击触发重命名
             onDoubleClick={(e) => {
                 e.stopPropagation(); // 防止触发展开折叠
@@ -254,6 +331,11 @@ const FileTree: React.FC<FileTreeProps> = ({
                     {status && <span className="resource-tree-status" role="status" data-error={status.endsWith('失败') || undefined}>
                         {status}
                     </span>}
+                    {kinds.length > 0 && <span className="resource-layer-geometries"
+                        aria-label={`几何类型：${kinds.map(kind => ({ polygon: '面', line: '线', point: '点' }[kind])).join('、')}`}>
+                        {kinds.map(kind => <span key={kind} title={{ polygon: '面', line: '线', point: '点' }[kind]}>{geometryIcon(kind)}</span>)}
+                    </span>}
+                    {layerPosition >= 0 && <span className="resource-layer-order" aria-label={`地图叠放顺序第 ${layerPosition + 1} 层`}>{layerPosition + 1}</span>}
                 </div>
             )}
 
@@ -270,6 +352,72 @@ const FileTree: React.FC<FileTreeProps> = ({
                         disabled={layer.loadFailed || layer.totalFeatures === 0}
                         onClick={() => onToggleFileVisibility(node.key)}
                     />
+                    <Popover
+                        trigger="click"
+                        placement="rightTop"
+                        title={`选中样式 · ${node.title}`}
+                        content={<div className="resource-selection-style">
+                            {kinds.map(kind => <section key={kind} aria-label={{ polygon: '面样式', line: '线样式', point: '点样式' }[kind]}>
+                                <div className="resource-selection-style-heading">{geometryIcon(kind)}<strong>{{ polygon: '面', line: '线', point: '点' }[kind]}选中效果</strong></div>
+                                <label>颜色
+                                    <ColorPicker size="small" value={selectionStyle[kind].color} defaultFormat="rgb" disabledAlpha
+                                        onChangeComplete={value => updateSelectionStyle(kind, 'color', value.toHexString())} />
+                                </label>
+                                {kind === 'polygon' && <>
+                                    <label>填充透明度
+                                        <InputNumber size="small" min={0} max={1} step={0.05} value={selectionStyle.polygon.opacity}
+                                            onChange={value => value !== null && updateSelectionStyle('polygon', 'opacity', value)} />
+                                    </label>
+                                    <label>边框宽度
+                                        <InputNumber size="small" min={0} max={8} step={0.5} value={selectionStyle.polygon.outlineWidth}
+                                            onChange={value => value !== null && updateSelectionStyle('polygon', 'outlineWidth', value)} />
+                                    </label>
+                                </>}
+                                {kind === 'line' && <label>线宽
+                                    <InputNumber size="small" min={1} max={12} step={0.5} value={selectionStyle.line.width}
+                                        onChange={value => value !== null && updateSelectionStyle('line', 'width', value)} />
+                                </label>}
+                                {kind === 'point' && <label>点大小
+                                    <InputNumber size="small" min={2} max={24} step={1} value={selectionStyle.point.radius}
+                                        onChange={value => value !== null && updateSelectionStyle('point', 'radius', value)} />
+                                </label>}
+                            </section>)}
+                        </div>}
+                    >
+                        <Button type="text" size="small" className="resource-layer-style"
+                            icon={<SettingOutlined />} aria-label={`配置${node.title}的选中样式`} title="选中样式" />
+                    </Popover>
+                    <button type="button" className="resource-layer-drag-handle" draggable={Boolean(onReorderLayers)}
+                        aria-label={`调整图层顺序 ${node.title}`} title="拖动调整图层顺序，键盘操作按空格后用方向键"
+                        aria-pressed={grabbedLayerRef.current === node.key}
+                        onClick={event => event.stopPropagation()}
+                        onDragStart={event => {
+                            event.stopPropagation();
+                            grabbedLayerRef.current = node.key;
+                            event.dataTransfer.effectAllowed = 'move';
+                            event.dataTransfer.setData('text/plain', node.key);
+                        }}
+                        onDragEnd={() => { grabbedLayerRef.current = null; }}
+                        onKeyDown={event => {
+                            event.stopPropagation();
+                            if (event.key === ' ' && !grabbedLayerRef.current) {
+                                event.preventDefault();
+                                grabbedLayerRef.current = node.key;
+                                setReorderAnnouncement(`已抓取${node.title}，使用上下方向键调整，空格放下，Escape取消`);
+                            } else if (event.key === 'Escape' && grabbedLayerRef.current === node.key) {
+                                grabbedLayerRef.current = null;
+                                setReorderAnnouncement('已取消图层排序');
+                            } else if (grabbedLayerRef.current === node.key && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
+                                event.preventDefault();
+                                moveLayerByKeyboard(node.key, event.key === 'ArrowUp' ? -1 : 1);
+                            } else if (event.key === ' ' && grabbedLayerRef.current === node.key) {
+                                event.preventDefault();
+                                grabbedLayerRef.current = null;
+                                setReorderAnnouncement(`已放置${node.title}`);
+                            }
+                        }}>
+                        <HolderOutlined />
+                    </button>
                 </div>
             )}
         </div>
@@ -444,6 +592,7 @@ const FileTree: React.FC<FileTreeProps> = ({
       {/* 2. 树形列表区域 (Tree)
       */}
       <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden py-2">
+        <div className="sr-only" role="status" aria-live="polite">{reorderAnnouncement}</div>
         {treeStatus === 'error' ? (
           <div className="flex items-center justify-center gap-2 p-2 text-sm">
             <span>资源加载失败</span>
@@ -464,7 +613,7 @@ const FileTree: React.FC<FileTreeProps> = ({
             onExpand={keys => setExpandedKeys(keys.map(String))}
             selectedKeys={focusedId ? [focusedId] : []}
             onSelect={(_, { node }) => openResource(node)}
-            treeData={treeData}
+            treeData={orderTreeLayers(treeData, layerOrder)}
             titleRender={titleRender}
             switcherIcon={<DownOutlined />}
           />

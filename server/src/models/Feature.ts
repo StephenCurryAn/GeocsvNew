@@ -92,7 +92,25 @@ export const findFeatureOffset = async (fileId: string, featureId: number): Prom
   return result.rows[0] ? Number(result.rows[0].preceding) : undefined;
 };
 
+export const getFileExtent = async (fileId: string): Promise<[number, number, number, number] | null> => {
+  const result = await pool.query<{ bounds: [number, number, number, number] | null }>(`
+    SELECT CASE WHEN extent IS NOT NULL
+      THEN ARRAY[ST_XMin(extent), ST_YMin(extent), ST_XMax(extent), ST_YMax(extent)]
+    END AS bounds
+    FROM (SELECT ST_Extent(geom) AS extent FROM spatial_features WHERE file_id = $1) AS layer_extent
+  `, [fileId]);
+  return result.rows[0].bounds;
+};
+
 /** 统计总数 */
+export const getFileGeometryTypes = async (fileId: string): Promise<string[]> => {
+  const { rows } = await pool.query<{ types: string[] }>(
+    `SELECT COALESCE(array_agg(DISTINCT ST_GeometryType(geom)), '{}') AS types
+     FROM spatial_features WHERE file_id = $1 AND geom IS NOT NULL`, [fileId],
+  );
+  return rows[0].types;
+};
+
 export const countFeaturesByFileId = async (fileId: string): Promise<number> => {
   const sql = `SELECT COUNT(*) FROM spatial_features WHERE file_id = $1`;
   const result = await pool.query(sql, [fileId]);

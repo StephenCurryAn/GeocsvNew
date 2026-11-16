@@ -25,6 +25,7 @@ async function uploadFiles<T>(endpoint: string, files: FileList | File[], parent
 export interface PaginatedGeoResponse {
   type: 'FeatureCollection';
   features: any[]; // 你的 Feature 类型
+  geometryTypes?: string[];
   pagination: {
     total: number;
     page: number;
@@ -32,6 +33,8 @@ export interface PaginatedGeoResponse {
     totalPages: number;
   };
 }
+
+export type LayerBounds = [west: number, south: number, east: number, north: number];
 
 //   定义上传响应接口 (不再包含 geoJson 全量数据)
 export interface UploadResponse {
@@ -177,15 +180,22 @@ class GeoService {
    * @param page 页码 (默认 1)
    * @param pageSize 每页数量 (默认 20)
    */
-  async getFileData(id: string, page = 1, pageSize = 20, sceneId?: string, featureId?: number): Promise<PaginatedGeoResponse> {
+  async getFileData(id: string, page = 1, pageSize = 20, sceneId?: string, featureId?: number, signal?: AbortSignal, includeGeometryTypes = false): Promise<PaginatedGeoResponse> {
     // 对应后端路由: GET /api/files/:id/data?page=1&pageSize=20
     const res = await apiClient.get<ApiResponse<PaginatedGeoResponse>>(`${filesPath(sceneId)}/${encodeURIComponent(id)}/data`, {
-      params: { page, pageSize, featureId }
+      params: { page, pageSize, featureId, geometryTypes: includeGeometryTypes ? 1 : undefined }, signal
     });
     // 注意：apiClient 拦截器通常已经处理了 response.data，
     // 如果你的 apiClient 依然返回 axios 原始对象，请使用 response.data.data
     // 这里假设 apiClient 已经解包，直接返回后端 json 中的 data 字段
     return res.data.data; 
+  }
+
+  async getFileExtent(id: string, sceneId: string, signal: AbortSignal): Promise<LayerBounds | null> {
+    const response = await apiClient.get<ApiResponse<{ bounds: LayerBounds | null }>>(
+      `${sceneFilesPath(sceneId)}/${encodeURIComponent(id)}/extent`, { signal, timeout: 10000 },
+    );
+    return response.data.data.bounds;
   }
 
   //  获取指定文件的所有数据 (用于地图全量展示)

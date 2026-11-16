@@ -2,7 +2,6 @@ import React, { useEffect, useState, useRef } from 'react';
 import { createPortal } from 'react-dom'; //    ：引入传送门技术
 import type { ColDef, GridApi } from 'ag-grid-community';
 import type { AgGridReact } from 'ag-grid-react';
-import { pointOnFeature } from '@turf/turf';
 import { App, Empty, Button, Space, Popconfirm, Pagination, Modal, Select } from 'antd'; // ... 引入 antd 组件
 import { PlusOutlined, DeleteOutlined, TableOutlined, MinusSquareOutlined, DownloadOutlined } from '@ant-design/icons';
 import { geoService } from '../../../services/geoService';
@@ -20,9 +19,11 @@ interface DataPivotProps {
         pageSize: number;
     };
     onPageChange?: (page: number, pageSize: number) => void;
-    onRowClick?: (record: any) => void;
-    selectedFeature?: { id?: string | number; name?: string } | null;
-    scrollToSelectedFeature?: boolean;
+    onRowClick?: (id: string, additive: boolean) => void;
+    onCheckedRowsChange?: (ids: string[]) => void;
+    selectedIds: ReadonlySet<string>;
+    scrollToId?: string | null;
+    onClearSelection?: () => void;
     onDataChange?: (recordId: string | number, newData: any) => void;
     onAddRow?: () => void;
     onDeleteRow?: (recordId: string | number) => void;
@@ -33,25 +34,15 @@ interface DataPivotProps {
 
 }
 
-function syncSelectedFeature(api: GridApi | undefined, selectedFeature: DataPivotProps['selectedFeature'], scroll = false) {
+function syncSelectedRows(api: GridApi | undefined, selectedIds: ReadonlySet<string>, scrollToId?: string | null) {
     if (!api) return;
-    if (!selectedFeature) {
-        api.deselectAll();
-        return;
-    }
-
-    const id = selectedFeature.id;
-    let match = id == null ? undefined : api.getRowNode(String(id));
-    if (id == null && selectedFeature.name) {
-        api.forEachNode(node => {
-            if (!match && node.data?.name === selectedFeature.name) match = node;
-        });
-    }
-    if (match) {
-        if (!match.isSelected()) match.setSelected(true, true, 'api');
-        if (scroll) api.ensureNodeVisible(match);
-    } else {
-        api.deselectAll();
+    api.forEachNode(node => {
+        const selected = node.id !== undefined && selectedIds.has(node.id);
+        if (node.isSelected() !== selected) node.setSelected(selected, false, 'api');
+    });
+    if (scrollToId) {
+        const match = api.getRowNode(scrollToId);
+        if (match) api.ensureNodeVisible(match);
     }
 }
 
@@ -286,7 +277,7 @@ const FormulaCellEditor = (props: any) => {
 };
 
 const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, pagination, emptyMessage, onPageChange,
-    onRowClick, selectedFeature, scrollToSelectedFeature, onDataChange,
+    onRowClick, onCheckedRowsChange, selectedIds, scrollToId, onClearSelection, onDataChange,
     onAddRow, onDeleteRow, onAddColumn, onDeleteColumn, onRenameColumn,
     onDeleteColumns,
 }) => {
@@ -299,8 +290,7 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
     const [rowData, setRowData] = useState<any[]>([]);
     // 表格列的配置蓝图
     const [columnDefs, setColumnDefs] = useState<ColDef[]>([]);
-    // 记录当前选中的行索引，用于删除行
-    const [selectedRecordId, setSelectedRecordId] = useState<string | number | null>(null);
+    const selectedPageRows = rowData.filter(row => selectedIds.has(String(row.id)));
     //   1. 新增：存储后端真实模型列表的状态
     const [modelList, setModelList] = useState<string[]>([]);
     
@@ -356,8 +346,8 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
     }, [data, fileName, modelList]);
 
     useEffect(() => {
-        syncSelectedFeature(gridRef.current?.api, selectedFeature, scrollToSelectedFeature);
-    }, [selectedFeature, scrollToSelectedFeature]);
+        syncSelectedRows(gridRef.current?.api, selectedIds, scrollToId);
+    }, [selectedIds, scrollToId]);
 
     /**
      * 通用列定义生成函数 (修复 Warning #48)
@@ -465,10 +455,6 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
                 row['_lat'] = coords[1];
             } else {
                 row['_geom_coords'] = JSON.stringify(coords);
-                if (!Array.isArray(row.cp)) {
-                    try { row.cp = pointOnFeature(feature).geometry.coordinates; }
-                    catch { /* Empty or invalid geometries have no map location. */ }
-                }
             }
         }
         return row;
@@ -520,6 +506,12 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
             <span className="data-table-heading" title={fileName}>{fileName}</span>
         {/* 操作按钮组 */}
         <Space size={4}>
+            {selectedIds.size > 0 && (
+                <Button size="small" type="text" onClick={onClearSelection}
+                    aria-label={`已选 ${selectedIds.size} 条，清除选择`}>
+                    已选 {selectedIds.size} · 清除
+                </Button>
+            )}
             {/* 在“增行”左边添加“导出CSV”按钮 */}
             <Button 
                 size="small" 
@@ -545,22 +537,7 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
             <Popconfirm 
                 title="确定删除选中行吗？" 
                 onConfirm={() => {
-                    // 不再使用 selectedRowIndex，而是直接获取选中行的数据对象
-                    const selectedRows = gridRef.current?.api.getSelectedRows();
-                    if (selectedRows && selectedRows.length > 0 && onDeleteRow) {
-                        const selectedData = selectedRows[0]; // 获取选中行的完整数据
-                        
-                        // 确保有 ID
-                        if (selectedData.id != null) {
-                            // 传 ID 给父组件，而不是行号
-                            onDeleteRow(selectedData.id); 
-                            setSelectedRecordId(null); // 重置选中状态
-                        } else {
-                            message.error('该行数据缺失 ID，无法删除');
-                        }
-                    } else {
-                        message.warning('请先选中一行');
-                    }
+                    if (selectedPageRows.length === 1 && selectedIds.size === 1) onDeleteRow?.(selectedPageRows[0].id);
                 }}
             >
                 <Button 
@@ -569,7 +546,7 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
                     size="small" 
                     icon={<DeleteOutlined />}
                     aria-label="删行" title="删行"
-                    disabled={selectedRecordId === null}
+                    disabled={selectedPageRows.length !== 1 || selectedIds.size !== 1}
                 >
                     <span className="table-action-label">删行</span>
                 </Button>
@@ -693,8 +670,8 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
 
             // 绑定 ref
             ref={gridRef}
-            onFirstDataRendered={({ api }) => syncSelectedFeature(api, selectedFeature, scrollToSelectedFeature)}
-            onRowDataUpdated={({ api }) => syncSelectedFeature(api, selectedFeature, scrollToSelectedFeature)}
+            onFirstDataRendered={({ api }) => syncSelectedRows(api, selectedIds, scrollToId)}
+            onRowDataUpdated={({ api }) => syncSelectedRows(api, selectedIds, scrollToId)}
 
             // 解决 Error #239
             // 加上这个属性，允许你继续使用 ag-theme-alpine.css 和你的自定义样式
@@ -720,21 +697,16 @@ const DataPivot: React.FC<DataPivotProps> = ({ data, fileName, fileId, paginatio
             autoSizeStrategy={{
                 type: 'fitCellContents' // 适应单元格内容
             }}
-            // 明确配置选择模式和复选框
-            // checkboxes: true 确保每行前面都有框 (虽然你可能通过其他方式实现了，但这样写最稳)
-            // headerCheckbox: false 禁用全选，因为我们做的是单选联动
-            rowSelection={{ 
-                mode: 'singleRow', 
-                checkboxes: true,
-                enableClickSelection: true,
+            rowSelection={{ mode: 'multiRow', selectAll: 'filtered', enableClickSelection: false }}
+            onRowClicked={({ event, node }) => {
+                if (!node.id || !(event instanceof MouseEvent) || (event.target instanceof Element
+                    && event.target.closest('.ag-selection-checkbox, button, input'))) return;
+                onRowClick?.(node.id, event.shiftKey || event.ctrlKey || event.metaKey);
             }}
-            
-            // 无论点击行、复选框还是键盘操作，只要选中变了，这里都会触发
             onSelectionChanged={(event) => {
-                const record = event.api.getSelectedRows()[0];
-                setSelectedRecordId(record?.id ?? null);
-                if (event.source === 'rowClicked' || event.source === 'spaceKey' || event.source === 'checkboxSelected') {
-                    onRowClick?.(record ?? null);
+                if (event.source === 'spaceKey' || event.source === 'checkboxSelected'
+                    || event.source === 'uiSelectAllFiltered' || event.source === 'keyboardSelectAll') {
+                    onCheckedRowsChange?.(event.api.getSelectedRows().map(row => String(row.id)));
                 }
             }}
 

@@ -1,19 +1,20 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { bbox } from '@turf/turf';
+import { bbox, pointOnFeature } from '@turf/turf';
 //   [ ] 引入所需的 Ant Design 组件
 import { 
     Button, Tooltip, App, Checkbox, Spin, Select, Popover, Segmented, Slider
 } from 'antd';
 import ChartOverlay, { THEME_COLORS, CONTRAST_PALETTES } from './ChartOverlay';
-import { geoService } from '../../../services/geoService';
+import { geoService, type LayerBounds } from '../../../services/geoService';
 //   [ ] 引入图标
 import { 
     BarChartOutlined, 
     DeploymentUnitOutlined, // 网格入口图标
     AppstoreOutlined,       // Hex 图标
     BorderOutlined,         // Square 图标
+    CheckSquareOutlined,
     ThunderboltOutlined,    // 执行图标
     UndoOutlined,            // 重置图标
     SaveOutlined,
@@ -21,9 +22,11 @@ import {
 import { useAnalysisStore } from '../../../stores/useAnalysisStore'
 import { API_BASE_URL, getApiUrl } from '../../../services/apiConfig';
 import { BASEMAP_OPTIONS, BasemapController, DEFAULT_BASEMAP, initialMapStyle, loadBasemap } from '../basemaps';
+import type { SelectedFeature } from '../featureSelection';
 import {
-    addFileLayers, defaultLayerColor, drawingLayers, EMPTY_SELECTION, geometryLayers, highlightLayers,
-    layerIds, LAYER_PALETTE, paintFileLayers, removeFileLayers, setFileVisibility, updateGridGeometry, updateVectorTiles,
+    addFileLayers, addSelectionLayers, defaultLayerColor, drawingLayers, EMPTY_SELECTION, geometryLayers, highlightLayers,
+    highlightGeometryFilter, layerIds, LAYER_PALETTE, paintFileLayers, paintSelectionStyle, removeFileLayers, setFileVisibility,
+    updateGridGeometry, updateVectorTiles, type SelectionStyle,
 } from '../fileLayers';
 
 const PROTOMAPS_KEY = (import.meta.env.VITE_PROTOMAPS_API_KEY || '').trim();
@@ -42,6 +45,7 @@ export interface FileLayerInfo {
 export type DrawStatus = 'ready' | 'error';
 const fileLayers = (fileId: string) => layerIds('file-' + fileId);
 const gridLayers = layerIds('grid');
+const featureSelectionLayers = layerIds('feature-selection');
 const DENSE_LAYER_SIZE = 5000;
 
 function tileUrls(fileId: string, version: number) {
@@ -103,10 +107,13 @@ const buildFeatureIdFilter = (ids: Array<string | number>) => {
 interface MapViewProps {
     data: any;        // GeoJSON 数据（当前激活文件）
     fileId?: string;  // 当前选中的文件ID
-    selectedFeature?: any;
-    onFeatureClick?: (fileId: string, feature: Record<string, unknown> | null) => void;
-    selectionOrigin?: 'map' | 'table';
-    focusFileId?: string;
+    sceneId: string;
+    selectedFeatures: SelectedFeature[];
+    focusedFeature?: SelectedFeature;
+    featureFocus: SelectedFeature[] | null;
+    selectionStyle: SelectionStyle;
+    onFeatureClick: (feature: SelectedFeature | null, additive: boolean) => void;
+    layerFocus: { fileId: string } | null;
     hiddenFileIds: string[];
     onDrawStatusChange: (fileId: string, status?: DrawStatus) => void;
     // 多图层支持
@@ -274,7 +281,10 @@ function interpolateColor(color1: string, color2: string, factor: number) {
     return rgbToHex(r, g, b);
 }
 
-const MapView: React.FC<MapViewProps> = ({ data, fileId, selectedFeature, onFeatureClick, selectionOrigin, focusFileId, hiddenFileIds, onDrawStatusChange, selectedFilesInfo = [] }) => {
+const MapView: React.FC<MapViewProps> = ({
+    data, fileId, sceneId, selectedFeatures, focusedFeature, featureFocus, selectionStyle, onFeatureClick,
+    layerFocus, hiddenFileIds, onDrawStatusChange, selectedFilesInfo = [],
+}) => {
     //     2: 获取上下文感知的 message 实例
     // 注意：MapView 必须被包裹在 <App> 组件中（通常在 main.tsx 或 App.tsx 已经包了）
     const { message } = App.useApp();
@@ -284,11 +294,11 @@ const MapView: React.FC<MapViewProps> = ({ data, fileId, selectedFeature, onFeat
     const basemapRequest = useRef(0);
     const [basemapLoading, setBasemapLoading] = useState(false);
     const [tiandituStatus, setTiandituStatus] = useState<'checking' | 'available' | 'unconfigured' | 'unavailable'>('checking');
-    const lastFramedFile = useRef('');
     const openFiles = useRef(new Map<string, { version: number; stop: () => void }>());
     const initialTileVersion = useRef(Date.now());
     const mapSelection = useRef(onFeatureClick);
     mapSelection.current = onFeatureClick;
+    const [batchMode, setBatchMode] = useState(false);
     const activeFileRef = useRef(fileId);
     activeFileRef.current = fileId;
     const fullDataRequest = useRef(0);
@@ -444,7 +454,6 @@ const MapView: React.FC<MapViewProps> = ({ data, fileId, selectedFeature, onFeat
         if (!map || !isMapLoaded) return;
         const visibleFiles = selectedFilesInfo.filter(file => (file.totalFeatures ?? 0) > 0);
         const selected = new Set(visibleFiles.map(file => file.fileId));
-        let added = false;
         for (const [id, { stop }] of openFiles.current) {
             if (selected.has(id)) continue;
             stop();
@@ -468,15 +477,12 @@ const MapView: React.FC<MapViewProps> = ({ data, fileId, selectedFeature, onFeat
             addFileLayers(map, ids, tileUrls(file.fileId, version));
             paintFileLayers(map, ids, colorForFile(file.fileId), { dense: (file.totalFeatures ?? 0) > DENSE_LAYER_SIZE });
             openFiles.current.set(file.fileId, { version, stop });
-            added = true;
         }
-        if (added) {
-            // Draw points above areas regardless of the active table tab.
-            const groups = [...openFiles.current.keys()].map(id => drawingLayers(fileLayers(id)));
-            if (map.getSource(gridLayers.source)) groups.push(drawingLayers(gridLayers));
-            for (const index of groups[0].keys()) {
-                for (const group of groups) map.moveLayer(group[index]);
-            }
+        for (const file of [...visibleFiles].reverse()) {
+            for (const id of drawingLayers(fileLayers(file.fileId))) map.moveLayer(id);
+        }
+        if (map.getSource(gridLayers.source)) {
+            for (const id of drawingLayers(gridLayers)) map.moveLayer(id);
         }
     }, [selectedFilesInfo, isMapLoaded, onDrawStatusChange]);
 
@@ -638,15 +644,15 @@ const MapView: React.FC<MapViewProps> = ({ data, fileId, selectedFeature, onFeat
                 if (map.getLayer(layer.id) && map.getLayoutProperty(layer.id, 'visibility') !== 'none') layerOwners.set(layer.id, null);
             }
             if (!layerOwners.size) return;
-            const hits = map.queryRenderedFeatures(event.point, { layers: [...layerOwners.keys()] });
-            const feature = hits.find(hit => layerOwners.get(hit.layer.id) === null)
-                ?? hits.find(hit => layerOwners.get(hit.layer.id) === activeFileRef.current)
-                ?? hits[0];
+            const [feature] = map.queryRenderedFeatures(event.point, { layers: [...layerOwners.keys()] });
             const owner = feature && layerOwners.get(feature.layer.id);
             return owner !== undefined ? { feature, owner } : undefined;
         };
         const handleClick = (event: maplibregl.MapMouseEvent) => {
             const hit = findFeature(event);
+            const { shiftKey, ctrlKey, metaKey } = event.originalEvent;
+            const additive = batchMode || shiftKey || ctrlKey || metaKey;
+            map.stop();
             if (hit?.owner === null) {
                 setGridSelection({ ...hit.feature.properties, id: hit.feature.id ?? hit.feature.properties.id,
                     cp: [event.lngLat.lng, event.lngLat.lat] });
@@ -654,13 +660,16 @@ const MapView: React.FC<MapViewProps> = ({ data, fileId, selectedFeature, onFeat
             }
             setGridSelection(null);
             if (!hit) {
-                mapSelection.current?.('', null);
+                mapSelection.current(null, additive);
                 return;
             }
             const { feature, owner } = hit;
             const id = feature.id;
             if (id == null) return;
-            mapSelection.current?.(owner, { ...feature.properties, id, cp: [event.lngLat.lng, event.lngLat.lat] });
+            mapSelection.current({
+                fileId: owner, id: String(id), properties: feature.properties, geometry: null,
+                anchor: [event.lngLat.lng, event.lngLat.lat],
+            }, additive);
         };
         const handleMove = (event: maplibregl.MapMouseEvent) => {
             map.getCanvas().style.cursor = findFeature(event) ? 'pointer' : '';
@@ -671,7 +680,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileId, selectedFeature, onFeat
             map.off('click', handleClick);
             map.off('mousemove', handleMove);
         };
-    }, [isMapLoaded]);
+    }, [isMapLoaded, batchMode]);
 
     //   [ ]  联动着色逻辑：增强高亮对比度
     const updateLinkageColors = () => {
@@ -1080,16 +1089,45 @@ const MapView: React.FC<MapViewProps> = ({ data, fileId, selectedFeature, onFeat
 
     useEffect(() => {
         const map = mapInstance.current;
-        if (!map || !isMapLoaded) return;
-        if (!focusFileId) lastFramedFile.current = '';
-        if (!data || !fileId || focusFileId !== fileId || fileId === lastFramedFile.current
-            || !data.features.some((feature: any) => feature.geometry)) return;
-        const bounds = bbox(data) as [number, number, number, number];
-        if (bounds.every(Number.isFinite)) {
-            lastFramedFile.current = fileId;
-            map.fitBounds(bounds, { padding: 42, maxZoom: 14, duration: 500 });
+        if (!map || !isMapLoaded || !sceneId || !layerFocus || layerFocus.fileId !== fileId) return;
+
+        const controller = new AbortController();
+        map.stop();
+        void geoService.getFileExtent(layerFocus.fileId, sceneId, controller.signal).then(bounds => {
+            if (controller.signal.aborted) return;
+            if (!bounds?.every(Number.isFinite)) {
+                message.info('该图层没有可定位的空间要素');
+                return;
+            }
+            const canvas = map.getContainer();
+            if (!canvas.clientWidth || !canvas.clientHeight) return;
+            map.fitBounds(bounds, {
+                padding: Math.min(48, canvas.clientWidth / 8, canvas.clientHeight / 8),
+                maxZoom: 15, duration: 540,
+            });
+        }).catch(() => {
+            if (!controller.signal.aborted) message.warning('暂时无法定位图层，请重新点击图层名称');
+        });
+        return () => { controller.abort(); };
+    }, [fileId, layerFocus, isMapLoaded, sceneId, message]);
+
+    useEffect(() => {
+        const map = mapInstance.current;
+        if (!map || !isMapLoaded || isGridMode || !featureFocus) return;
+        const geometries = featureFocus.flatMap(item => item.geometry ? [item.geometry] : []);
+        if (!geometries.length) return;
+        const bounds = bbox({ type: 'GeometryCollection', geometries }, { recompute: true }) as LayerBounds;
+        if (!bounds.every(Number.isFinite)) return;
+        const canvas = map.getContainer();
+        if (!canvas.clientWidth || !canvas.clientHeight) return;
+        const camera = map.cameraForBounds(bounds, {
+            padding: Math.min(56, canvas.clientWidth / 6, canvas.clientHeight / 6),
+            maxZoom: geometries.length > 1 ? map.getZoom() : Math.max(15, map.getZoom()),
+        });
+        if (camera?.center && camera.zoom !== undefined) {
+            map.easeTo({ center: camera.center, zoom: Math.min(camera.zoom, map.getZoom() + 2.5), duration: 360 });
         }
-    }, [data, fileId, focusFileId, isMapLoaded]);
+    }, [featureFocus, isMapLoaded, isGridMode]);
 
 // =========================================================================
     // 🌟 核心修复一：全图层覆盖 + 语义化智能遮罩 (不误伤背景边界图层)
@@ -1212,47 +1250,69 @@ const MapView: React.FC<MapViewProps> = ({ data, fileId, selectedFeature, onFeat
     useEffect(() => {
         const map = mapInstance.current;
         if (!map || !isMapLoaded) return;
-        for (const id of openFiles.current.keys()) {
-            const filter: maplibregl.FilterSpecification = id === fileId && !isGridMode && selectedFeature?.id != null
-                ? ['==', ['id'], Number(selectedFeature.id)] : EMPTY_SELECTION;
-            for (const layer of highlightLayers(fileLayers(id))) map.setFilter(layer, filter);
+        for (const file of openFiles.current.keys()) {
+            const pending = isGridMode ? [] : selectedFeatures.filter(item => item.fileId === file && !item.geometry)
+                .map(item => Number(item.id)).filter(Number.isSafeInteger);
+            const ids = fileLayers(file);
+            const filter: boolean | maplibregl.ExpressionSpecification = pending.length ? ['in', ['id'], ['literal', pending]] : EMPTY_SELECTION;
+            for (const layer of highlightLayers(ids)) map.setFilter(layer, highlightGeometryFilter(ids, layer, filter));
         }
         if (isGridMode) {
             const id = gridSelection?.id;
-            const filter: maplibregl.FilterSpecification = id == null ? EMPTY_SELECTION : ['any',
+            const filter: boolean | maplibregl.ExpressionSpecification = id == null ? EMPTY_SELECTION : ['any',
                 ['==', ['to-string', ['id']], String(id)], ['==', ['to-string', ['get', 'id']], String(id)]];
-            for (const layer of highlightLayers(gridLayers)) if (map.getLayer(layer)) map.setFilter(layer, filter);
+            for (const layer of highlightLayers(gridLayers)) {
+                if (map.getLayer(layer)) map.setFilter(layer, highlightGeometryFilter(gridLayers, layer, filter));
+            }
         }
-    }, [selectedFeature?.id, isMapLoaded, fileId, selectedFilesInfo, isGridMode, gridData, gridSelection]);
+    }, [selectedFeatures, isMapLoaded, selectedFilesInfo, isGridMode, gridData, gridSelection]);
 
     useEffect(() => {
         const map = mapInstance.current;
-        const feature = isGridMode ? gridSelection : selectedFeature;
-        const cp = feature?.cp;
-        if (!map || !isMapLoaded || activeHidden || !Array.isArray(cp)
-            || !cp.slice(0, 2).every(Number.isFinite) || cp.length < 2) return;
-        const center: [number, number] = [cp[0], cp[1]];
-        if (!isGridMode && selectionOrigin === 'table') {
-            const point = map.project(center);
-            const canvas = map.getContainer();
-            if (point.x < 24 || point.y < 24 || point.x > canvas.clientWidth - 24 || point.y > canvas.clientHeight - 24) {
-                map.easeTo({ center, duration: 320 });
-            }
-            return;
+        if (!map || !isMapLoaded) return;
+        const features: GeoJSON.Feature[] = isGridMode ? [] : selectedFeatures.flatMap(item =>
+            item.geometry && !hiddenFileIds.includes(item.fileId)
+                ? [{ type: 'Feature', geometry: item.geometry, properties: null }] : []);
+        if (!map.getSource(featureSelectionLayers.source)) {
+            addSelectionLayers(map, featureSelectionLayers);
         }
+        updateGridGeometry(map, featureSelectionLayers, { type: 'FeatureCollection', features });
+        for (const id of highlightLayers(featureSelectionLayers)) map.moveLayer(id);
+    }, [selectedFeatures, hiddenFileIds, isGridMode, isMapLoaded, selectedFilesInfo]);
+
+    useEffect(() => {
+        const map = mapInstance.current;
+        if (!map || !isMapLoaded) return;
+        paintSelectionStyle(map, featureSelectionLayers, selectionStyle);
+        for (const file of openFiles.current.keys()) paintSelectionStyle(map, fileLayers(file), selectionStyle);
+    }, [selectionStyle, isMapLoaded, selectedFilesInfo]);
+
+    useEffect(() => {
+        const map = mapInstance.current;
+        const detail = !isGridMode && focusedFeature && !hiddenFileIds.includes(focusedFeature.fileId) ? focusedFeature : null;
+        const feature = isGridMode && !activeHidden ? gridSelection : detail?.properties;
+        const cp = isGridMode ? gridSelection?.cp : detail?.anchor ?? (detail?.geometry
+            ? pointOnFeature(detail.geometry).geometry.coordinates : undefined);
+        if (!map || !isMapLoaded || !feature || !Array.isArray(cp) || cp.length < 2
+            || !cp.slice(0, 2).every(Number.isFinite)) return;
+        const center: [number, number] = [cp[0], cp[1]];
         const content = document.createElement('div');
         content.className = 'map-feature-details';
+        content.setAttribute('role', 'region');
+        content.setAttribute('aria-label', '要素属性');
+        content.tabIndex = 0;
         const heading = document.createElement('strong');
+        const id = detail?.id ?? feature.id;
         heading.textContent = String(feature.name ?? feature.community ?? (isGridMode ? '网格' : '要素'))
-            + (feature.id == null ? '' : ' · #' + feature.id);
+            + (id == null ? '' : ' · #' + id);
         content.append(heading);
         const attributes = document.createElement('dl');
         for (const [key, value] of Object.entries(feature)) {
-            if (key === 'id' || key === 'cp' || key.startsWith('_')) continue;
+            if (['cp', '_geometry', '_geom_coords'].includes(key)) continue;
             const name = document.createElement('dt');
             name.textContent = key;
             const definition = document.createElement('dd');
-            definition.textContent = String(value ?? '—');
+            definition.textContent = value && typeof value === 'object' ? JSON.stringify(value) : String(value ?? '—');
             attributes.append(name, definition);
         }
         content.append(attributes);
@@ -1260,7 +1320,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileId, selectedFeature, onFeat
             closeOnClick: false, focusAfterOpen: false, className: 'workbench-map-popup', maxWidth: '260px', offset: 12,
         }).setLngLat(center).setDOMContent(content).addTo(map);
         return () => { popup.remove(); };
-    }, [selectedFeature, selectionOrigin, isMapLoaded, activeHidden, isGridMode, gridSelection]);
+    }, [isMapLoaded, activeHidden, hiddenFileIds, isGridMode, gridSelection, focusedFeature]);
 
     //   [新增] 导出处理函数
     const handleExport = async () => {
@@ -1446,6 +1506,13 @@ const MapView: React.FC<MapViewProps> = ({ data, fileId, selectedFeature, onFeat
                         );
                     })}
                 </Select>
+                <Tooltip title="开启后，点击地图可逐个添加或取消选择。也可以按住 Shift 点击。">
+                    <Button size="small" icon={<CheckSquareOutlined />} aria-pressed={batchMode}
+                        type={batchMode ? 'primary' : 'default'} disabled={!isMapLoaded || isGridMode || !selectedFilesInfo.length}
+                        onClick={() => setBatchMode(value => !value)}>
+                        {batchMode && selectedFeatures.length > 0 ? `多选 (${selectedFeatures.length})` : '多选'}
+                    </Button>
+                </Tooltip>
                 <Popover content={gridConfigContent} trigger="click" placement="bottom">
                     <Button
                         size="small"

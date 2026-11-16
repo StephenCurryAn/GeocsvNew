@@ -5,6 +5,7 @@ import { AppstoreOutlined, ToolOutlined } from '@ant-design/icons';
 import { sceneService, type Scene } from '../../../services/sceneService';
 import { readActiveSceneId, saveActiveSceneId } from '../scenePreferences';
 import FileTree, { type WorkspaceLayer } from './FileTree';
+import type { SelectionStyle } from '../../map/fileLayers';
 // 1. 引入新组件
 import AnalysisPanel from '../../analysis/components/AnalysisPanel';
 
@@ -15,6 +16,10 @@ interface LeftPanelProps {
   onActivateFile: (fileId: string, fileName: string) => void;
   onToggleFileVisibility: (fileId: string) => void;
   layers: Record<string, WorkspaceLayer>;
+  layerOrder?: string[];
+  onReorderLayers?: (orderedFileIds: string[]) => void;
+  selectionStyle?: SelectionStyle;
+  onSelectionStyleChange?: (style: SelectionStyle) => void;
   selectedFileIds: string[];
   activeFileId: string;
   activeFileFields: string[];
@@ -26,6 +31,10 @@ const LeftPanel: React.FC<LeftPanelProps> = ({
   onActivateFile,
   onToggleFileVisibility,
   layers,
+  layerOrder,
+  onReorderLayers,
+  selectionStyle,
+  onSelectionStyleChange,
   selectedFileIds, 
   activeFileId, 
   activeFileFields 
@@ -168,6 +177,10 @@ const LeftPanel: React.FC<LeftPanelProps> = ({
                 onActivateFile={onActivateFile}
                 onToggleFileVisibility={onToggleFileVisibility}
                 layers={layers}
+                layerOrder={layerOrder}
+                onReorderLayers={onReorderLayers}
+                selectionStyle={selectionStyle}
+                onSelectionStyleChange={onSelectionStyleChange}
               />
             </div>
           )}

@@ -852,6 +852,14 @@ export const getFileTree = async (req: Request, res: Response) => {
  * 获取文件数据 (分页模式) - 取代全量 getFileContent
  * GET /api/files/:id/data?page=1&pageSize=100
  */
+export const getFileExtent = async (req: Request, res: Response) => {
+    const id = String(req.params.id);
+    const file = await FileNode.findFileNodeById(id);
+    if (file?.type !== 'file') return res.status(404).json({ code: 404, message: '文件不存在' });
+    const bounds = await Feature.getFileExtent(id);
+    return res.json({ code: 200, data: { bounds } });
+};
+
 export const getFileData = async (req: Request, res: Response) => {
     try {
         const id = req.params.id as string;
@@ -886,9 +894,10 @@ export const getFileData = async (req: Request, res: Response) => {
         // Promise.all([...]) (并行执行)
         // 加上 Promise.all，A 和 B 同时开始查询，
         // 时间取决于最慢的那个（max(A, B)），大大缩短了响应时间。
-        const [total, features] = await Promise.all([
+        const [total, features, geometryTypes] = await Promise.all([
             Feature.countFeaturesByFileId(id),
-            Feature.findFeaturesPaginated(id, skip, pageSize)
+            Feature.findFeaturesPaginated(id, skip, pageSize),
+            req.query.geometryTypes === '1' ? Feature.getFileGeometryTypes(id) : undefined,
         ]);
 
         // 3. 构造 GeoJSON 返回
@@ -896,6 +905,7 @@ export const getFileData = async (req: Request, res: Response) => {
         const result = {
             type: 'FeatureCollection',
             features: features,
+            ...(geometryTypes ? { geometryTypes } : {}),
             pagination: {
                 total,
                 page,

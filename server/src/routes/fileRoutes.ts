@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import {
-  uploadFile, createFolder, getFileTree, getFileData, renameNode, deleteNode, updateFileData,
+  uploadFile, createFolder, getFileTree, getFileData, getFileExtent, renameNode, deleteNode, updateFileData,
   addRow, deleteRow, addColumn, deleteColumn, exportFile, renameColumn, getTile,
 } from '../controllers/fileController';
 import { findFileNodeById } from '../models/FileNode';
@@ -47,6 +47,7 @@ router.post('/upload', (req, res, next) => {
 router.post('/folder', createFolder);
 router.get('/tree', getFileTree);
 router.get('/:id/data', getFileData);
+router.get('/:id/extent', getFileExtent);
 router.put('/:id', renameNode);
 router.delete('/:id', deleteNode);
 router.post('/:id/update', updateFileData);
