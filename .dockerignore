@@ -14,5 +14,6 @@
 **/dist
 **/.venv
 **/__pycache__
+**/.tmp
 **/*.tsbuildinfo
 server/uploads

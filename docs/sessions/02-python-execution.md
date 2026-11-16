@@ -109,3 +109,20 @@ Pop-Location
 ```
 
 `TEST_DATABASE_URL` 应指向已启用 PostGIS 的专用测试数据库。对已在运行的隔离服务，可用 `python python_engine/examples/run_moran.py four-faces value --contiguity queen --simulate-timeout` 提交并读取结果。请求等待超时只表示客户端未收到响应，示例用同一计划与请求键重试。收到 Run 后，计算失败通过 `status` 和 `errorCode` 表示。
+
+## Docker 验收
+
+2026-11-16，Docker Engine 29.6.1、Compose 5.2.0。新建项目 `geocsv-moran-check`，仅通过 `127.0.0.1:8082` 暴露 Nginx。四个容器健康。`server` 与 `python` 中均为 CPython 3.12.13，`uv.lock` 文件摘要相同。实测 `server` 进程用户 UID 为 1000、结果卷权限为 `0700`、PID 1 为 `docker-init`，`python` 服务没有挂载结果卷。
+
+四面 GeoJSON 通过场景上传接口进入独立数据库，目标字段 `value` 的值为 `[1,3,5,7]`。Queen 和 Rook 两次请求使用同一输入摘要 `5c8f78c38e76261ea5ba14a06fb472953c085d9298a0a7aa74ebaff6ed9ea231`，算子为 `spatial_autocorrelation@2`，实现为 `moran-lisa/2.0.0`。相同确认请求与幂等键各返回原 Run。独立的 FastAPI 兼容端点也以同一图层返回 200、全局 I `0.2` 和四行。
+
+| 验收 | Run ID | Artifact ID | 实际结果 |
+| --- | --- | --- | --- |
+| Queen，种子 42，4 次置换 | `522c4386-b019-4b9d-b643-e7a9896505ec` | `c41f549c-f12d-43ab-8885-dd06822cf0ff` | 全局 I `0.2`，p `0.4`，邻居数 `[1,2,1,0]`，局部 p `[0.8,0.8,1,null]` |
+| Rook，种子 42，禁用置换 | `64efb2a9-3e83-46b2-bdbf-e06ae92958aa` | `323d24a5-71e2-483d-9bc0-b094c6af6d00` | 全局 I `0.6`，邻居数 `[1,1,0,0]`，p 值为空 |
+| 空间计数，排除边界 | `1098feff-ff65-4951-9b9f-5d0d7c208a49` | `c23847ad-4282-4f01-b7fc-1ea866aca1f6` | 逐面计数 `[2,1,0,0]` |
+| Queen 归档故障恢复 | `7bfe37cb-8d8f-41be-8ce3-896e2555594d` | `cad699b6-4abe-417d-ae66-a695125e08a5` | 同一 Run 的唯一 Artifact，全局 I `0.2` |
+
+故障注入在独立库锁住 Artifact 表，确认 Worker 结果文件已经原子发布且 Node 正等待归档，再强制终止 `server`。释放测试锁后，把重建实例的 `ANALYSIS_PYTHON` 暂时设为不可执行路径。调度器从持久卷读取结果，将同一 Run 归档一次，卷内测试标记也跨重建保留。恢复正常启动配置并重建容器后，用新 HTTP 连接复读成功，原有历史、四行结果、GeoJSON 和 CSV 均与重建前一致。
+
+复跑正常链路与容器重建验证见 [Docker 验收命令](../docker-local.md#moranlisa-的独立-compose-验收)。
