@@ -605,3 +605,10 @@
     overflow-x: auto;
     scrollbar-width: thin;
 }
+
+@media (prefers-reduced-motion: no-preference) {
+    .panel-separator::after,
+    .data-tabs button {
+        transition: background-color 160ms ease, color 160ms ease, border-color 160ms ease;
+    }
+}

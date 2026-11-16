@@ -28,3 +28,13 @@
 - 检查多个选中图层、空文件、分页数据加载错误、额外 GeoJSON 请求失败与 MVT 请求失败。不依赖远端底图供应商或真实业务文件复现这些分支。
 - 浅色、深色和跟随系统分别检查页面刷新。系统配色变化时，跟随系统即时更新工作台主题。
 - 前端已有测试使用 npm run test:basemaps、npm run test:analysis 和 npm run test:pipeline，共 18 项。npm run build 完成 TypeScript 检查和生产打包。Vite 提示部分打包文件超过 500 kB。
+
+## 空间透视结果复查
+
+参考本地留存的 [NeoGIS Tenon 主题](https://github.com/GeoScenarioScripter/NeoGIS-Frontend/blob/1920529834d1afe153467c1df7ce410c9f7a5825/docs/themes/tenon.md)，结果窗口用暖浅色、石墨深色、柔和边界和短过渡。首屏左侧为结果地图，右侧为图表和明细，顶部是结果摘要和 CSV 导出。窄窗口下分区改为纵向排列，各区仍可操作。
+
+结果图用低饱和底图辅助辨认位置，专题数据可独立绘制。地图、图表、明细通过要素 ID 联动，选中统一为暖色。选择变化沿用当前地图和缩放，只有要素在视口外才定位。保留全图定位、图表类型切换、分页和导出。支持键盘选中明细行和减少动态效果的系统设置。
+
+生产预览用 Chrome 和合成数据验证表格、地图、图表双向联动，检查柱状、折线、占比切换、长图表滚动、明细分页、CSV 下载和空结果。核对 1440 × 900、1024 × 768 和 710 × 780 的布局。已有前端 18 项测试通过，生产构建完成。
+
+[新版浅色](09-workbench-ui/result-light.png) · [新版深色](09-workbench-ui/result-dark.png) · [1024 像素窄桌面](09-workbench-ui/result-narrow.png)

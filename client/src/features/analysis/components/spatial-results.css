@@ -1,0 +1,361 @@
+.spatial-result-dialog {
+    --result-surface: #faf9f6;
+    --result-panel: #fffefa;
+    --result-inset: #f2f0ea;
+    --result-border: #dfdcd3;
+    --result-text: #292c2f;
+    --result-muted: #5d636a;
+    --result-selected: #f4e7dc;
+    --result-focus: #9e593a;
+    --result-motion: 160ms cubic-bezier(0.4, 0, 0.2, 1);
+    font-family: var(--workbench-font);
+}
+
+:root[data-theme="dark"] .spatial-result-dialog {
+    --result-surface: #1c2127;
+    --result-panel: #222930;
+    --result-inset: #272e35;
+    --result-border: #39434b;
+    --result-text: #edf0f3;
+    --result-muted: #aab7c1;
+    --result-selected: #43352c;
+    --result-focus: #eeae83;
+}
+
+.spatial-result-dialog .ant-modal-header {
+    display: flex;
+    align-items: center;
+    min-height: 62px;
+    padding: 12px 152px 12px 20px;
+    border-bottom: 1px solid var(--result-border);
+}
+
+.spatial-result-dialog .ant-modal-title {
+    color: var(--result-text);
+    font-size: 18px;
+    font-weight: 650;
+}
+
+.spatial-result-dialog .ant-modal-close {
+    inset-block-start: 15px;
+    inset-inline-end: 14px;
+    width: 32px;
+    height: 32px;
+    color: var(--result-muted);
+}
+
+.spatial-result-dialog .spatial-result-export {
+    position: absolute;
+    z-index: 1;
+    inset-block-start: 15px;
+    inset-inline-end: 56px;
+    border-color: var(--result-border);
+    background: var(--result-panel);
+    color: var(--result-text);
+}
+
+.spatial-result-dialog-state {
+    padding: 34px 20px;
+}
+
+.spatial-result-error {
+    margin: 12px 16px 0;
+}
+
+.spatial-results {
+    padding: 14px 16px 16px;
+    color: var(--result-text);
+}
+
+.spatial-result-summary {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    margin: 0 0 12px;
+    border: 1px solid var(--result-border);
+    border-radius: 9px;
+    background: var(--result-inset);
+}
+
+.spatial-result-summary > div {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 2px 14px;
+    padding: 10px 16px;
+}
+
+.spatial-result-summary > div + div {
+    border-inline-start: 1px solid var(--result-border);
+}
+
+.spatial-result-summary dt {
+    color: var(--result-muted);
+    font-size: 12px;
+}
+
+.spatial-result-summary dd {
+    margin: 0;
+    order: -1;
+    font-size: 22px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
+.spatial-result-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.22fr) minmax(0, 1fr);
+    gap: 12px;
+    height: clamp(450px, calc(100dvh - 220px), 760px);
+}
+
+.spatial-result-inspector {
+    display: grid;
+    grid-template-rows: minmax(175px, 0.85fr) minmax(0, 1fr);
+    gap: 12px;
+    min-height: 0;
+}
+
+.spatial-result-panel {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    border: 1px solid var(--result-border);
+    border-radius: 9px;
+    background: var(--result-panel);
+}
+
+.spatial-result-panel-heading {
+    display: flex;
+    flex: none;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-height: 43px;
+    padding: 7px 12px;
+    border-bottom: 1px solid var(--result-border);
+}
+
+.spatial-result-panel-heading h3 {
+    margin: 0;
+    color: var(--result-text);
+    font-size: 13px;
+    font-weight: 650;
+}
+
+.spatial-result-panel-heading .ant-segmented {
+    flex-shrink: 0;
+    background: var(--result-inset);
+    color: var(--result-muted);
+}
+
+.spatial-result-panel-heading .ant-segmented-item-selected {
+    color: var(--result-text);
+    background: var(--result-panel);
+}
+
+.spatial-result-muted {
+    color: var(--result-muted);
+    font-size: 11px;
+}
+
+.spatial-result-map-stage,
+.spatial-result-plot,
+.spatial-result-table-viewport {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+}
+
+.spatial-result-map-canvas.maplibregl-map,
+.spatial-result-map-canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+}
+
+.spatial-result-placeholder {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    padding: 20px;
+    text-align: center;
+}
+
+.spatial-result-placeholder .ant-empty-description {
+    color: var(--result-muted);
+    font-size: 12px;
+}
+
+.spatial-result-plot,
+.spatial-result-table-viewport {
+    overflow: auto;
+    scrollbar-width: thin;
+}
+
+.spatial-result-map-footer,
+.spatial-result-pagination {
+    display: flex;
+    flex: none;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-height: 38px;
+    padding: 5px 11px;
+    border-top: 1px solid var(--result-border);
+    color: var(--result-muted);
+    font-size: 11px;
+}
+
+.spatial-result-pagination {
+    justify-content: flex-end;
+}
+
+.spatial-result-legend,
+.spatial-result-map-selection {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
+.spatial-result-legend {
+    flex-shrink: 0;
+    font-variant-numeric: tabular-nums;
+}
+
+.spatial-result-map-selection {
+    display: block;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    color: var(--result-text);
+}
+
+.spatial-result-map-selection > span {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    margin-inline-end: 5px;
+    border-radius: 2px;
+}
+
+.spatial-result-ramp {
+    width: 74px;
+    height: 7px;
+    border-radius: 2px;
+}
+
+.spatial-result-map :is(.maplibregl-ctrl-group, .maplibregl-ctrl.maplibregl-ctrl-attrib, .maplibregl-ctrl-scale) {
+    background: var(--result-panel);
+    color: var(--result-text);
+}
+
+.spatial-result-map .maplibregl-ctrl-group {
+    box-shadow: 0 1px 5px rgb(0 0 0 / 12%);
+}
+
+.spatial-result-map .maplibregl-ctrl-attrib a {
+    color: var(--result-muted);
+}
+
+:root[data-theme="dark"] .spatial-result-map :is(.maplibregl-ctrl-icon, .maplibregl-ctrl-attrib-button) {
+    filter: invert(1);
+}
+
+.spatial-result-table-error {
+    margin: 6px 8px;
+}
+
+.spatial-result-table .ant-table-wrapper :is(.ant-table, .ant-table-cell) {
+    background: var(--result-panel);
+    color: var(--result-text);
+}
+
+.spatial-result-table .ant-table-thead > tr > th {
+    background: var(--result-inset);
+    color: var(--result-muted);
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.spatial-result-table .ant-table-thead > tr > th::before {
+    display: none;
+}
+
+.spatial-result-table .ant-table-thead > tr > th,
+.spatial-result-table .ant-table-tbody > tr > td {
+    padding: 7px 10px;
+    border-bottom-color: var(--result-border);
+}
+
+.spatial-result-table .spatial-result-row {
+    cursor: pointer;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+}
+
+.spatial-result-table .spatial-result-row > td {
+    transition: background-color var(--result-motion);
+}
+
+.spatial-result-table .spatial-result-row:hover > td,
+.spatial-result-table .spatial-result-row > td.ant-table-cell-row-hover {
+    background: var(--result-inset);
+}
+
+.spatial-result-table .spatial-result-row[aria-selected="true"] > td {
+    background: var(--result-selected);
+}
+
+.spatial-result-table .spatial-result-row[aria-selected="true"] > td:first-child {
+    box-shadow: inset 2px 0 var(--result-focus);
+}
+
+.spatial-result-table .spatial-result-row:focus-visible {
+    outline: 2px solid var(--result-focus);
+    outline-offset: -2px;
+}
+
+@media (max-width: 810px) {
+    .spatial-result-grid {
+        height: auto;
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .spatial-result-map {
+        height: clamp(300px, 48dvh, 440px);
+    }
+
+    .spatial-result-inspector {
+        grid-template-rows: 240px minmax(290px, 1fr);
+    }
+}
+
+@media (max-width: 480px) {
+    .spatial-results {
+        padding: 10px;
+    }
+
+    .spatial-result-summary > div {
+        flex-direction: column;
+        padding: 8px 10px;
+    }
+
+    .spatial-result-dialog .ant-modal-header {
+        padding-inline-start: 12px;
+    }
+
+    .spatial-result-dialog .ant-modal-title {
+        font-size: 15px;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .spatial-result-dialog {
+        --result-motion: 0ms;
+    }
+}

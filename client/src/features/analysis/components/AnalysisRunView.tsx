@@ -2,6 +2,7 @@ import { Alert, Button, Empty, Modal, Space, Spin, Tag } from 'antd';
 import { CheckCircleOutlined, ClockCircleOutlined, DownloadOutlined, HistoryOutlined, LoadingOutlined, StopOutlined } from '@ant-design/icons';
 import SpatialPivotResult from './SpatialPivotResult';
 import type { AnalysisRunController, ResultChartType } from './useAnalysisRun';
+import './spatial-results.css';
 
 const statusLabel = { queued: '排队中', running: '计算中', succeeded: '已完成', failed: '失败', cancelled: '已取消' } as const;
 const formatRunTime = (value: string): string => {
@@ -55,11 +56,25 @@ const AnalysisRunView = ({ analysis, chartType, onChartTypeChange }: AnalysisRun
       title="空间透视结果"
       open={analysis.resultOpen}
       onCancel={() => analysis.setResultOpen(false)}
-      footer={analysis.artifact ? <Button icon={<DownloadOutlined />} loading={analysis.csvDownloading} onClick={() => void analysis.exportCsv()}>导出完整 CSV</Button> : null}
-      width={1120}
-      styles={{ body: { maxHeight: '75vh', overflowY: 'auto' } }}
+      centered
+      destroyOnHidden
+      className="spatial-result-dialog"
+      width="min(1280px, calc(100vw - 32px))"
+      footer={null}
+      styles={{
+        container: { padding: 0, borderRadius: 14, overflow: 'hidden', background: 'var(--result-surface)' },
+        header: { margin: 0, background: 'var(--result-surface)' },
+        body: { maxHeight: 'calc(100dvh - 116px)', overflow: 'auto' },
+        mask: { backdropFilter: 'none', backgroundColor: 'rgb(23 28 36 / 54%)' },
+      }}
     >
-      {analysis.resultError && <Alert className="mb-3" type="error" showIcon title={analysis.resultError} closable onClose={() => analysis.setResultError(null)} />}
+      {analysis.artifact && (
+        <Button className="spatial-result-export" icon={<DownloadOutlined />} loading={analysis.csvDownloading}
+          onClick={() => void analysis.exportCsv()}>
+          导出 CSV
+        </Button>
+      )}
+      {analysis.resultError && <Alert className="spatial-result-error" type="error" showIcon title={analysis.resultError} closable onClose={() => analysis.setResultError(null)} />}
       {analysis.artifact ? (
         <SpatialPivotResult
           artifact={analysis.artifact}
@@ -77,11 +92,11 @@ const AnalysisRunView = ({ analysis, chartType, onChartTypeChange }: AnalysisRun
           onChartTypeChange={onChartTypeChange ?? analysis.setChartType}
         />
       ) : analysis.artifactError ? (
-        <div className="space-y-3 py-8">
+        <div className="spatial-result-dialog-state space-y-3">
           <Alert type="error" showIcon title={`结果加载失败：${analysis.artifactError}`} />
           <div className="text-center"><Button onClick={analysis.retryArtifact}>重试加载结果</Button></div>
         </div>
-      ) : analysis.artifactLoading ? <div className="py-12 text-center"><Spin /><span className="ml-2 text-sm text-geo-text-secondary">读取结果…</span></div> : <Empty description="暂无结果" />}
+      ) : analysis.artifactLoading ? <div className="spatial-result-dialog-state text-center"><Spin /><span className="ml-2 text-sm text-geo-text-secondary">读取结果…</span></div> : <Empty className="spatial-result-dialog-state" description="暂无结果" />}
     </Modal>
   </>
 );
