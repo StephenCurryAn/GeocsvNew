@@ -137,7 +137,7 @@ const LeftPanel: React.FC<LeftPanelProps> = ({
 
       <div className="flex-1 overflow-hidden relative">
         <div className="flex h-full flex-col" style={{ display: activeTab === 'workspace' ? undefined : 'none' }}>
-          <div className="flex items-center gap-2 border-b border-gray-800 p-3">
+          <div className="workspace-scene-controls flex items-center gap-2 border-b border-gray-800 p-3">
             <Select
               aria-label="活动场景"
               placeholder={listError ? '场景加载失败' : '加载场景中'}

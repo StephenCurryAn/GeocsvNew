@@ -10,11 +10,14 @@ interface PanelSeparatorProps {
     value: number;
     min: number;
     max: number;
-    onResize: (value: number) => void;
+    collapsed?: boolean;
+    onResize: (value: number, startValue: number, fromPointer: boolean) => void;
+    onDraggingChange?: (dragging: boolean) => void;
 }
 
 export default function PanelSeparator({
-    label, controls, horizontal = false, reverse = false, value, min, max, onResize,
+    label, controls, horizontal = false, reverse = false, value, min, max, collapsed,
+    onResize, onDraggingChange,
 }: PanelSeparatorProps) {
     const drag = useRef<{ pointerId: number; start: number; value: number } | null>(null);
     const clamp = (next: number) => Math.min(max, Math.max(min, next));
@@ -33,7 +36,7 @@ export default function PanelSeparator({
             aria-valuemin={min}
             aria-valuemax={max}
             aria-valuenow={value}
-            aria-valuetext={value + ' 像素'}
+            aria-valuetext={collapsed ? '已收起' : value + ' 像素'}
             onPointerDown={event => {
                 if (event.button !== 0 || !event.isPrimary) return;
                 event.currentTarget.focus();
@@ -41,15 +44,19 @@ export default function PanelSeparator({
                 drag.current = {
                     pointerId: event.pointerId, start: horizontal ? event.clientY : event.clientX, value,
                 };
+                onDraggingChange?.(true);
                 event.preventDefault();
             }}
             onPointerMove={event => {
                 const start = drag.current;
                 if (!start || start.pointerId !== event.pointerId) return;
                 const position = horizontal ? event.clientY : event.clientX;
-                onResize(clamp(start.value + (position - start.start) * direction));
+                onResize(clamp(start.value + (position - start.start) * direction), start.value, true);
             }}
-            onLostPointerCapture={() => { drag.current = null; }}
+            onLostPointerCapture={() => {
+                drag.current = null;
+                onDraggingChange?.(false);
+            }}
             onKeyDown={event => {
                 let next: number;
                 const step = event.shiftKey ? 32 : 8;
@@ -61,7 +68,7 @@ export default function PanelSeparator({
                     default: return;
                 }
                 event.preventDefault();
-                onResize(clamp(next));
+                onResize(clamp(next), value, false);
             }}
         />
     );

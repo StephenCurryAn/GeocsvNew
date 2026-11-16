@@ -815,16 +815,6 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({ sceneId, selectedFileIds = [] }
     // ─────────────────────────────────────────────
     return (
         <div className="agent-panel">
-            <header className="workbench-heading">
-                <h2 id="agent-heading"><MessageOutlined aria-hidden="true" />空间分析助手</h2>
-                {assistantMode === 'legacy' && (
-                    <Button
-                        type="text" size="small" icon={<ClearOutlined />}
-                        onClick={handleClear} aria-label="清空对话" title="清空对话"
-                    />
-                )}
-            </header>
-
             <div className="agent-mode">
                 <Segmented
                     aria-label="助手模式"
@@ -834,10 +824,16 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({ sceneId, selectedFileIds = [] }
                     size="small"
                     block
                 />
+                {assistantMode === 'legacy' && (
+                    <Button
+                        type="text" size="small" icon={<ClearOutlined />}
+                        onClick={handleClear} aria-label="清空对话" title="清空对话"
+                    />
+                )}
             </div>
 
             {/* ── 消息列表 ── */}
-            <div className={`min-h-0 flex-1 overflow-hidden ${assistantMode === 'operator' ? 'flex' : 'hidden'}`}>
+            <div className={`min-h-0 min-w-0 flex-1 flex-col overflow-hidden ${assistantMode === 'operator' ? 'flex' : 'hidden'}`}>
                 <UnifiedAnalysisAssistant key={sceneId} sceneId={sceneId} selectedFileIds={selectedFileIds} onSwitchToLegacy={() => setAssistantMode('legacy')} />
             </div>
             <div

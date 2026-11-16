@@ -1,17 +1,21 @@
 import { useRef, useState, type ReactNode } from 'react';
-import { ChartNoAxesColumnIncreasing, Map as MapIcon, PanelsTopLeft } from 'lucide-react';
+import {
+    ChartNoAxesColumnIncreasing, Map as MapIcon, MessageCircle, PanelLeftClose, PanelLeftOpen,
+    PanelRightClose, PanelRightOpen, PanelsTopLeft,
+} from 'lucide-react';
 import PanelSeparator, { SEPARATOR_SIZE } from './PanelSeparator';
 import WorkbenchThemeMenu from './WorkbenchThemeMenu';
 import { useAnalysisWorkspace, type WorkspaceView } from '../features/analysis/components/AnalysisWorkspace';
 import AnalysisResultView from '../features/analysis/components/AnalysisResultView';
 import { usePanelSize } from './usePanelSize';
 
-const MIN_WORKSPACE = 178;
-const MIN_ASSISTANT = 264;
-const MIN_CENTER = 300;
+const RAIL_WIDTH = 44;
+const MIN_WORKSPACE = 196;
+const MIN_ASSISTANT = 252;
+const MIN_CENTER = 288;
 const MIN_MAP = 240;
 const MIN_TABLE = 218;
-const MIN_WIDTH = MIN_WORKSPACE + MIN_ASSISTANT + MIN_CENTER + 2 * SEPARATOR_SIZE;
+const FULL_WIDTH = MIN_WORKSPACE + MIN_ASSISTANT + MIN_CENTER + 2 * SEPARATOR_SIZE;
 const VIEW_BAR_HEIGHT = 44;
 const MIN_HEIGHT = MIN_MAP + MIN_TABLE + SEPARATOR_SIZE + VIEW_BAR_HEIGHT;
 const views = [
@@ -19,6 +23,8 @@ const views = [
     { key: 'results', title: '分析结果', icon: ChartNoAxesColumnIncreasing },
 ] as const;
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+type Side = 'workspace' | 'assistant';
+type SidebarSize = { collapsed: boolean; width?: number };
 
 interface MainLayoutProps {
     workspace: ReactNode;
@@ -32,42 +38,88 @@ export default function MainLayout({ workspace, map, table, assistant }: MainLay
     const tabs = useRef<Record<WorkspaceView, HTMLButtonElement | null>>({ map: null, results: null });
     const workbenchRef = useRef<HTMLDivElement>(null);
     const size = usePanelSize(workbenchRef);
-    const [workspaceWidth, setWorkspaceWidth] = useState<number>();
-    const [assistantWidth, setAssistantWidth] = useState<number>();
+    const [workspaceSize, setWorkspaceSize] = useState<SidebarSize>({ collapsed: false });
+    const [assistantSize, setAssistantSize] = useState<SidebarSize>({ collapsed: false });
+    const [preferredSide, setPreferredSide] = useState<Side>('workspace');
+    const [resizingSide, setResizingSide] = useState(false);
     const [tableHeight, setTableHeight] = useState<number>();
 
-    const width = Math.max(MIN_WIDTH, size.width);
+    const narrow = size.width > 0 && size.width < FULL_WIDTH;
+    const leftCollapsed = workspaceSize.collapsed || (narrow && !assistantSize.collapsed && preferredSide === 'assistant');
+    const rightCollapsed = assistantSize.collapsed || (narrow && !workspaceSize.collapsed && preferredSide === 'workspace');
+    const leftMin = leftCollapsed ? RAIL_WIDTH : MIN_WORKSPACE;
+    const rightMin = rightCollapsed ? RAIL_WIDTH : MIN_ASSISTANT;
+    const minWidth = leftMin + rightMin + MIN_CENTER + 2 * SEPARATOR_SIZE;
+    const width = Math.max(minWidth, size.width || FULL_WIDTH);
     const height = Math.max(MIN_HEIGHT, size.height);
     const sidesAvailable = width - MIN_CENTER - 2 * SEPARATOR_SIZE;
-    const leftRequested = workspaceWidth ?? clamp(Math.round(width * 0.18), MIN_WORKSPACE, 264);
-    const rightRequested = assistantWidth ?? clamp(Math.round(width * 0.24), MIN_ASSISTANT, 368);
-    const right = clamp(rightRequested, MIN_ASSISTANT, Math.min(560, sidesAvailable - MIN_WORKSPACE));
-    const left = clamp(leftRequested, MIN_WORKSPACE, Math.min(480, sidesAvailable - right));
+    const leftRequested = workspaceSize.width ?? clamp(Math.round(width * 0.18), MIN_WORKSPACE, 264);
+    const rightRequested = assistantSize.width ?? clamp(Math.round(width * 0.24), MIN_ASSISTANT, 368);
+    const right = rightCollapsed ? RAIL_WIDTH : clamp(rightRequested, rightMin, Math.min(560, sidesAvailable - leftMin));
+    const left = leftCollapsed ? RAIL_WIDTH : clamp(leftRequested, leftMin, Math.min(480, sidesAvailable - right));
+    const leftDragMax = Math.min(480, sidesAvailable - (leftCollapsed ? (narrow ? RAIL_WIDTH : rightMin) : right));
+    const rightDragMax = Math.min(560, sidesAvailable - (rightCollapsed ? (narrow ? RAIL_WIDTH : leftMin) : left));
     const tableMax = height - VIEW_BAR_HEIGHT - MIN_MAP - SEPARATOR_SIZE;
     const bottom = clamp(tableHeight ?? Math.round(height * 0.36), MIN_TABLE, tableMax);
+
+    const toggleSide = (side: Side, collapsed: boolean) => {
+        if (collapsed) setPreferredSide(side);
+        const update = side === 'workspace' ? setWorkspaceSize : setAssistantSize;
+        update(previous => ({ ...previous, collapsed: !collapsed }));
+    };
+
+    const resizeSide = (side: Side, value: number, start: number, fromPointer: boolean) => {
+        const minimum = side === 'workspace' ? MIN_WORKSPACE : MIN_ASSISTANT;
+        const fromRail = start === RAIL_WIDTH;
+        // Drag past the compact layout to snap shut. A short pull on the rail opens it.
+        const snapAt = fromRail ? RAIL_WIDTH + (fromPointer ? 44 : 0) : minimum - (fromPointer ? 28 : 1);
+        const collapsed = value <= snapAt;
+        if (!collapsed) setPreferredSide(side);
+        const update = side === 'workspace' ? setWorkspaceSize : setAssistantSize;
+        update(previous => {
+            // Reopen at the width before the closing gesture, including a keyboard Home press.
+            const nextWidth = collapsed
+                ? (fromRail ? previous.width : start)
+                : (fromRail && !fromPointer && value < minimum ? previous.width : Math.max(minimum, value));
+            return previous.collapsed === collapsed && previous.width === nextWidth ? previous : { collapsed, width: nextWidth };
+        });
+    };
 
     return (
         <div className="workbench-scroll" ref={workbenchRef}>
             <div
                 className="workbench"
+                data-resizing={resizingSide || undefined}
                 style={{
-                    minWidth: MIN_WIDTH,
+                    minWidth,
                     minHeight: MIN_HEIGHT,
                     gridTemplateColumns: left + 'px ' + SEPARATOR_SIZE + 'px minmax(0, 1fr) ' + SEPARATOR_SIZE + 'px ' + right + 'px',
                 }}
             >
-                <aside id="workbench-workspace" className="workbench-workspace" aria-labelledby="workspace-heading">
-                    <header className="workbench-heading">
-                        <h1 id="workspace-heading"><span className="workbench-mark" aria-hidden="true"><PanelsTopLeft size={15} /></span>工作空间</h1>
-                        <WorkbenchThemeMenu />
+                <aside className="workbench-workspace" aria-label="工作空间" data-collapsed={leftCollapsed || undefined}>
+                    <header className="workbench-heading workbench-sidebar-heading">
+                        <h1 hidden={leftCollapsed}><span className="workbench-mark" aria-hidden="true"><PanelsTopLeft size={15} /></span>工作空间</h1>
+                        <div className="workbench-heading-actions">
+                            <div hidden={leftCollapsed}><WorkbenchThemeMenu /></div>
+                            <button type="button" className="workbench-sidebar-toggle"
+                                aria-label={leftCollapsed ? '展开工作空间' : '收起工作空间'}
+                                title={leftCollapsed ? '展开工作空间' : '收起工作空间'}
+                                aria-controls="workbench-workspace" aria-expanded={!leftCollapsed}
+                                onClick={() => toggleSide('workspace', leftCollapsed)}>
+                                {leftCollapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
+                            </button>
+                        </div>
                     </header>
-                    <div className="workbench-workspace-content">{workspace}</div>
+                    {leftCollapsed && <span className="workbench-rail-label" aria-hidden="true">工作空间</span>}
+                    <div id="workbench-workspace" className="workbench-sidebar-body workbench-workspace-content"
+                        hidden={leftCollapsed}>{workspace}</div>
                 </aside>
 
                 <PanelSeparator
                     label="调整工作空间宽度" controls="workbench-workspace"
-                    value={left} min={MIN_WORKSPACE} max={Math.min(480, sidesAvailable - right)}
-                    onResize={setWorkspaceWidth}
+                    value={left} min={RAIL_WIDTH} max={leftDragMax} collapsed={leftCollapsed}
+                    onResize={(value, start, fromPointer) => resizeSide('workspace', value, start, fromPointer)}
+                    onDraggingChange={setResizingSide}
                 />
 
                 <main className="workbench-center">
@@ -103,7 +155,7 @@ export default function MainLayout({ workspace, map, table, assistant }: MainLay
                             <section className="workbench-map" aria-label="地图">{map}</section>
                             <PanelSeparator
                                 horizontal reverse label="调整属性表高度" controls="workbench-table"
-                                value={bottom} min={MIN_TABLE} max={tableMax} onResize={setTableHeight}
+                                value={bottom} min={MIN_TABLE} max={tableMax} onResize={value => setTableHeight(value)}
                             />
                             <section id="workbench-table" className="workbench-table" aria-label="属性表">{table}</section>
                         </div>
@@ -118,12 +170,24 @@ export default function MainLayout({ workspace, map, table, assistant }: MainLay
 
                 <PanelSeparator
                     reverse label="调整助手宽度" controls="workbench-assistant"
-                    value={right} min={MIN_ASSISTANT} max={Math.min(560, sidesAvailable - left)}
-                    onResize={setAssistantWidth}
+                    value={right} min={RAIL_WIDTH} max={rightDragMax} collapsed={rightCollapsed}
+                    onResize={(value, start, fromPointer) => resizeSide('assistant', value, start, fromPointer)}
+                    onDraggingChange={setResizingSide}
                 />
 
-                <aside id="workbench-assistant" className="workbench-assistant" aria-labelledby="agent-heading">
-                    {assistant}
+                <aside className="workbench-assistant" aria-label="空间分析助手" data-collapsed={rightCollapsed || undefined}>
+                    <header className="workbench-heading workbench-sidebar-heading">
+                        <h2 hidden={rightCollapsed}><span className="workbench-mark" aria-hidden="true"><MessageCircle size={15} /></span>空间分析助手</h2>
+                        <button type="button" className="workbench-sidebar-toggle"
+                            aria-label={rightCollapsed ? '展开空间分析助手' : '收起空间分析助手'}
+                            title={rightCollapsed ? '展开空间分析助手' : '收起空间分析助手'}
+                            aria-controls="workbench-assistant" aria-expanded={!rightCollapsed}
+                            onClick={() => toggleSide('assistant', rightCollapsed)}>
+                            {rightCollapsed ? <PanelRightOpen size={17} /> : <PanelRightClose size={17} />}
+                        </button>
+                    </header>
+                    {rightCollapsed && <span className="workbench-rail-label" aria-hidden="true">分析助手</span>}
+                    <div id="workbench-assistant" className="workbench-sidebar-body" hidden={rightCollapsed}>{assistant}</div>
                 </aside>
             </div>
         </div>

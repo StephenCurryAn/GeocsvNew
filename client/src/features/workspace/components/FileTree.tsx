@@ -401,9 +401,9 @@ const FileTree: React.FC<FileTreeProps> = ({
       {/* 1. 工具栏区域 (Toolbar)
          这里放"新建文件夹"和"上传"按钮
       */}
-      <div className="px-3 py-3 flex items-center justify-between border-b border-gray-800">
+      <div className="resource-toolbar px-3 py-3 flex items-center justify-between border-b border-gray-800">
         <span className="font-bold text-gray-200 text-sm">资源</span>
-        <div className="flex gap-2">
+        <div className="resource-toolbar-actions flex gap-2">
           {/* 新建文件夹 */}
           <Button
             size="small"
@@ -443,7 +443,7 @@ const FileTree: React.FC<FileTreeProps> = ({
 
       {/* 2. 树形列表区域 (Tree)
       */}
-      <div className="min-h-0 flex-1 overflow-y-auto py-2">
+      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden py-2">
         {treeStatus === 'error' ? (
           <div className="flex items-center justify-center gap-2 p-2 text-sm">
             <span>资源加载失败</span>
