@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BasemapController, BASEMAP_ANCHOR, BASEMAP_OPTIONS, initialMapStyle, rasterStyle, prepareBasemap, loadBasemap } from '../src/features/map/basemaps.ts';
+import { BasemapController, BASEMAP_ANCHOR, BASEMAP_OPTIONS, DEFAULT_BASEMAP, initialMapStyle, rasterStyle, prepareBasemap, loadBasemap } from '../src/features/map/basemaps.ts';
 
 class MapDouble {
   constructor() {
@@ -45,12 +45,15 @@ const vectorStyle = () => ({
   layers: [{ id: 'water', type: 'fill', source: 'world', 'source-layer': 'water' }],
 });
 
-test('only Protomaps and proxied TianDiTu options are exposed with a neutral initial map', () => {
+test('Protomaps light is the default and the initial map only provides a transparent anchor', () => {
   assert.deepEqual(BASEMAP_OPTIONS.map(option => option.key), [
     'protomaps-light', 'protomaps-white', 'protomaps-grayscale', 'protomaps-dark', 'protomaps-black',
     'tianditu-vector', 'tianditu-imagery',
   ]);
-  assert.equal(initialMapStyle().layers[0].paint['background-color'], '#f5f7fb');
+  assert.equal(DEFAULT_BASEMAP, BASEMAP_OPTIONS[0].key);
+  assert.deepEqual(initialMapStyle().sources, {});
+  assert.deepEqual(initialMapStyle().layers.map(layer => layer.id), [BASEMAP_ANCHOR]);
+  assert.equal(initialMapStyle().layers[0].paint['background-opacity'], 0);
   assert.throws(() => rasterStyle('dark', '/api'));
   assert.throws(() => rasterStyle('light', '/api'));
 });
@@ -86,7 +89,7 @@ test('switching basemaps preserves business source identity, highlight filter an
   assert.equal(map.getLayer('selected-business'), highlight);
   assert.equal(map.layers.at(-2).id, BASEMAP_ANCHOR);
   assert.equal(map.layers.at(-1).id, 'selected-business');
-  assert.ok(!Object.keys(map.sources).some(id => id.startsWith('basemap-initial-') || id.startsWith('basemap-1-')));
+  assert.ok(!Object.keys(map.sources).some(id => id.startsWith('basemap-1-')));
   assert.equal(map.handlers.size, 0);
 });
 
@@ -165,5 +168,6 @@ test('Protomaps loader uses configured key, fixed themes and no browser credenti
     assert.equal((await loadBasemap('protomaps-dark', { protomapsKey: 'test key', apiBase: '/api' }, signal)).version, 8);
     await assert.rejects(loadBasemap('protomaps-dark', { protomapsKey: '', apiBase: '/api' }, signal), /未配置/);
     await assert.rejects(loadBasemap('protomaps-invalid', { protomapsKey: 'test', apiBase: '/api' }, signal));
+    await assert.rejects(loadBasemap('blank', { protomapsKey: 'test', apiBase: '/api' }, signal), /不支持/);
   } finally { globalThis.fetch = originalFetch; }
 });

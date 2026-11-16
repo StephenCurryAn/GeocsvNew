@@ -20,7 +20,7 @@ import {
 } from '@ant-design/icons';
 import { useAnalysisStore } from '../../../stores/useAnalysisStore'
 import { API_BASE_URL, getApiUrl } from '../../../services/apiConfig';
-import { BASEMAP_OPTIONS, BasemapController, initialMapStyle, loadBasemap } from '../basemaps';
+import { BASEMAP_OPTIONS, BasemapController, DEFAULT_BASEMAP, initialMapStyle, loadBasemap } from '../basemaps';
 import {
     addFileLayers, defaultLayerColor, drawingLayers, EMPTY_SELECTION, geometryLayers, highlightLayers,
     layerIds, LAYER_PALETTE, paintFileLayers, removeFileLayers, setFileVisibility, updateGridGeometry, updateVectorTiles,
@@ -42,7 +42,6 @@ export interface FileLayerInfo {
 export type DrawStatus = 'ready' | 'error';
 const fileLayers = (fileId: string) => layerIds('file-' + fileId);
 const gridLayers = layerIds('grid');
-const defaultBasemap = PROTOMAPS_KEY ? 'protomaps-light' : 'blank';
 const DENSE_LAYER_SIZE = 5000;
 
 function tileUrls(fileId: string, version: number) {
@@ -306,7 +305,7 @@ const MapView: React.FC<MapViewProps> = ({ data, fileId, selectedFeature, onFeat
     const activeField = fieldSelection?.fileId === fileId ? fieldSelection?.field ?? null : null;
     const setActiveField = (field: string | null) => setFieldSelection({ fileId, field });
     const [activeScheme, setActiveScheme] = useState<string>('viridis'); // 当前颜色方案
-    const [activeBasemap, setActiveBasemap] = useState('blank');
+    const [activeBasemap, setActiveBasemap] = useState<string>();
     
     const [uniqueFieldValues, setUniqueFieldValues] = useState<(string | number)[]>([]); // 存放当前字段所有的唯一值
     const [activeFilterValues, setActiveFilterValues] = useState<(string | number)[]>([]); // 存放当前勾选的值
@@ -1191,10 +1190,8 @@ const MapView: React.FC<MapViewProps> = ({ data, fileId, selectedFeature, onFeat
     };
 
     useEffect(() => {
-        if (!isMapLoaded) return;
-        if (defaultBasemap !== 'blank') void handleBasemapChange(defaultBasemap);
-        else if (tiandituStatus === 'available') void handleBasemapChange('tianditu-vector');
-    }, [isMapLoaded, defaultBasemap === 'blank' ? tiandituStatus : null]);
+        if (isMapLoaded && PROTOMAPS_KEY) void handleBasemapChange(DEFAULT_BASEMAP);
+    }, [isMapLoaded]);
 
     useEffect(() => {
         const abort = new AbortController();
@@ -1431,12 +1428,12 @@ const MapView: React.FC<MapViewProps> = ({ data, fileId, selectedFeature, onFeat
                     size="small"
                     popupMatchSelectWidth={false}
                     value={activeBasemap}
+                    placeholder={basemapLoading ? '底图加载中…' : '选择底图'}
                     onChange={handleBasemapChange}
                     className="map-basemap-select"
                     loading={basemapLoading}
                     disabled={!isMapLoaded}
                 >
-                    <Option value="blank">浅色背景</Option>
                     {BASEMAP_OPTIONS.map(option => {
                         const reason = option.key.startsWith('protomaps-') && !PROTOMAPS_KEY ? '未配置'
                             : option.key.startsWith('tianditu-') && tiandituStatus !== 'available'

@@ -21,7 +21,7 @@ Compose 使用 BuildKit 构建依赖镜像，需 Docker Compose 2.22 或更新�
 
 ## 可选配置
 
-浅色背景和现有确定性分析功能无需配置 Key。如需配置外部服务，可以在工作目录创建被 Git 忽略的 `.env`，参照 [地图接入](map-services.md) 和 [模型配置](environment-baseline.md) 设置变量。
+业务图层和现有确定性分析功能无需配置 Key。如需加载默认的 Protomaps light 底图或使用外部模型，可以在工作目录创建被 Git 忽略的 `.env`，参照 [地图接入](map-services.md) 和 [模型配置](environment-baseline.md) 设置变量。
 
 - `VITE_PROTOMAPS_API_KEY` 是浏览器使用的 Key，修改后执行 `docker compose up --build --detach --wait` 重新构建前端，并在供应商控制台允许实际使用的本机 Web 地址。
 - `TIANDITU_SERVER_KEY`、`ALIYUN_API_KEY`、`LLM_BASE_URL` 和 `LLM_PLANNER_MODEL` 由 Compose 在运行时传给服务端。启动时重新应用配置。Docker 版与本机 Node 版分别读取其配置。

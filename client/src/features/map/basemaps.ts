@@ -1,6 +1,7 @@
 import type { Map as LibreMap, StyleSpecification, SourceSpecification, LayerSpecification } from 'maplibre-gl';
 
 export const BASEMAP_ANCHOR = 'geocsv-basemap-anchor';
+export const DEFAULT_BASEMAP = 'protomaps-light';
 const THEMES = ['light', 'white', 'grayscale', 'dark', 'black'] as const;
 export const BASEMAP_OPTIONS = [
   ...THEMES.map(theme => ({ key: `protomaps-${theme}`, name: `Protomaps ${theme}` })),
@@ -47,20 +48,15 @@ export function prepareBasemap(style: StyleSpecification, prefix: string): Style
   return { ...style, sources: Object.fromEntries(Object.entries(style.sources).map(([id, source]) => [prefix + id, source])), layers };
 }
 
-const blankStyle = (): StyleSpecification => ({
-  version: 8,
-  sources: {},
-  layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#f5f7fb' } }],
-});
-const initial = () => prepareBasemap(blankStyle(), 'basemap-initial-');
 export function initialMapStyle(): StyleSpecification {
-  const style = initial();
-  style.layers.push({ id: BASEMAP_ANCHOR, type: 'background', paint: { 'background-opacity': 0 } });
-  return style;
+  return {
+    version: 8,
+    sources: {},
+    layers: [{ id: BASEMAP_ANCHOR, type: 'background', paint: { 'background-opacity': 0 } }],
+  };
 }
 
 export async function loadBasemap(key: string, config: BasemapConfig, signal: AbortSignal): Promise<StyleSpecification> {
-  if (key === 'blank') return blankStyle();
   if (!key.startsWith('protomaps-')) return rasterStyle(key, config.apiBase);
   const theme = key.slice('protomaps-'.length);
   if (!(THEMES as readonly string[]).includes(theme)) throw new Error('不支持的 Protomaps 主题');
@@ -86,7 +82,7 @@ export class BasemapController {
   private map: BasemapMap;
   private load: Loader;
   private timeoutMs: number;
-  private installed: Installed = { layers: initial().layers.map(layer => layer.id), sources: Object.keys(initial().sources) };
+  private installed: Installed = { layers: [], sources: [] };
   private request = 0;
   private disposed = false;
   private abort?: AbortController;
