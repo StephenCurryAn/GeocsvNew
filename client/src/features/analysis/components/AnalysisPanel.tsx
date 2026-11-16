@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Select, Button, Form, ConfigProvider, theme, App, Segmented, Tooltip } from 'antd';
+import { Select, Button, Form, App, Segmented, Tooltip } from 'antd';
 import { 
     PlayCircleOutlined, 
     DotChartOutlined, 
@@ -145,28 +145,8 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({ fileId, selectedFileIds, 
     );
 
     return (
-        <div className="p-4 flex flex-col h-full overflow-y-auto custom-scrollbar gap-8">
-            <ConfigProvider 
-                theme={{ 
-                    algorithm: theme.darkAlgorithm,
-                    token: { 
-                        colorBgElevated: '#1f2937', 
-                        colorBgContainer: '#111827', 
-                        colorBorder: '#374151',
-                        controlItemBgActive: 'rgba(34, 211, 238, 0.1)',
-                        colorPrimary: '#22d3ee',
-                        borderRadius: 6
-                    },
-                    components: {
-                        Segmented: {
-                            itemSelectedBg: '#1f2937', 
-                            itemSelectedColor: '#22d3ee',
-                            trackBg: '#0b1121',
-                            itemColor: '#6b7280'
-                        }
-                    }
-                }}
-            >
+        <div className="p-3 flex flex-col h-full overflow-y-auto custom-scrollbar">
+            <div className="space-y-4">
                 <SpatialPivotPanel selectedFileIds={selectedFileIds} />
 
                 {/* =========== 区域 1: 数据洞察 (DATA INSIGHTS) =========== */}
@@ -177,13 +157,13 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({ fileId, selectedFileIds, 
                         <span className="text-xs font-bold text-cyan-500/80 tracking-widest uppercase font-mono">
                             Data Insights
                         </span>
-                        <div className="h-px flex-1 bg-linear-to-r from-cyan-900/50 to-transparent"></div>
+                        <div className="h-px flex-1 bg-geo-border"></div>
                     </div>
 
                     {/* 卡片：统计探索 */}
                     <div className="rounded-xl overflow-hidden border border-cyan-800/30 bg-[#0b1121] shadow-lg shadow-cyan-900/5 hover:border-cyan-500/30 transition-all duration-300">
                         {/* Header: 青色系 */}
-                        <div className="px-4 py-3 bg-linear-to-r from-cyan-950/30 to-transparent border-b border-cyan-900/30 flex items-center justify-between">
+                        <div className="px-4 py-3 bg-geo-dark border-b border-cyan-900/30 flex items-center justify-between">
                             <div className="flex items-center gap-3">
                                 <div className="p-1.5 rounded bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
                                     <BarChartOutlined />
@@ -214,7 +194,7 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({ fileId, selectedFileIds, 
                                                 {fields.map(f => <Option key={f} value={f}>{f}</Option>)}
                                             </Select>
                                         </Form.Item>
-                                        <div className="grid grid-cols-2 gap-3 mt-3">
+                                        <div className="workbench-form-fields grid grid-cols-2 gap-3 mt-3">
                                             <Form.Item label={<span className="text-gray-400 text-xs">列分组 (Col)</span>} className="mb-0">
                                                 <Select 
                                                     className="w-full" placeholder="可选" allowClear 
@@ -308,13 +288,13 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({ fileId, selectedFileIds, 
                         <span className="text-xs font-bold text-emerald-500/80 tracking-widest uppercase font-mono">
                             Spatial Compute
                         </span>
-                        <div className="h-px flex-1 bg-linear-to-r from-emerald-900/50 to-transparent"></div>
+                        <div className="h-px flex-1 bg-geo-border"></div>
                     </div>
 
                     {/* 卡片：模型函数 */}
                     <div className="rounded-xl overflow-hidden border border-emerald-800/30 bg-[#0b1121] shadow-lg shadow-emerald-900/5 hover:border-emerald-500/30 transition-all duration-300">
                         {/* Header: 绿色系 */}
-                        <div className="px-4 py-3 bg-linear-to-r from-emerald-950/30 to-transparent border-b border-emerald-900/30 flex items-center">
+                        <div className="px-4 py-3 bg-geo-dark border-b border-emerald-900/30 flex items-center">
                             <div className="flex items-center gap-3">
                                 <div className="p-1.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
                                     <FunctionOutlined />
@@ -411,7 +391,7 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({ fileId, selectedFileIds, 
                     </div>
                 </div>
 
-            </ConfigProvider>
+            </div>
 
             <style>{`
                 @keyframes slideUp {

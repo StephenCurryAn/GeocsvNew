@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Alert, Empty, Pagination, Radio, Table, Typography } from 'antd';
+import { Alert, Empty, Pagination, Radio, Table, Typography, theme } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import ReactECharts from 'echarts-for-react';
 import maplibregl from 'maplibre-gl';
@@ -137,15 +137,15 @@ const SpatialResultMap = ({
     <div className="space-y-2">
       {mapMessage && <Alert type="info" showIcon title={mapMessage} />}
       <div className="relative">
-        <div ref={containerRef} className="h-72 w-full overflow-hidden rounded-lg border border-slate-700" aria-label="空间透视结果地图" />
+        <div ref={containerRef} className="h-72 w-full overflow-hidden rounded-lg border border-geo-border" aria-label="空间透视结果地图" />
         {!geoJSON && !mapMessage && (
-          <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-[#0b1121]/90">
+          <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-geo-panel">
             <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无可预览地图" />
           </div>
         )}
       </div>
       {geoJSON && (
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-400" aria-label="地图颜色图例">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-geo-text-secondary" aria-label="地图颜色图例">
           <span>总量</span>
           <span className="h-2.5 w-24 rounded-sm" style={{ background: 'linear-gradient(90deg, #083344, #22d3ee)' }} />
           <span>0</span><span>{maxTotal}</span>
@@ -194,16 +194,17 @@ const SpatialPivotResult = ({
     },
   }));
   const showPieLegend = rows.length <= 6;
+  const { token } = theme.useToken();
   const chartOption = chartType === 'pie' ? {
     backgroundColor: 'transparent',
     tooltip: { trigger: 'item' },
-    ...(showPieLegend ? { legend: { orient: 'horizontal', bottom: 0, textStyle: { color: '#cbd5e1', fontSize: 10 } } } : {}),
+    ...(showPieLegend ? { legend: { orient: 'horizontal', bottom: 0, textStyle: { color: token.colorTextSecondary, fontSize: 10 } } } : {}),
     series: [{
       type: 'pie',
       radius: showPieLegend ? '54%' : '68%',
       center: showPieLegend ? ['50%', '43%'] : ['50%', '50%'],
       stillShowZeroSum: false,
-      label: { show: true, color: '#e2e8f0', fontSize: 11, formatter: '{b}: {d}%' },
+      label: { show: true, color: token.colorText, fontSize: 11, formatter: '{b}: {d}%' },
       data: chartData,
     }],
   } : {
@@ -211,11 +212,11 @@ const SpatialPivotResult = ({
     tooltip: { trigger: 'axis' },
     grid: { left: 90, right: 24, top: 20, bottom: 36 },
     xAxis: chartType === 'bar'
-      ? { type: 'value', axisLabel: { color: '#94a3b8' }, splitLine: { lineStyle: { color: '#1e293b' } } }
-      : { type: 'category', data: rows.map(row => row.label), axisLabel: { color: '#cbd5e1', width: 140, overflow: 'truncate', rotate: 25 } },
+      ? { type: 'value', axisLabel: { color: token.colorTextSecondary }, splitLine: { lineStyle: { color: token.colorSplit } } }
+      : { type: 'category', data: rows.map(row => row.label), axisLabel: { color: token.colorTextSecondary, width: 140, overflow: 'truncate', rotate: 25 } },
     yAxis: chartType === 'bar'
-      ? { type: 'category', data: rows.map(row => row.label), axisLabel: { color: '#cbd5e1', width: 140, overflow: 'truncate' } }
-      : { type: 'value', axisLabel: { color: '#94a3b8' }, splitLine: { lineStyle: { color: '#1e293b' } } },
+      ? { type: 'category', data: rows.map(row => row.label), axisLabel: { color: token.colorTextSecondary, width: 140, overflow: 'truncate' } }
+      : { type: 'value', axisLabel: { color: token.colorTextSecondary }, splitLine: { lineStyle: { color: token.colorSplit } } },
     series: [{ type: chartType, data: chartData }],
   };
   const chartEvents = {
@@ -228,22 +229,22 @@ const SpatialPivotResult = ({
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-3 gap-2 text-xs">
-        <div className="rounded-md bg-slate-800/70 p-2"><span className="text-slate-400">目标要素</span><div className="mt-1 text-white">{artifact.summary.targetCount}</div></div>
-        <div className="rounded-md bg-slate-800/70 p-2"><span className="text-slate-400">关联要素</span><div className="mt-1 text-white">{artifact.summary.joinCount}</div></div>
-        <div className="rounded-md bg-slate-800/70 p-2"><span className="text-slate-400">空间匹配对</span><div className="mt-1 text-white">{artifact.summary.matchedPairs}</div></div>
+        <div className="rounded-md bg-geo-dark p-2"><span className="text-geo-text-secondary">目标要素</span><div className="mt-1 text-geo-text-primary">{artifact.summary.targetCount}</div></div>
+        <div className="rounded-md bg-geo-dark p-2"><span className="text-geo-text-secondary">关联要素</span><div className="mt-1 text-geo-text-primary">{artifact.summary.joinCount}</div></div>
+        <div className="rounded-md bg-geo-dark p-2"><span className="text-geo-text-secondary">空间匹配对</span><div className="mt-1 text-geo-text-primary">{artifact.summary.matchedPairs}</div></div>
       </div>
 
       <section>
         <div className="mb-1 flex items-center justify-between">
-          <Typography.Text className="text-slate-200">目标要素总量</Typography.Text>
-          <Typography.Text className="text-xs text-slate-400">图表使用当前第 {page} 页的 {rows.length} 条结果</Typography.Text>
+          <Typography.Text className="text-geo-text-primary">目标要素总量</Typography.Text>
+          <Typography.Text className="text-xs text-geo-text-secondary">图表使用当前第 {page} 页的 {rows.length} 条结果</Typography.Text>
         </div>
         {onChartTypeChange && <Radio.Group size="small" className="mb-2" value={chartType} onChange={event => onChartTypeChange(event.target.value as ResultChartType)} optionType="button" options={[{ label: '柱状', value: 'bar' }, { label: '折线', value: 'line' }, { label: '饼图', value: 'pie' }]} />}
         {rows.length === 0 ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前页没有结果" /> : chartType === 'pie' && pageTotal === 0 ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前页合计为 0，暂无占比" /> : <ReactECharts option={chartOption} onEvents={chartEvents} style={{ height: 260 }} notMerge />}
       </section>
 
       <section>
-        <Typography.Text className="mb-2 block text-slate-200">结果地图</Typography.Text>
+        <Typography.Text className="mb-2 block text-geo-text-primary">结果地图</Typography.Text>
         <SpatialResultMap
           geoJSON={geoJSON}
           mapMessage={mapMessage}
@@ -253,7 +254,7 @@ const SpatialPivotResult = ({
       </section>
 
       <section>
-        <Typography.Text className="mb-2 block text-slate-200">统计明细</Typography.Text>
+        <Typography.Text className="mb-2 block text-geo-text-primary">统计明细</Typography.Text>
         {rowsError && <Alert className="mb-2" type="error" showIcon title={rowsError} />}
         <Table<SpatialPivotRow>
           size="small"
@@ -265,7 +266,7 @@ const SpatialPivotResult = ({
           pagination={false}
           onRow={row => ({
             onClick: () => onSelectFeature(row.featureId),
-            className: row.featureId === selectedFeatureId ? 'bg-cyan-950/50' : 'cursor-pointer',
+            className: row.featureId === selectedFeatureId ? 'bg-geo-accent/15' : 'cursor-pointer',
           })}
         />
         <Pagination

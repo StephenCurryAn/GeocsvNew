@@ -52,12 +52,12 @@ const AnalysisRunView = ({ analysis, chartType, onChartTypeChange }: AnalysisRun
     </div>
 
     <Modal
-      title={<span className="text-slate-100">空间透视结果</span>}
+      title="空间透视结果"
       open={analysis.resultOpen}
       onCancel={() => analysis.setResultOpen(false)}
       footer={analysis.artifact ? <Button icon={<DownloadOutlined />} loading={analysis.csvDownloading} onClick={() => void analysis.exportCsv()}>导出完整 CSV</Button> : null}
       width={1120}
-      styles={{ container: { background: '#111827' }, header: { background: '#111827' }, body: { maxHeight: '75vh', overflowY: 'auto' } }}
+      styles={{ body: { maxHeight: '75vh', overflowY: 'auto' } }}
     >
       {analysis.resultError && <Alert className="mb-3" type="error" showIcon title={analysis.resultError} closable onClose={() => analysis.setResultError(null)} />}
       {analysis.artifact ? (
@@ -81,7 +81,7 @@ const AnalysisRunView = ({ analysis, chartType, onChartTypeChange }: AnalysisRun
           <Alert type="error" showIcon title={`结果加载失败：${analysis.artifactError}`} />
           <div className="text-center"><Button onClick={analysis.retryArtifact}>重试加载结果</Button></div>
         </div>
-      ) : analysis.artifactLoading ? <div className="py-12 text-center"><Spin /><span className="ml-2 text-sm text-slate-300">读取结果…</span></div> : <Empty description="暂无结果" />}
+      ) : analysis.artifactLoading ? <div className="py-12 text-center"><Spin /><span className="ml-2 text-sm text-geo-text-secondary">读取结果…</span></div> : <Empty description="暂无结果" />}
     </Modal>
   </>
 );

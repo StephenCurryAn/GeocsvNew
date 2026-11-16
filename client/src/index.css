@@ -1,22 +1,61 @@
 @import "tailwindcss";
 
-/* v4 这里的 @theme 块相当于以前的 tailwind.config.js */
-@theme {
-  /* 炫酷深色主题 */
-  --color-geo-dark: #0f172a;      /* 深蓝灰色背景 */
-  --color-geo-panel: #1e293b;     /* 面板深蓝灰 */
-  --color-geo-accent: #3b82f6;    /* 亮蓝色强调色 */
-  --color-geo-secondary: #60a5fa; /* 次要蓝色 */
-  --color-geo-border: #334155;    /* 边框深蓝灰 */
-  --color-geo-text-primary: #f1f5f9;  /* 主要文字 */
-  --color-geo-text-secondary: #cbd5e1; /* 次要文字 */
+@theme inline {
+    --color-geo-dark: var(--workbench-bg);
+    --color-geo-panel: var(--workbench-panel);
+    --color-geo-accent: var(--workbench-accent);
+    --color-geo-secondary: var(--workbench-accent);
+    --color-geo-border: var(--workbench-border);
+    --color-geo-text-primary: var(--workbench-text);
+    --color-geo-text-secondary: var(--workbench-muted);
 }
 
-/* ...其他样式... */
-/* 全局重置 */
-html, body, #root {
-  height: 100%;
-  width: 100%;
-  margin: 0;
-  overflow: hidden;
+:root {
+    color-scheme: light;
+    --workbench-bg: #f3f5f7;
+    --workbench-panel: #fff;
+    --workbench-inset: #f0f3f6;
+    --workbench-border: #cdd5df;
+    --workbench-text: #202c39;
+    --workbench-muted: #536377;
+    --workbench-accent: #205fa9;
+    --workbench-selected: #e5effb;
+    --workbench-danger: #aa3038;
+    --workbench-success: #236b49;
+    --workbench-warning: #86550e;
+    --workbench-shadow: 0 2px 8px rgb(26 38 54 / 13%);
+    --workbench-font: Inter, "Segoe UI", "Microsoft YaHei", sans-serif;
+}
+
+:root[data-theme="dark"] {
+    color-scheme: dark;
+    --workbench-bg: #161b23;
+    --workbench-panel: #202731;
+    --workbench-inset: #293340;
+    --workbench-border: #3f4b5a;
+    --workbench-text: #e5ecf4;
+    --workbench-muted: #a6b4c6;
+    --workbench-accent: #89b8ff;
+    --workbench-selected: #203b58;
+    --workbench-danger: #ff9a9d;
+    --workbench-success: #85d3a9;
+    --workbench-warning: #f4c774;
+    --workbench-shadow: 0 2px 8px rgb(0 0 0 / 24%);
+}
+
+html, body, #root, #root > .ant-app {
+    height: 100%;
+    width: 100%;
+    margin: 0;
+    overflow: hidden;
+}
+
+body {
+    background: var(--workbench-bg);
+    scrollbar-color: var(--workbench-border) transparent;
+}
+
+#root > .ant-app {
+    color: var(--workbench-text);
+    font-family: var(--workbench-font);
 }
