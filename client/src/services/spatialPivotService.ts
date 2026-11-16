@@ -21,6 +21,7 @@ export type ResultChartType = 'bar' | 'line' | 'pie';
 export type NaturalLanguagePlan =
   | {
       status: 'ready'; source: 'rules' | 'llm'; message: string; spec: SpatialPivotSpec;
+      plan: SpatialPivotPlan;
       view: { chartType: ResultChartType }; assumptions: string[];
       inputs: { targetName: string; joinName: string };
     }
@@ -38,6 +39,12 @@ export interface SpatialPivotSpec {
   target: { fileId: string; labelField: string | null };
   join: { fileId: string; categoryField: string | null };
   boundaryPolicy: BoundaryPolicy;
+}
+
+export interface SpatialPivotPlan {
+  id: string;
+  version: number;
+  spec: SpatialPivotSpec;
 }
 
 export type RunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
@@ -87,7 +94,7 @@ export interface SpatialPivotRows {
 export type SpatialPivotGeoJSON = GeoJSON.FeatureCollection<GeoJSON.Geometry, Record<string, unknown>>;
 
 const unwrap = <T>(envelope: ApiEnvelope<T>): T => {
-  if (!envelope || ![200, 202].includes(envelope.code)) {
+  if (!envelope || ![200, 201, 202].includes(envelope.code)) {
     throw new Error(envelope?.message || '空间透视请求失败');
   }
   return envelope.data;
@@ -101,8 +108,8 @@ export const fetchDatasets = async (fileIds: string[], signal?: AbortSignal): Pr
   return unwrap(response.data);
 };
 
-export const createAnalysisPlan = async (spec: SpatialPivotSpec, signal?: AbortSignal): Promise<SpatialPivotSpec> => {
-  const response = await apiClient.post<ApiEnvelope<SpatialPivotSpec>>('/analysis-plans', spec, { signal });
+export const createAnalysisPlan = async (spec: SpatialPivotSpec, signal?: AbortSignal): Promise<SpatialPivotPlan> => {
+  const response = await apiClient.post<ApiEnvelope<SpatialPivotPlan>>('/analysis/plans', { spec }, { signal });
   return unwrap(response.data);
 };
 
@@ -120,8 +127,20 @@ export const createNaturalLanguagePlan = async (
   return unwrap(response.data);
 };
 
-export const createRun = async (spec: SpatialPivotSpec, signal?: AbortSignal): Promise<Run> => {
-  const response = await apiClient.post<ApiEnvelope<Run>>('/runs', { spec }, { signal });
+// The current plan keeps its request key across transport failures and retries.
+const requestKeys = new WeakMap<SpatialPivotPlan, string>();
+const requestKeyFor = (plan: SpatialPivotPlan): string => {
+  const existing = requestKeys.get(plan);
+  if (existing) return existing;
+  const key = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
+  requestKeys.set(plan, key);
+  return key;
+};
+
+export const createRun = async (plan: SpatialPivotPlan, signal?: AbortSignal): Promise<Run> => {
+  const response = await apiClient.post<ApiEnvelope<Run>>('/runs', {
+    planId: plan.id, planVersion: plan.version,
+  }, { signal, headers: { 'Idempotency-Key': requestKeyFor(plan) } });
   if (response.status !== 202 && response.data.code !== 202) {
     throw new Error(response.data.message || '服务器未接受分析任务');
   }

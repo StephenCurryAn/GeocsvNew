@@ -1,0 +1,244 @@
+{
+  "Operator": {
+    "id": "spatial_pivot",
+    "version": 1,
+    "name": "行政区内分类 POI 统计",
+    "executor": "postgis",
+    "inputs": {
+      "target": {
+        "geometryTypes": [
+          "ST_Polygon",
+          "ST_MultiPolygon"
+        ]
+      },
+      "join": {
+        "geometryTypes": [
+          "ST_Point",
+          "ST_MultiPoint"
+        ]
+      }
+    },
+    "parameterSchema": "#/$defs/SpatialPivotSpec",
+    "output": {
+      "format": "spatial_counts",
+      "schemaVersion": 1
+    }
+  },
+  "SpatialPivotSpec": {
+    "schemaVersion": 1,
+    "kind": "spatial_pivot",
+    "operatorVersion": 1,
+    "target": {
+      "fileId": "districts",
+      "labelField": "name"
+    },
+    "join": {
+      "fileId": "pois",
+      "categoryField": "category"
+    },
+    "boundaryPolicy": "exclude"
+  },
+  "CreatePlan": {
+    "spec": {
+      "schemaVersion": 1,
+      "kind": "spatial_pivot",
+      "operatorVersion": 1,
+      "target": {
+        "fileId": "districts",
+        "labelField": "name"
+      },
+      "join": {
+        "fileId": "pois",
+        "categoryField": "category"
+      },
+      "boundaryPolicy": "exclude"
+    }
+  },
+  "ConfirmPlan": {
+    "planId": "6d50904a-d606-4d30-b976-c899e6ddc85c",
+    "planVersion": 1
+  },
+  "Plan": {
+    "schemaVersion": 1,
+    "id": "6d50904a-d606-4d30-b976-c899e6ddc85c",
+    "version": 1,
+    "operator": {
+      "id": "spatial_pivot",
+      "version": 1
+    },
+    "spec": {
+      "schemaVersion": 1,
+      "kind": "spatial_pivot",
+      "operatorVersion": 1,
+      "target": {
+        "fileId": "districts",
+        "labelField": "name"
+      },
+      "join": {
+        "fileId": "pois",
+        "categoryField": "category"
+      },
+      "boundaryPolicy": "exclude"
+    },
+    "specHash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "inputVersions": {
+      "target": {
+        "fileId": "districts",
+        "count": 3,
+        "fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "join": {
+        "fileId": "pois",
+        "count": 5,
+        "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    },
+    "status": "validated",
+    "createdAt": "2026-11-16T01:00:00.000Z",
+    "confirmedAt": null
+  },
+  "SubmitRun": {
+    "spec": {
+      "schemaVersion": 1,
+      "kind": "spatial_pivot",
+      "operatorVersion": 1,
+      "target": {
+        "fileId": "districts",
+        "labelField": "name"
+      },
+      "join": {
+        "fileId": "pois",
+        "categoryField": "category"
+      },
+      "boundaryPolicy": "exclude"
+    }
+  },
+  "Run": {
+    "schemaVersion": 1,
+    "id": "6d6ebbd4-cb91-4c69-801a-8912189eb42e",
+    "definitionId": "d54a90c6-1950-42c7-ba90-36635c107d2b",
+    "planId": "6d50904a-d606-4d30-b976-c899e6ddc85c",
+    "operator": {
+      "id": "spatial_pivot",
+      "version": 1
+    },
+    "status": "succeeded",
+    "spec": {
+      "schemaVersion": 1,
+      "kind": "spatial_pivot",
+      "operatorVersion": 1,
+      "target": {
+        "fileId": "districts",
+        "labelField": "name"
+      },
+      "join": {
+        "fileId": "pois",
+        "categoryField": "category"
+      },
+      "boundaryPolicy": "exclude"
+    },
+    "inputVersions": {
+      "target": {
+        "fileId": "districts",
+        "count": 3,
+        "fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "join": {
+        "fileId": "pois",
+        "count": 5,
+        "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    },
+    "artifactId": "dfea9302-2cc1-415c-8908-ea42acf7fd13",
+    "error": null,
+    "errorCode": null,
+    "createdAt": "2026-11-16T01:00:00.000Z",
+    "completedAt": "2026-11-16T01:00:00.000Z"
+  },
+  "Artifact": {
+    "id": "dfea9302-2cc1-415c-8908-ea42acf7fd13",
+    "runId": "6d6ebbd4-cb91-4c69-801a-8912189eb42e",
+    "schemaVersion": 1,
+    "format": "spatial_counts",
+    "operator": {
+      "id": "spatial_pivot",
+      "version": 1
+    },
+    "spec": {
+      "schemaVersion": 1,
+      "kind": "spatial_pivot",
+      "operatorVersion": 1,
+      "target": {
+        "fileId": "districts",
+        "labelField": "name"
+      },
+      "join": {
+        "fileId": "pois",
+        "categoryField": "category"
+      },
+      "boundaryPolicy": "exclude"
+    },
+    "columns": [
+      {
+        "key": "c0",
+        "label": "未分类（空值）"
+      },
+      {
+        "key": "c1",
+        "label": "__proto__"
+      },
+      {
+        "key": "c2",
+        "label": "park"
+      }
+    ],
+    "totalRows": 3,
+    "summary": {
+      "matchedPairs": 3,
+      "targetCount": 3,
+      "joinCount": 5
+    }
+  },
+  "SpatialCountsPage": {
+    "rows": [
+      {
+        "featureId": 1,
+        "label": "same",
+        "counts": {
+          "c0": 0,
+          "c1": 1,
+          "c2": 1
+        },
+        "total": 2
+      },
+      {
+        "featureId": 2,
+        "label": "same",
+        "counts": {
+          "c0": 1,
+          "c1": 0,
+          "c2": 0
+        },
+        "total": 1
+      },
+      {
+        "featureId": 3,
+        "label": "=SUM(A1)",
+        "counts": {
+          "c0": 0,
+          "c1": 0,
+          "c2": 0
+        },
+        "total": 0
+      }
+    ],
+    "total": 3,
+    "page": 1,
+    "pageSize": 20
+  },
+  "Error": {
+    "code": 409,
+    "message": "输入数据已改变，请重新校验并确认计划",
+    "errorCode": "INPUT_VERSION_CHANGED"
+  }
+}
