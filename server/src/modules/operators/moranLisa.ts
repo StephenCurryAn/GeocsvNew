@@ -4,7 +4,7 @@ import type { AnalysisSpec } from '../analysis/protocol';
 import { sha256, type MoranParameters } from './pythonWorker';
 import type { Operator, PythonSnapshot } from './types';
 
-interface MoranSpec extends AnalysisSpec, MoranParameters {
+export interface MoranSpec extends AnalysisSpec, MoranParameters {
   schemaVersion: 1;
   kind: 'spatial_autocorrelation';
   operatorVersion: 2;
@@ -28,7 +28,7 @@ const integerField = (value: unknown, fallback: number, max: number, message: st
   return value;
 };
 
-const parse = (input: unknown): MoranSpec => {
+export const parseMoranSpec = (input: unknown): MoranSpec => {
   const raw = readObject(input, ['schemaVersion', 'kind', 'operatorVersion', 'target', 'contiguity', 'permutations', 'seed']);
   if (raw.schemaVersion !== 1 || raw.kind !== 'spatial_autocorrelation' || raw.operatorVersion !== 2) {
     throw invalid('不支持的空间自相关协议或算子版本');
@@ -127,7 +127,7 @@ export const moranLisa: Operator = {
     parameterSchema: '#/$defs/MoranLisaSpec', output: { format: 'moran_lisa', schemaVersion: 1 },
   },
   prepare(input) {
-    const spec = parse(input);
+    const spec = parseMoranSpec(input);
     return {
       spec,
       executor: 'python',

@@ -5,6 +5,8 @@
 !server/**
 !python_engine/
 !python_engine/**
+!agent_service/
+!agent_service/**
 !deploy/
 !deploy/docker/
 !deploy/docker/**

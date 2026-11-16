@@ -1,6 +1,6 @@
 # 用 Docker 运行 GeoCSV
 
-这套 Compose 配置用于本机开发和验收。它启动 Web 前端、Express、Python/FastAPI 和 PostgreSQL 16 + PostGIS，并使用独立的数据库和上传存储。Docker 数据库首次启动时应用现有的初始化 SQL。正式部署、备份恢复和 Agent 服务仍按阶段 7 的计划验收。
+这套 Compose 配置用于本机开发和验收。它启动 Web 前端、Express、Python/FastAPI 和 PostgreSQL 16 + PostGIS，并使用独立的数据库和上传存储。Docker 数据库首次启动时应用现有的初始化 SQL。另有可选的自然语言规划服务。正式部署和备份恢复按阶段 7 的计划验收。
 
 在 Docker Desktop 启动后，从包含 `compose.yaml` 的 GeoCSV 工作目录运行：
 
@@ -25,6 +25,17 @@ Compose 使用 BuildKit 构建依赖镜像，需 Docker Compose 2.22 或更新�
 
 - `VITE_PROTOMAPS_API_KEY` 是浏览器使用的 Key，修改后执行 `docker compose up --build --detach --wait` 重新构建前端，并在供应商控制台允许实际使用的本机 Web 地址。
 - `TIANDITU_SERVER_KEY`、`ALIYUN_API_KEY`、`LLM_BASE_URL` 和 `LLM_PLANNER_MODEL` 由 Compose 在运行时传给服务端。启动时重新应用配置。Docker 版与本机 Node 版分别读取其配置。
+
+### 启用自然语言规划
+
+在工作目录被忽略的 `.env` 或传给 Compose 的本地环境文件中，设置 `AGENT_SERVICE_TOKEN` 为随机生成的共享凭据，并设置模型的 `ALIYUN_API_KEY`、`LLM_BASE_URL` 和 `LLM_PLANNER_MODEL`。DeepSeek 官方接口使用 `https://api.deepseek.com` 和 `deepseek-flash`。模型若需要代理，可设置规划容器可达的 `LLM_PROXY_URL`。然后启用 `planner` profile。
+
+```powershell
+$env:GEOCSV_WEB_PORT = '8083'
+docker compose -p geocsv-phase3 --profile planner up --build --detach --wait
+```
+
+规划容器使用专用 Compose 网络，只有 Express 连接该网络并携带共享凭据。浏览器继续通过 Web 的同源 API 请求。普通启动可省略 `planner` profile，空间透视表单和规则规划仍可用。旧自然语言路由的模型回退也使用该 profile。规划验收见 [阶段 03](sessions/03-langchain-planner.md)。
 
 ## 排查与停机
 

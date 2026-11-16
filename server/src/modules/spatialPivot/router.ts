@@ -5,8 +5,7 @@ import { AnalysisService } from '../analysis/service';
 import { readDataset, validateDatasets } from './datasets';
 import { AnalysisInputError, parseSpatialPivotSpec, SPATIAL_PIVOT_OPERATOR } from './plan';
 import { NaturalAnalysisPlanner } from '../analysisPlanner/service';
-import { completeNaturalPlan } from '../analysisPlanner/provider';
-import { isLLMConfigured } from '../../integrations/llm/client';
+import { isAgentConfigured, requestDraft } from '../../integrations/agent/client';
 
 const moranColumns = `feature_id AS "featureId",local_i AS "localI",expected_i AS "expectedI",z,
   lag_z AS "lagZ",neighbor_count AS "neighborCount",p_value AS "pValue",quadrant`;
@@ -33,7 +32,11 @@ export const createSpatialPivotRouter = (db: Pool, service = new AnalysisService
       return run?.operator.id === SPATIAL_PIVOT_OPERATOR.id && run.operator.version === SPATIAL_PIVOT_OPERATOR.version
         ? { ...run, spec: parseSpatialPivotSpec(run.spec) } : null;
     },
-    complete: context => isLLMConfigured() ? completeNaturalPlan(context) : Promise.reject(new Error('未配置模型解析')),
+    ...(isAgentConfigured() ? {
+      complete: ({ userPrompt, datasets, previousSpec }) => requestDraft({
+        userPrompt, datasets, previousPivot: previousSpec, pivotOnly: true,
+      }),
+    } : {}),
   });
   const route = analysisRoute(service);
   const artifact = async (id: string) => {

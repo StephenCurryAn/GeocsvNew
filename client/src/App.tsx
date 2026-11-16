@@ -25,6 +25,7 @@ function App() {
     // 已加载的文件数据以稳定的文件 ID 索引，避免同名文件共用缓存。
     const [uploadedFilesData, setUploadedFilesData] = React.useState<Record<string, PaginatedGeoResponse>>({});
     const loadVersionByFileRef = useRef<Record<string, number>>({});
+    const [activeSceneId, setActiveSceneId] = useState('');
 
     // 选中的所有文件 ID 列表（多图层分析用）
     const [selectedFileIds, setSelectedFileIds] = useState<string[]>([]);
@@ -325,6 +326,7 @@ function App() {
                 <LeftPanel
                     onDataLoaded={handleDataLoaded}
                     onSelectFiles={handleSelectFiles}
+                    onSceneChange={scene => setActiveSceneId(scene.id)}
                     selectedFileIds={selectedFileIds}
                     activeFileId={activeFileId}
                     activeFileFields={activeFileFields}
@@ -373,7 +375,7 @@ function App() {
                     />
                 </SplitTablePanel>
             }
-            assistant={<GeoAIAgent selectedFileIds={selectedFileIds} />}
+            assistant={<GeoAIAgent sceneId={activeSceneId} selectedFileIds={selectedFileIds} />}
         />
     );
 }

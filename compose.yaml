@@ -34,6 +34,24 @@ services:
       timeout: 4s
       retries: 30
 
+  agent:
+    profiles: [planner]
+    build:
+      context: .
+      dockerfile: deploy/docker/agent.Dockerfile
+    environment:
+      AGENT_SERVICE_TOKEN: ${AGENT_SERVICE_TOKEN:-}
+      ALIYUN_API_KEY: ${ALIYUN_API_KEY:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      LLM_PLANNER_MODEL: ${LLM_PLANNER_MODEL:-deepseek-v3}
+      LLM_PROXY_URL: ${LLM_PROXY_URL:-}
+    networks: [planner]
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8100/health', timeout=2).close()"]
+      interval: 3s
+      timeout: 4s
+      retries: 30
+
   server:
     build:
       context: .
@@ -48,7 +66,10 @@ services:
       ALIYUN_API_KEY: ${ALIYUN_API_KEY:-}
       LLM_BASE_URL: ${LLM_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
       LLM_PLANNER_MODEL: ${LLM_PLANNER_MODEL:-deepseek-v3}
+      AGENT_SERVICE_URL: http://agent:8100
+      AGENT_SERVICE_TOKEN: ${AGENT_SERVICE_TOKEN:-}
       TIANDITU_SERVER_KEY: ${TIANDITU_SERVER_KEY:-}
+    networks: [default, planner]
     volumes:
       - uploads:/app/server/uploads
       - models:/app/python_engine/models
@@ -89,3 +110,6 @@ volumes:
   uploads:
   models:
   analysis-worker:
+
+networks:
+  planner:

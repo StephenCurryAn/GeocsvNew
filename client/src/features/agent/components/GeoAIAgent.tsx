@@ -89,6 +89,7 @@ interface ChatMessage {
 }
 
 interface GeoAIAgentProps {
+    sceneId: string;
     selectedFileIds?: string[];
 }
 
@@ -179,7 +180,7 @@ const QUICK_PROMPTS = [
 
 const AIAvatar = () => <span className="agent-avatar" aria-hidden="true"><MessageOutlined /></span>;
 
-const GeoAIAgent: React.FC<GeoAIAgentProps> = ({ selectedFileIds = [] }) => {
+const GeoAIAgent: React.FC<GeoAIAgentProps> = ({ sceneId, selectedFileIds = [] }) => {
     const { message } = App.useApp();
     const [assistantMode, setAssistantMode] = useState<'operator' | 'legacy'>('operator');
     const [agentMode, setAgentMode] = useState<'pivot' | 'feature_calc' | 'pro_model'>('pivot');
@@ -837,7 +838,7 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({ selectedFileIds = [] }) => {
 
             {/* ── 消息列表 ── */}
             <div className={`min-h-0 flex-1 overflow-hidden ${assistantMode === 'operator' ? 'flex' : 'hidden'}`}>
-                <UnifiedAnalysisAssistant selectedFileIds={selectedFileIds} onSwitchToLegacy={() => setAssistantMode('legacy')} />
+                <UnifiedAnalysisAssistant key={sceneId} sceneId={sceneId} selectedFileIds={selectedFileIds} onSwitchToLegacy={() => setAssistantMode('legacy')} />
             </div>
             <div
                 ref={scrollRef}
