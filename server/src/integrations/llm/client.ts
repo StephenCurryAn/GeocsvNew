@@ -1,6 +1,7 @@
 import OpenAI from 'openai';
 import 'dotenv/config';
 import { ProxyAgent } from 'undici';
+import { release } from 'node:process';
 
 let client: OpenAI | undefined;
 
@@ -14,6 +15,9 @@ export const getLLMClient = (): OpenAI => {
   client = new OpenAI({
     baseURL: process.env.LLM_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1',
     apiKey,
+    // Legacy GIS imports install window/document globals. Confirm Node via its
+    // built-in module so the SDK does not mistake this backend for a browser.
+    dangerouslyAllowBrowser: release.name === 'node',
     timeout: 180000,
     ...(proxyUrl ? { fetchOptions: { dispatcher: new ProxyAgent(proxyUrl) } } : {}),
   });

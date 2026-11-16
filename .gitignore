@@ -24,6 +24,7 @@ pnpm-debug.log*
 .env.*
 !/client/.env.example
 !/server/.env.example
+!/python_engine/.env.example
 
 # 编辑器文件
 .vscode/*
@@ -96,3 +97,7 @@ coverage/
 
 # 3. 如果用了 Python
 __pycache__/
+.venv/
+
+# Independent module workspaces; never include nested checkouts in commits.
+/.worktrees/

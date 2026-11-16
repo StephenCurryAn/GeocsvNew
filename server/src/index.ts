@@ -16,6 +16,7 @@ import tileRoutes from './routes/tileRoutes';
 import { connectDB } from './config/db'; // 导入数据库连接函数
 import pool from './config/db';
 import { createSpatialPivotRouter } from './modules/spatialPivot/router';
+import { createBasemapRouter } from './modules/basemaps/router';
 
 const app = express();
 // http://localhost:3000
@@ -50,6 +51,7 @@ app.use('/api/analysis', analysisRoutes);
 
 // 注册矢量瓦片路由
 app.use('/api/tiles', tileRoutes);
+app.use('/api', createBasemapRouter());
 app.use('/api', createSpatialPivotRouter(pool));
 
 // 3. 测试路由

@@ -9,6 +9,7 @@
     "lint": "eslint .",
     "test:analysis": "node --experimental-strip-types --test tests/runHistoryStore.test.mjs",
     "test:pipeline": "node --experimental-strip-types --test tests/pipelineStream.test.mjs",
+    "test:basemaps": "node --experimental-strip-types --test tests/basemaps.test.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

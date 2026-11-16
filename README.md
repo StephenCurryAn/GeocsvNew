@@ -19,6 +19,8 @@ python_engine/                      原有模型计算服务
 
 ## 本地运行
 
+本轮验证使用 Node 24.11.0、Python 3.12.13 和独立 PostGIS 测试库。完整安装、样例数据、启动步骤与验收证据见 [环境与功能基线](docs/environment-baseline.md)。
+
 先准备 PostgreSQL/PostGIS。新数据库执行 `server/src/config/init.sql`；已有数据库不要重建或清空。数据库账号需有增量建表权限，首次使用新接口时会创建 `geocsv_analysis_*` 表。
 
 在 `server` 和 `client` 目录分别运行：
@@ -33,6 +35,8 @@ npm run dev
 打开 Vite 显示的地址。开发环境 `/api` 代理到本地 3000 端口；生产环境需要同源反向代理，或在构建时设置 `VITE_API_BASE_URL`。
 
 普通透视与新增空间透视只需 Node 和 PostGIS。原有 AI 功能需要 `ALIYUN_API_KEY`；原有 Python 模型需启动 `python_engine/main.py`，通过 `PG_URI` 配置数据库，Node 通过 `PYTHON_API_URL` 调用。
+
+Python 依赖使用 `python_engine/pyproject.toml` 和 `uv.lock`。在 `python_engine` 目录运行 `uv sync --frozen`，设置 `PG_URI`，再运行 `uv run --frozen uvicorn main:app --host 127.0.0.1 --port 8000`。示例见 `python_engine/.env.example`；`main.py` 不自动读取 `.env`，使用文件时需在 uvicorn 命令中显式增加 `--env-file .env`。
 
 ## 空间透视操作
 
@@ -80,6 +84,10 @@ npm run test:integration
 ## 文档
 
 - [首轮重构实施记录](docs/refactor-progress.md)
+- [环境与功能基线、代码学习路线](docs/environment-baseline.md)
+- [Protomaps 与天地图接入、配置和学习记录](docs/map-services.md)
+- [Agent 重构实施与学习计划](docs/agent-refactor-plan.md)
+- [并行会话、分支命名与合入约定](docs/parallel-development.md)
 - [空间透视协议与运行边界](docs/spatial-pivot.md)
 - [架构诊断与后续设计](docs/architecture-review.md)
 - [自然语言接入与验证边界](docs/ai-refactor-progress.md)

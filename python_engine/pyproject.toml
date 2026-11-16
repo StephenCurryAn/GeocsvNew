@@ -1,0 +1,21 @@
+[project]
+name = "geocsv-python-engine"
+version = "0.1.0"
+description = "GeoCSV GIS model execution service"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi>=0.115,<1",
+    "folium>=0.19,<1",
+    "geopandas>=1.0,<2",
+    "numpy>=2.0,<3",
+    "pandas>=2.2,<3",
+    "plotly>=6.0,<7",
+    "psycopg2-binary>=2.9,<3",
+    "pydantic>=2.10,<3",
+    # main.py uses psycopg2.execute_batch; SQLAlchemy 2.1 changes the default driver.
+    "sqlalchemy>=2.0,<2.1",
+    "uvicorn[standard]>=0.34,<1",
+]
+
+[tool.uv]
+package = false

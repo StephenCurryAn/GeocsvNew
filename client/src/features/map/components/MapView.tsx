@@ -25,7 +25,10 @@ import {
     FilterOutlined
 } from '@ant-design/icons';
 import { useAnalysisStore } from '../../../stores/useAnalysisStore'
-import { getApiUrl } from '../../../services/apiConfig';
+import { API_BASE_URL, getApiUrl } from '../../../services/apiConfig';
+import { BASEMAP_OPTIONS, BasemapController, initialMapStyle, loadBasemap } from '../basemaps';
+
+const PROTOMAPS_KEY = (import.meta.env.VITE_PROTOMAPS_API_KEY || '').trim();
 
 const { Option, OptGroup } = Select;
 
@@ -276,81 +279,16 @@ function interpolateColor(color1: string, color2: string, factor: number) {
     return rgbToHex(r, g, b);
 }
 
-// 2. 预设底图样式 (Basemaps)
-const BASEMAPS = [
-    {
-        key: 'dark',
-        name: 'Dark',
-        sourceId: 'carto-dark',
-        layerId: 'carto-dark-layer',
-        source: {
-            type: 'raster',
-            tiles: ['https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png'],
-            tileSize: 256,
-            attribution: '&copy; CARTO'
-        }
-    },
-    {
-        key: 'light',
-        name: 'Light',
-        sourceId: 'carto-light',
-        layerId: 'carto-light-layer',
-        source: {
-            type: 'raster',
-            tiles: ['https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png'],
-            tileSize: 256,
-            attribution: '&copy; CARTO'
-        }
-    },
-    {
-        key: 'satellite',
-        name: '卫星图',
-        sourceId: 'tianditu-sat',
-        layerId: 'tianditu-sat-layer',
-        source: {
-            type: 'raster',
-            tiles: [
-                'http://t0.tianditu.gov.cn/img_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=img&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&tk=2f10b6f61571dbb1f5c8199c813fea4d'
-            ],
-            tileSize: 256,
-            attribution: '&copy; 天地图'
-        }
-    }
-] as const;
-
-const createMapStyle = (activeBasemapKey: string) => ({
-    version: 8,
-    sources: Object.fromEntries(
-        BASEMAPS.map((basemap) => [basemap.sourceId, basemap.source])
-    ),
-    layers: BASEMAPS.map((basemap) => ({
-        id: basemap.layerId,
-        type: 'raster',
-        source: basemap.sourceId,
-        layout: {
-            visibility: basemap.key === activeBasemapKey ? 'visible' : 'none'
-        }
-    }))
-});
-
-const setBasemapVisibility = (map: maplibregl.Map, activeBasemapKey: string) => {
-    BASEMAPS.forEach((basemap) => {
-        if (!map.getLayer(basemap.layerId)) return;
-
-        map.setLayoutProperty(
-            basemap.layerId,
-            'visibility',
-            basemap.key === activeBasemapKey ? 'visible' : 'none'
-        );
-    });
-};
-
 const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeature, onFeatureClick, selectedFilesInfo = [] }) => {
     //     2: 获取上下文感知的 message 实例
     // 注意：MapView 必须被包裹在 <App> 组件中（通常在 main.tsx 或 App.tsx 已经包了）
     const { message } = App.useApp();
     const mapContainer = useRef<HTMLDivElement>(null);
     const mapInstance = useRef<maplibregl.Map | null>(null);
+    const basemapController = useRef<BasemapController | null>(null);
+    const basemapRequest = useRef(0);
+    const [basemapLoading, setBasemapLoading] = useState(false);
+    const [tiandituStatus, setTiandituStatus] = useState<'checking' | 'available' | 'unconfigured' | 'unavailable'>('checking');
     const popupRef = useRef<maplibregl.Popup | null>(null);
     // 缓存上一次的文件名，防止重复 fitBounds
     const lastFileNameRef = useRef<string>('');
@@ -475,13 +413,15 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
             // 默认使用第一个底图配置
             mapInstance.current = new maplibregl.Map({
                 container: mapContainer.current,
-                style: createMapStyle(activeBasemap) as any, // 类型强转，只要符合 Mapbox Style Spec 即可
+                style: initialMapStyle(),
                 center: [118.7969, 32.0603],
                 zoom: 7
             });
 
             mapInstance.current.on('load', () => {
                 console.log('  地图加载完成');
+                basemapController.current = new BasemapController(mapInstance.current!, (key, signal) =>
+                    loadBasemap(key, { protomapsKey: PROTOMAPS_KEY, apiBase: API_BASE_URL }, signal));
                 setIsMapLoaded(true);
                 // 确保地图撑满屏幕，防止显示bug
                 mapInstance.current?.resize();
@@ -492,6 +432,9 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
         // 彻底清除地图占用的资源，防止内存泄漏
         return () => {
             setIsMapLoaded(false);
+            ++basemapRequest.current;
+            basemapController.current?.dispose();
+            basemapController.current = null;
             if (mapInstance.current) {
                 mapInstance.current.remove();
                 mapInstance.current = null;
@@ -1488,8 +1431,6 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
         const map = mapInstance.current;
         if (!map || !isMapLoaded) return;
 
-        setBasemapVisibility(map, activeBasemap);
-
         if (map.getLayer('geo-polygon-border')) {
             map.setPaintProperty(
                 'geo-polygon-border',
@@ -1499,16 +1440,35 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
         }
     }, [activeBasemap, isMapLoaded]);
 
-    // handleBasemapChange只需要负责两件事：更新 React 状态、切换底图可见性
-    // basemapKey 是从 UI 界面上的下拉菜单（Select 组件）传过来的
-    const handleBasemapChange = (basemapKey: string) => {
-        const map = mapInstance.current;
-        if (!map) return;
-
-        setBasemapVisibility(map, basemapKey);
-        setActiveBasemap(basemapKey);
+    const handleBasemapChange = async (basemapKey: string) => {
+        const controller = basemapController.current;
+        if (!controller) return;
+        const request = ++basemapRequest.current;
+        setBasemapLoading(true);
+        try {
+            if (await controller.switchTo(basemapKey)) setActiveBasemap(basemapKey);
+        } catch (error) {
+            if (request === basemapRequest.current) message.error(error instanceof Error ? error.message : '底图加载失败');
+        } finally {
+            if (request === basemapRequest.current) setBasemapLoading(false);
+        }
     };
-    
+
+    useEffect(() => {
+        const abort = new AbortController();
+        const timeout = setTimeout(() => abort.abort(), 8000);
+        fetch(getApiUrl('/basemaps'), { signal: abort.signal })
+            .then(async response => {
+                if (!response.ok) throw new Error('catalog unavailable');
+                const body = await response.json();
+                if (typeof body.data?.tianditu?.configured !== 'boolean') throw new Error('invalid catalog');
+                if (!abort.signal.aborted) setTiandituStatus(body.data.tianditu.configured ? 'available' : 'unconfigured');
+            })
+            .catch(() => { setTiandituStatus('unavailable'); })
+            .finally(() => clearTimeout(timeout));
+        return () => { clearTimeout(timeout); abort.abort(); };
+    }, []);
+
     // 监听 selectedFeature 高亮 (保持原有逻辑)
     useEffect(() => {
         const map = mapInstance.current;
@@ -1843,13 +1803,19 @@ const MapView: React.FC<MapViewProps> = ({ data, fileName, fileId, selectedFeatu
                                     popupMatchSelectWidth={false}
                                     value={activeBasemap}
                                     onChange={handleBasemapChange}
-                                    className="w-24 font-bold text-gray-200"
+                                    className="w-44 font-bold text-gray-200"
+                                    loading={basemapLoading}
+                                    disabled={!isMapLoaded}
                                     suffixIcon={null}
                                     styles={{ popup: { root: { border: '1px solid #334155', borderRadius: '8px' } } }}
                                 >
-                                    {BASEMAPS.map(b => (
-                                        <Option key={b.key} value={b.key}>{b.name}</Option>
-                                    ))}
+                                    {BASEMAP_OPTIONS.map(b => {
+                                        const reason = b.key.startsWith('protomaps-') && !PROTOMAPS_KEY ? '未配置'
+                                            : b.key.startsWith('tianditu-') && tiandituStatus !== 'available'
+                                                ? ({ checking: '检查中', unconfigured: '未配置', unavailable: '服务不可用' } as const)[tiandituStatus as 'checking' | 'unconfigured' | 'unavailable']
+                                                : '';
+                                        return <Option key={b.key} value={b.key} disabled={Boolean(reason)}>{b.name}{reason ? `（${reason}）` : ''}</Option>;
+                                    })}
                                 </Select>
                             </div>
                         </Tooltip>
