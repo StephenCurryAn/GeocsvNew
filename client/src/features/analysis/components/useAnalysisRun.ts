@@ -12,7 +12,7 @@ const MAP_PREVIEW_LIMIT = 5000;
 
 export type { ResultChartType } from '../../../services/spatialPivotService';
 
-export const useAnalysisRun = () => {
+export const useAnalysisRun = (loadHistory = true) => {
   const selectionEpoch = useRef(0);
   const [selectionVersion, setSelectionVersion] = useState(0);
   const beginSelection = useCallback(() => {
@@ -23,7 +23,7 @@ export const useAnalysisRun = () => {
   const [run, setRun] = useState<Run | null>(null);
   const runHistory = useRunHistoryStore(state => state.runHistory);
   const setRunHistory = useRunHistoryStore(state => state.setRunHistory);
-  const [historyLoading, setHistoryLoading] = useState(true);
+  const [historyLoading, setHistoryLoading] = useState(loadHistory);
   const [requestError, setRequestError] = useState<string | null>(null);
   const [resultError, setResultError] = useState<string | null>(null);
   const [cancelling, setCancelling] = useState(false);
@@ -39,7 +39,6 @@ export const useAnalysisRun = () => {
   const [mapMessage, setMapMessage] = useState<string | null>(null);
   const [selectedFeatureId, setSelectedFeatureId] = useState<number | null>(null);
   const [chartType, setChartType] = useState<ResultChartType>('bar');
-  const [resultOpen, setResultOpen] = useState(false);
   const [csvDownloading, setCsvDownloading] = useState(false);
   const [artifactReload, setArtifactReload] = useState(0);
   const runId = run?.id;
@@ -50,6 +49,7 @@ export const useAnalysisRun = () => {
   const activeRun = run && !TERMINAL_STATUSES.has(run.status) ? run : null;
 
   useEffect(() => {
+    if (!loadHistory) return;
     const controller = new AbortController();
     setHistoryLoading(true);
     fetchRuns(20, controller.signal)
@@ -57,7 +57,7 @@ export const useAnalysisRun = () => {
       .catch(error => { if (!controller.signal.aborted) setRequestError(getRequestErrorMessage(error)); })
       .finally(() => { if (!controller.signal.aborted) setHistoryLoading(false); });
     return () => controller.abort();
-  }, [setRunHistory]);
+  }, [loadHistory, setRunHistory]);
 
   useEffect(() => {
     if (!runId || !runStatus || TERMINAL_STATUSES.has(runStatus)) return;
@@ -93,7 +93,6 @@ export const useAnalysisRun = () => {
     setMapMessage(null);
     setTablePage(1);
     setSelectedFeatureId(null);
-    setResultOpen(true);
     fetchArtifact(runArtifactId, controller.signal)
       .then(setArtifact)
       .catch(error => { if (!controller.signal.aborted) setArtifactError(getRequestErrorMessage(error)); })
@@ -139,7 +138,6 @@ export const useAnalysisRun = () => {
     setRequestError(null);
     setResultError(null);
     setArtifact(null);
-    setResultOpen(false);
     const created = await createRun(plan);
     if (selectionEpoch.current === version) setRun(created);
     setRunHistory(previous => [created, ...previous.filter(item => item.id !== created.id)].slice(0, 20));
@@ -151,7 +149,6 @@ export const useAnalysisRun = () => {
     setRequestError(null);
     setArtifact(null);
     setRun(selected);
-    setResultOpen(selected.status === 'succeeded' && Boolean(selected.artifactId));
     if (selected.status === 'succeeded' && selected.artifactId) setArtifactReload(value => value + 1);
     else setArtifact(null);
   }, [beginSelection]);
@@ -166,7 +163,6 @@ export const useAnalysisRun = () => {
     setRun(existing);
     setArtifact(null);
     setRunHistory(previous => [existing, ...previous.filter(item => item.id !== existing.id)].slice(0, 20));
-    setResultOpen(true);
     setArtifactReload(value => value + 1);
     return true;
   }, [beginSelection, setRunHistory]);
@@ -206,7 +202,7 @@ export const useAnalysisRun = () => {
     run, runHistory, historyLoading, requestError, setRequestError, resultError, setResultError,
     activeRun, cancelling, artifact, artifactLoading, artifactError, rows, rowsError, rowsLoading,
     tablePage, tablePageSize, geoJSON, mapMessage, selectedFeatureId, setSelectedFeatureId, chartType, setChartType,
-    resultOpen, setResultOpen, csvDownloading, start, restoreRun, restoreExistingRun,
+    csvDownloading, start, restoreRun, restoreExistingRun,
     cancel, changePage, exportCsv, retryArtifact,
   };
 };

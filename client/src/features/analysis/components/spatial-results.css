@@ -1,61 +1,46 @@
-.spatial-result-dialog {
-    --result-surface: #faf9f6;
-    --result-panel: #fffefa;
-    --result-inset: #f2f0ea;
-    --result-border: #dfdcd3;
-    --result-text: #292c2f;
-    --result-muted: #5d636a;
-    --result-selected: #f4e7dc;
-    --result-focus: #9e593a;
-    --result-motion: 160ms cubic-bezier(0.4, 0, 0.2, 1);
-    font-family: var(--workbench-font);
-}
-
-:root[data-theme="dark"] .spatial-result-dialog {
-    --result-surface: #1c2127;
-    --result-panel: #222930;
-    --result-inset: #272e35;
-    --result-border: #39434b;
-    --result-text: #edf0f3;
-    --result-muted: #aab7c1;
-    --result-selected: #43352c;
-    --result-focus: #eeae83;
-}
-
-.spatial-result-dialog .ant-modal-header {
+.spatial-result-view {
+    --result-surface: var(--workbench-bg);
+    --result-panel: var(--workbench-panel);
+    --result-inset: var(--workbench-inset);
+    --result-border: var(--workbench-border);
+    --result-text: var(--workbench-text);
+    --result-muted: var(--workbench-muted);
+    --result-selected: var(--workbench-focus-surface);
+    --result-focus: var(--workbench-focus);
+    --result-motion: var(--workbench-motion);
     display: flex;
-    align-items: center;
-    min-height: 62px;
-    padding: 12px 152px 12px 20px;
-    border-bottom: 1px solid var(--result-border);
+    flex-direction: column;
+    min-height: 100%;
+    background: var(--result-surface);
+    color: var(--result-text);
 }
 
-.spatial-result-dialog .ant-modal-title {
-    color: var(--result-text);
-    font-size: 18px;
+.spatial-result-heading {
+    display: flex;
+    flex: none;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-height: 51px;
+    padding: 8px 14px;
+}
+
+.spatial-result-heading h2 {
+    margin: 0;
+    font-size: 16px;
     font-weight: 650;
 }
 
-.spatial-result-dialog .ant-modal-close {
-    inset-block-start: 15px;
-    inset-inline-end: 14px;
-    width: 32px;
-    height: 32px;
+.spatial-result-state {
+    display: flex;
+    flex: 1;
+    min-height: 200px;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 16px;
     color: var(--result-muted);
-}
-
-.spatial-result-dialog .spatial-result-export {
-    position: absolute;
-    z-index: 1;
-    inset-block-start: 15px;
-    inset-inline-end: 56px;
-    border-color: var(--result-border);
-    background: var(--result-panel);
-    color: var(--result-text);
-}
-
-.spatial-result-dialog-state {
-    padding: 34px 20px;
 }
 
 .spatial-result-error {
@@ -63,7 +48,10 @@
 }
 
 .spatial-results {
-    padding: 14px 16px 16px;
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    padding: 0 12px 12px;
     color: var(--result-text);
 }
 
@@ -72,7 +60,7 @@
     grid-template-columns: repeat(3, minmax(0, 1fr));
     margin: 0 0 12px;
     border: 1px solid var(--result-border);
-    border-radius: 9px;
+    border-radius: var(--workbench-radius);
     background: var(--result-inset);
 }
 
@@ -105,7 +93,8 @@
     display: grid;
     grid-template-columns: minmax(0, 1.22fr) minmax(0, 1fr);
     gap: 12px;
-    height: clamp(450px, calc(100dvh - 220px), 760px);
+    flex: 1;
+    min-height: 425px;
 }
 
 .spatial-result-inspector {
@@ -122,7 +111,7 @@
     min-height: 0;
     overflow: hidden;
     border: 1px solid var(--result-border);
-    border-radius: 9px;
+    border-radius: var(--workbench-radius);
     background: var(--result-panel);
 }
 
@@ -320,42 +309,34 @@
     outline-offset: -2px;
 }
 
-@media (max-width: 810px) {
+@container results (max-width: 710px) {
     .spatial-result-grid {
-        height: auto;
         grid-template-columns: minmax(0, 1fr);
-    }
-
-    .spatial-result-map {
-        height: clamp(300px, 48dvh, 440px);
+        grid-template-rows: minmax(230px, 1fr) auto;
     }
 
     .spatial-result-inspector {
-        grid-template-rows: 240px minmax(290px, 1fr);
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-template-rows: 242px;
+    }
+
+    .spatial-result-chart .spatial-result-panel-heading {
+        flex-wrap: wrap;
     }
 }
 
-@media (max-width: 480px) {
-    .spatial-results {
-        padding: 10px;
-    }
+@container results (max-width: 520px) {
+    .spatial-results { padding-inline: 8px; }
 
     .spatial-result-summary > div {
         flex-direction: column;
-        padding: 8px 10px;
+        padding: 7px 9px;
     }
 
-    .spatial-result-dialog .ant-modal-header {
-        padding-inline-start: 12px;
-    }
+    .spatial-result-summary dd { font-size: 18px; }
 
-    .spatial-result-dialog .ant-modal-title {
-        font-size: 15px;
-    }
-}
-
-@media (prefers-reduced-motion: reduce) {
-    .spatial-result-dialog {
-        --result-motion: 0ms;
+    .spatial-result-inspector {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: 220px 266px;
     }
 }

@@ -4,6 +4,7 @@ import { Button, Empty, Spin } from 'antd';
 import maplibregl from 'maplibre-gl';
 import { bbox } from '@turf/turf';
 import { rasterStyle } from '../../map/basemaps';
+import { useWorkbenchAppearance } from '../../../layouts/WorkbenchTheme';
 import type { SpatialPivotGeoJSON } from '../../../services/spatialPivotService';
 
 const RESULT_SOURCE = 'spatial-pivot-result';
@@ -11,17 +12,11 @@ const FILL_LAYER = 'spatial-pivot-fill';
 const OUTLINE_LAYER = 'spatial-pivot-outline';
 const CONTEXT_SOURCE = 'spatial-pivot-context';
 
-const palettes = {
-  light: { surface: '#e9ebe5', low: '#d1dce4', high: '#476f8c', outline: '#476780', selected: '#b26038', selectedFill: '#e4ac85' },
-  dark: { surface: '#242d33', low: '#344a5a', high: '#82abc5', outline: '#95b2c4', selected: '#e4aa7d', selectedFill: '#b97f57' },
-};
-
 interface SpatialResultMapProps {
   geoJSON: SpatialPivotGeoJSON | null;
   message: string | null;
   selectedFeatureId: number | null;
   onSelectFeature: (featureId: number) => void;
-  dark: boolean;
 }
 
 const getBounds = (data: SpatialPivotGeoJSON | SpatialPivotGeoJSON['features'][number]) => {
@@ -39,12 +34,12 @@ const readFeatureId = (value: unknown) => (
   (typeof value === 'number' || (typeof value === 'string' && value.trim())) ? Number(value) : NaN
 );
 
-export default function SpatialResultMap({ geoJSON, message, selectedFeatureId, onSelectFeature, dark }: SpatialResultMapProps) {
+export default function SpatialResultMap({ geoJSON, message, selectedFeatureId, onSelectFeature }: SpatialResultMapProps) {
   const container = useRef<HTMLDivElement>(null);
   const callback = useRef(onSelectFeature);
   const [map, setMap] = useState<maplibregl.Map | null>(null);
   const [mapError, setMapError] = useState(false);
-  const palette = palettes[dark ? 'dark' : 'light'];
+  const { palette, dark } = useWorkbenchAppearance();
   const bounds = useMemo(() => geoJSON ? getBounds(geoJSON) : null, [geoJSON]);
   const hasExtent = bounds !== null;
   const maxTotal = useMemo(() => Math.max(0, ...(geoJSON?.features ?? []).map(feature => Number(feature.properties?.total) || 0)), [geoJSON]);
@@ -120,11 +115,11 @@ export default function SpatialResultMap({ geoJSON, message, selectedFeatureId, 
       ? ['literal', false]
       : ['==', ['to-number', ['get', 'featureId'], -1], selectedFeatureId];
     const fill: maplibregl.ExpressionSpecification = maxTotal > 0
-      ? ['interpolate', ['linear'], ['to-number', ['get', 'total'], 0], 0, palette.low, maxTotal, palette.high]
-      : ['literal', palette.low];
+      ? ['interpolate', ['linear'], ['to-number', ['get', 'total'], 0], 0, palette.mapLow, maxTotal, palette.mapHigh]
+      : ['literal', palette.mapLow];
 
-    map.setPaintProperty(FILL_LAYER, 'fill-color', ['case', isSelected, palette.selectedFill, fill]);
-    map.setPaintProperty(OUTLINE_LAYER, 'line-color', ['case', isSelected, palette.selected, palette.outline]);
+    map.setPaintProperty(FILL_LAYER, 'fill-color', ['case', isSelected, palette.focusSurface, fill]);
+    map.setPaintProperty(OUTLINE_LAYER, 'line-color', ['case', isSelected, palette.focus, palette.mapOutline]);
     map.setPaintProperty(OUTLINE_LAYER, 'line-width', ['case', isSelected, 2.6, 1.1]);
     if (!selected) return;
     const extent = getBounds(selected);
@@ -145,7 +140,7 @@ export default function SpatialResultMap({ geoJSON, message, selectedFeatureId, 
           <Button type="text" size="small" icon={<AimOutlined />} onClick={fixExtent} disabled={!map}>全图</Button>
         )}
       </header>
-      <div className="spatial-result-map-stage" style={{ background: palette.surface }}>
+      <div className="spatial-result-map-stage" style={{ background: palette.mapSurface }}>
         <div ref={container} className="spatial-result-map-canvas" aria-label="空间透视结果地图" />
         {(message || !bounds || mapError || !map) && (
           <div className="spatial-result-placeholder">
@@ -160,12 +155,12 @@ export default function SpatialResultMap({ geoJSON, message, selectedFeatureId, 
           <div className="spatial-result-legend" aria-label="地图颜色图例">
             <span>合计</span>
             <span>0</span>
-            <span className="spatial-result-ramp" style={{ background: 'linear-gradient(90deg, ' + palette.low + ', ' + palette.high + ')' }} />
+            <span className="spatial-result-ramp" style={{ background: 'linear-gradient(90deg, ' + palette.mapLow + ', ' + palette.mapHigh + ')' }} />
             <span>{maxTotal.toLocaleString('zh-CN')}</span>
           </div>
           {selected && (
             <span className="spatial-result-map-selection" role="status">
-              <span style={{ background: palette.selected }} />
+              <span style={{ background: palette.focus }} />
               {String(selected.properties?.label ?? '要素 ' + selectedFeatureId)}
             </span>
           )}

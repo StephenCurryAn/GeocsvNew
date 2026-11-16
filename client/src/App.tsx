@@ -1,7 +1,6 @@
 import React, { useRef, useState } from 'react';
 import './App.css';
 import MainLayout from './layouts/MainLayout';
-import type { ThemePreference } from './layouts/WorkbenchTheme';
 import LeftPanel from './features/workspace/components/LeftPanel';
 import SplitTablePanel from './features/table/components/SplitTablePanel';
 import DataPivot from './features/table/components/DataPivot';
@@ -20,10 +19,7 @@ export interface FileTabInfo {
 
 type LayerMetadata = Pick<FileLayerInfo, 'totalFeatures' | 'loadFailed'>;
 
-function App({ themePreference, onThemeChange }: {
-    themePreference: ThemePreference;
-    onThemeChange: (preference: ThemePreference) => void;
-}) {
+function App() {
     const { message, modal } = AntdApp.useApp();
 
     // 已加载的文件数据以稳定的文件 ID 索引，避免同名文件共用缓存。
@@ -280,8 +276,6 @@ function App({ themePreference, onThemeChange }: {
 
     return (
         <MainLayout
-            themePreference={themePreference}
-            onThemeChange={onThemeChange}
             workspace={
                 <LeftPanel
                     onDataLoaded={handleDataLoaded}

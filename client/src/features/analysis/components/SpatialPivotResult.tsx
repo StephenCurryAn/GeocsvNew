@@ -6,6 +6,7 @@ import ReactECharts from 'echarts-for-react';
 import { usePanelSize } from '../../../layouts/usePanelSize';
 import type { ResultChartType, SpatialPivotArtifact, SpatialPivotGeoJSON, SpatialPivotRow } from '../../../services/spatialPivotService';
 import SpatialResultMap from './SpatialResultMap';
+import { useWorkbenchAppearance } from '../../../layouts/WorkbenchTheme';
 
 interface SpatialPivotResultProps {
   artifact: SpatialPivotArtifact;
@@ -33,24 +34,24 @@ const SpatialPivotResult = ({
   selectedFeatureId, onSelectFeature, chartType = 'bar', onChartTypeChange,
 }: SpatialPivotResultProps) => {
   const { token } = theme.useToken();
-  const dark = token.colorBgBase === '#000';
-  const chartColor = dark ? '#85abc7' : '#507f9e';
-  const selectionColor = dark ? '#ecad81' : '#ab5f3c';
+  const { palette } = useWorkbenchAppearance();
+  const chartColor = palette.mapHigh;
+  const selectionColor = palette.focus;
   const table = useRef<TableRef>(null);
   const tableViewport = useRef<HTMLDivElement>(null);
   const { height: tableHeight } = usePanelSize(tableViewport);
 
   const columns = useMemo<ColumnsType<SpatialPivotRow>>(() => [
-    { title: '目标要素', dataIndex: 'label', key: 'label', fixed: 'left', width: 140, ellipsis: true },
+    { title: '目标要素', dataIndex: 'label', key: 'label', fixed: 'left', width: 112, ellipsis: true },
     ...artifact.columns.map(column => ({
       title: column.label,
       key: column.key,
-      width: 96,
+      width: 82,
       ellipsis: true,
       align: 'right' as const,
       render: (_: unknown, row: SpatialPivotRow) => countFormat.format(row.counts[column.key] ?? 0),
     })),
-    { title: '合计', dataIndex: 'total', key: 'total', width: 76, align: 'right', render: value => countFormat.format(value) },
+    { title: '合计', dataIndex: 'total', key: 'total', width: 60, align: 'right', render: value => countFormat.format(value) },
   ], [artifact.columns]);
 
   useEffect(() => {
@@ -157,7 +158,6 @@ const SpatialPivotResult = ({
           message={mapMessage}
           selectedFeatureId={selectedFeatureId}
           onSelectFeature={onSelectFeature}
-          dark={dark}
         />
 
         <div className="spatial-result-inspector">
