@@ -8,7 +8,7 @@ import { NaturalAnalysisPlanner } from '../analysisPlanner/service';
 import { isAgentConfigured, requestDraft } from '../../integrations/agent/client';
 import { pivotPlanningHistory, spatialPivot } from '../operators/spatialPivot';
 
-const moranColumns = `feature_id AS "featureId",local_i AS "localI",expected_i AS "expectedI",z,
+const moranColumns = `feature_id AS "featureId",label,local_i AS "localI",expected_i AS "expectedI",z,
   lag_z AS "lagZ",neighbor_count AS "neighborCount",p_value AS "pValue",quadrant`;
 
 const csv = (value: string | number): string => {
@@ -101,7 +101,7 @@ export const createSpatialPivotRouter = (db: Pool, service = new AnalysisService
     const moran = row.format === 'moran_lisa';
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${moran ? 'moran-lisa' : 'spatial-pivot'}-${id}.csv"`);
-    const headers = moran ? ['feature_id'] : ['feature_id', '目标', '合计'];
+    const headers = moran ? ['feature_id', '区域'] : ['feature_id', '目标', '合计'];
     res.write('\uFEFF' + [...headers, ...row.columns.map(column => column.label)].map(csv).join(',') + '\r\n');
     let after = 0;
     while (!res.destroyed) {
@@ -112,7 +112,7 @@ export const createSpatialPivotRouter = (db: Pool, service = new AnalysisService
       if (!batch.rowCount) break;
       for (const item of batch.rows) {
         const fields = moran
-          ? [item.feature_id, ...row.columns.map(column => item[column.key] ?? '')]
+          ? [item.feature_id, item.label ?? '', ...row.columns.map(column => item[column.key] ?? '')]
           : [item.feature_id, item.label, item.total, ...row.columns.map(column => item.counts[column.key] ?? 0)];
         res.write(fields.map(csv).join(',') + '\r\n');
       }

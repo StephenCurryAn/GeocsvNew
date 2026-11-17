@@ -16,6 +16,7 @@ const isolatedDatabase = async t => {
   const schema = `geocsv_migration_test_${randomUUID().replaceAll('-', '')}`;
   await admin.query(`CREATE SCHEMA "${schema}"`);
   const db = new Pool({ connectionString: databaseUrl, options: `-c search_path=${schema},public` });
+  await db.query('CREATE TABLE file_nodes (id TEXT PRIMARY KEY)');
   t.after(async () => {
     await db.end();
     await admin.query(`DROP SCHEMA "${schema}" CASCADE`);
@@ -46,7 +47,7 @@ test('PostGIS migration: upgrade legacy rows, preserve exports, and accept old w
 
   await Promise.all([migrateAnalysis(db), migrateAnalysis(db)]);
   const versions = await ledger(db);
-  assert.deepEqual(versions.map(row => row.version), [1, 2, 3, 4]);
+  assert.deepEqual(versions.map(row => row.version), [1, 2, 3, 4, 5]);
   const service = new AnalysisService(db);
   const app = express();
   app.use('/api', createSpatialPivotRouter(db, service));
@@ -111,7 +112,7 @@ test('PostGIS migration: preserve keyed runs from the submission batch', { skip:
   try {
     assert.equal((await service.create({ spec }, key)).id, id);
     assert.equal((await service.history(20)).length, 1);
-    assert.deepEqual((await ledger(db)).map(row => row.version), [1, 2, 3, 4]);
+    assert.deepEqual((await ledger(db)).map(row => row.version), [1, 2, 3, 4, 5]);
   } finally { await service.stop(); }
 });
 

@@ -32,6 +32,8 @@ function catalog() {
       let rows;
       const file = files.get(id);
       if (sql.includes('FROM scenes')) rows = [sceneId, otherSceneId].includes(id) ? [{}] : [];
+      else if (sql.includes('geocsv_analysis_dataset_periods')) rows = id.includes(areaId)
+        ? [{ file_id: areaId, month: '2024-01' }] : [];
       else if (sql.includes('scene_id')) {
         rows = [...files].filter(([key, item]) => item.scene === id && (!ids || ids.includes(key)))
           .map(([key]) => ({ id: key }));
@@ -124,6 +126,7 @@ test('scene planner scopes metadata and persists only validated plans', async t 
   assert.deepEqual(calls[0].body.datasets[0], {
     ref: 'layer_1', name: '社区.geojson', geometryTypes: ['ST_Polygon'],
     fields: ['名称', 'pothole_requests', 'total_requests'], numericFields: ['pothole_requests', 'total_requests'],
+    fieldLabels: { pothole_requests: '坑洞投诉次数', total_requests: '服务请求总量' },
   });
   assert.equal(calls[0].body.datasets.length, 1);
   assert.deepEqual(calls[0].body.operators.map(operator => operator.id), ['spatial_autocorrelation']);
@@ -155,6 +158,17 @@ test('scene planner scopes metadata and persists only validated plans', async t 
   assert.equal((await post(prompt + '，同时采用 Queen')).data.status, 'clarification');
   assert.equal((await post('运行 SQL SELECT id FROM spatial_features')).data.status, 'unsupported');
 
+  const conversational = '2024 年 1 月，芝加哥坑洞投诉多的社区，是否也挨着投诉多的社区？如果有这种聚集，具体在哪里？';
+  providerResponse = moranDraft({}, 'layer_1', 'pothole_requests');
+  const natural = await post(conversational);
+  assert.equal(natural.data.confirmationStatus, 'pending_confirmation');
+  assert.deepEqual(natural.data.inputs, { targetName: '社区.geojson', metricLabel: '坑洞投诉次数', dataMonth: '2024-01' });
+  assert.deepEqual(natural.data.spec.target, { fileId: areaId, valueField: 'pothole_requests', labelField: '名称' });
+  assert.equal(natural.data.spec.contiguity, 'queen');
+  assert.equal((await post(conversational.replace('1 月', '2 月'))).data.status, 'clarification');
+  providerResponse = moranDraft({}, 'layer_1', 'total_requests');
+  assert.equal((await post(conversational)).data.status, 'clarification');
+
   for (const [value, code] of [
     [moranDraft(undefined, 'layer_9'), 'DATASET_NOT_FOUND'],
     [moranDraft(undefined, outsideId), 'DATASET_NOT_FOUND'],
@@ -176,7 +190,7 @@ test('scene planner scopes metadata and persists only validated plans', async t 
   assert.equal((await post(prompt)).errorCode, 'PLANNER_RATE_LIMITED');
   providerStatus = 504;
   assert.equal((await post(prompt)).errorCode, 'PLANNER_TIMEOUT');
-  assert.equal(saved.length, 2);
+  assert.equal(saved.length, 3);
 
   providerStatus = 200;
   providerResponse = moranDraft({ contiguity: 'rook' });
@@ -184,7 +198,7 @@ test('scene planner scopes metadata and persists only validated plans', async t 
   const defaulted = await post(withoutPermutation);
   assert.deepEqual(defaulted.data.spec, parseMoranSpec({
     schemaVersion: 1, kind: 'spatial_autocorrelation', operatorVersion: 2,
-    target: { fileId: areaId, valueField: 'total_requests' }, contiguity: 'rook',
+    target: { fileId: areaId, valueField: 'total_requests', labelField: '名称' }, contiguity: 'rook',
   }));
   assert.equal(defaulted.data.spec.permutations, 199);
   providerResponse = moranDraft({ contiguity: 'rook', permutations: 123, seed: 99 });

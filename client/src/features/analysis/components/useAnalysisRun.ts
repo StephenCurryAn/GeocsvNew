@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   cancelRun, createRun, downloadArtifactCsv, fetchArtifact, fetchArtifactGeoJSON,
   fetchArtifactRows, fetchRun, fetchRuns, getRequestErrorMessage,
-  type ResultChartType, type Run, type SpatialPivotArtifact, type SpatialPivotGeoJSON, type SpatialPivotRow,
+  type ResultChartType, type Run, type AnalysisArtifact, type SpatialPivotGeoJSON, type SpatialPivotRow, type MoranRow,
   type SpatialPivotPlan,
 } from '../../../services/spatialPivotService';
 import { useRunHistoryStore } from '../../../stores/useRunHistoryStore';
@@ -27,10 +27,10 @@ export const useAnalysisRun = (loadHistory = true) => {
   const [requestError, setRequestError] = useState<string | null>(null);
   const [resultError, setResultError] = useState<string | null>(null);
   const [cancelling, setCancelling] = useState(false);
-  const [artifact, setArtifact] = useState<SpatialPivotArtifact | null>(null);
+  const [artifact, setArtifact] = useState<AnalysisArtifact | null>(null);
   const [artifactLoading, setArtifactLoading] = useState(false);
   const [artifactError, setArtifactError] = useState<string | null>(null);
-  const [rows, setRows] = useState<SpatialPivotRow[]>([]);
+  const [rows, setRows] = useState<(SpatialPivotRow | MoranRow)[]>([]);
   const [rowsError, setRowsError] = useState<string | null>(null);
   const [rowsLoading, setRowsLoading] = useState(false);
   const [tablePage, setTablePage] = useState(1);
@@ -153,6 +153,15 @@ export const useAnalysisRun = (loadHistory = true) => {
     else setArtifact(null);
   }, [beginSelection]);
 
+  const reset = useCallback(() => {
+    beginSelection();
+    setRun(null);
+    setArtifact(null);
+    setRequestError(null);
+    setArtifactError(null);
+    setResultError(null);
+  }, [beginSelection]);
+
   const restoreExistingRun = useCallback(async (id: string, expectedArtifactId: string) => {
     const version = beginSelection();
     setRequestError(null);
@@ -191,7 +200,7 @@ export const useAnalysisRun = (loadHistory = true) => {
   const exportCsv = useCallback(async () => {
     if (!artifact) return;
     setCsvDownloading(true);
-    try { await downloadArtifactCsv(artifact.id); }
+    try { await downloadArtifactCsv(artifact.id, artifact.format); }
     catch (error) { setResultError(`CSV 导出失败：${getRequestErrorMessage(error)}`); }
     finally { setCsvDownloading(false); }
   }, [artifact]);
@@ -202,7 +211,7 @@ export const useAnalysisRun = (loadHistory = true) => {
     run, runHistory, historyLoading, requestError, setRequestError, resultError, setResultError,
     activeRun, cancelling, artifact, artifactLoading, artifactError, rows, rowsError, rowsLoading,
     tablePage, tablePageSize, geoJSON, mapMessage, selectedFeatureId, setSelectedFeatureId, chartType, setChartType,
-    csvDownloading, start, restoreRun, restoreExistingRun,
+    csvDownloading, start, restoreRun, restoreExistingRun, reset,
     cancel, changePage, exportCsv, retryArtifact,
   };
 };

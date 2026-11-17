@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, type Response } from 'express';
 import type { Pool } from 'pg';
 import { requestDraft } from '../../integrations/agent/client';
 import { sceneContainsFiles } from '../../models/Scene';
@@ -13,7 +13,9 @@ import { readDataset } from '../spatialPivot/datasets';
 import { parseSpatialPivotSpec, SPATIAL_PIVOT_OPERATOR } from '../spatialPivot/plan';
 import { boundaryChoice, isUnclearChartFollowup, isViewOnly, requestedCharts, rulePlan, unsupportedRequirement } from './rules';
 import { NaturalAnalysisPlanner, readNaturalRequest } from './service';
+import { readSceneDataPeriods, requestedMonth } from './sceneDataMeaning';
 import { clarification, type NaturalPlan } from './types';
+import { requireAgentCallback } from './workflowRouter';
 
 const sameLayer = (prompt: string) => /同一(?:个|张)?(?:图层|层)|上(?:一个|一条|次)(?:计划|分析)?(?:的)?图层|该图层|这个图层/.test(prompt);
 const codeRequest = (prompt: string) => /\x60{3}|\bSELECT\s+[\s\S]+\s+FROM\b|(?:执行|运行|编写|生成|写一段)\s*(?:任意\s*)?(?:SQL|Python)\b/i.test(prompt);
@@ -21,11 +23,11 @@ export const createScenePlannerRouter = (
   db: Pool, service: AnalysisService, operators: readonly Operator[] = listRegisteredOperators(),
 ) => {
   const router = Router();
-  router.post('/scenes/:sceneId/analysis/plans/natural-language', analysisRoute(service)(async (req, res) => {
+  const route = analysisRoute(service);
+  const plan = async (sceneId: string, body: unknown, res: Response) => {
     const reply = (data: unknown) => res.json({ code: 200, data });
-    const sceneId = uuid(req.params.sceneId);
-    if (!record(req.body)) throw new AnalysisInputError('请提供分析需求和所选图层');
-    const { contextPlanId, ...input } = req.body;
+    if (!record(body)) throw new AnalysisInputError('请提供分析需求');
+    const { contextPlanId, ...input } = body;
     const { userPrompt, fileIds, contextRunId } = readNaturalRequest(input);
     const requestsOtherOperator = operators.some(operator =>
       operator.descriptor.id !== SPATIAL_PIVOT_OPERATOR.id && explicitlyRequested(userPrompt, operator));
@@ -65,8 +67,9 @@ export const createScenePlannerRouter = (
       "SELECT id FROM file_nodes WHERE scene_id = $1 AND type = 'file' ORDER BY name, id LIMIT 31", [sceneId],
     )).rows.map(row => row.id);
     if (selected.length > 30) return reply(clarification('当前场景超过 30 个图层，请先勾选本次要分析的图层。'));
-    const datasets = (await Promise.all(selected.map(id => readDataset(db, id, true))))
+    const spatialDatasets = (await Promise.all(selected.map(id => readDataset(db, id, true))))
       .filter(item => item.geometryTypes.length && item.featureCount > 0);
+    const datasets = requestedMonth(userPrompt) ? await readSceneDataPeriods(db, spatialDatasets) : spatialDatasets;
     if (!datasets.length) return reply(clarification('请在当前场景上传或选择有空间要素的图层。'));
     const datasetIds = new Set(datasets.map(item => item.fileId));
     const allowedPreviousPivot = scopedPivot && previousPivotIds.every(id => datasetIds.has(id)) ? scopedPivot : undefined;
@@ -91,6 +94,14 @@ export const createScenePlannerRouter = (
       history: history ?? (allowedPreviousPivot ? pivotPlanningHistory(allowedPreviousPivot) : undefined),
     }, operators);
     return result.status === 'ready' ? await save(result) : reply(result);
+  };
+  router.post('/scenes/:sceneId/analysis/plans/natural-language', route(async (req, res) => {
+    await plan(uuid(req.params.sceneId), req.body, res);
+  }));
+  router.post('/internal/analysis/workflow/plan', route(async (req, res) => {
+    requireAgentCallback(req);
+    const { sceneId, userPrompt, contextRunId } = record(req.body) ? req.body : {};
+    await plan(uuid(sceneId), { userPrompt, fileIds: [], ...(contextRunId ? { contextRunId } : {}) }, res);
   }));
   return router;
 };

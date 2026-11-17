@@ -1,6 +1,7 @@
 import type { PoolClient } from 'pg';
 import { AnalysisError, AnalysisInputError } from '../analysis/errors';
 import type { AnalysisSpec, OperatorParameterSchema } from '../analysis/protocol';
+import { fieldLabel, requestedFieldMeaning, requestedMonth } from '../analysisPlanner/sceneDataMeaning';
 import { clarification } from '../analysisPlanner/types';
 import { readDataset } from '../spatialPivot/datasets';
 import { readOperatorParameters } from './parameters';
@@ -12,7 +13,7 @@ export interface MoranSpec extends AnalysisSpec, MoranParameters {
   schemaVersion: 1;
   kind: 'spatial_autocorrelation';
   operatorVersion: 2;
-  target: { fileId: string; valueField: string };
+  target: { fileId: string; valueField: string; labelField?: string };
 }
 
 const invalid = (message: string) => new AnalysisInputError(message, 'INVALID_SPEC');
@@ -41,7 +42,7 @@ export const parseMoranSpec = (input: unknown): MoranSpec => {
   if (raw.schemaVersion !== 1 || raw.kind !== 'spatial_autocorrelation' || raw.operatorVersion !== 2) {
     throw invalid('不支持的空间自相关协议或算子版本');
   }
-  const target = readObject(raw.target, ['fileId', 'valueField']);
+  const target = readObject(raw.target, ['fileId', 'valueField', 'labelField']);
   const effective = readOperatorParameters(parameters, {
     contiguity: raw.contiguity, permutations: raw.permutations, seed: raw.seed,
   });
@@ -50,6 +51,7 @@ export const parseMoranSpec = (input: unknown): MoranSpec => {
     target: {
       fileId: stringField(target.fileId, '请选择有效的面图层', 50),
       valueField: stringField(target.valueField, '请选择有效的数值字段', 255),
+      ...(target.labelField === undefined ? {} : { labelField: stringField(target.labelField, '无效的区域名称字段', 255) }),
     },
     ...effective,
   };
@@ -68,25 +70,40 @@ const requestedNumber = (prompt: string, pattern: RegExp, parameter: RegExp): nu
 };
 
 const planDraft = (context: OperatorDraftContext) => {
-  const { dataset, fields } = context.inputs.target;
+  const proposed = context.inputs.target;
   const effective = readOperatorParameters(parameters, context.parameters);
-  const target = { fileId: dataset.fileId, valueField: fields.valueField };
   const prompt = context.userPrompt.normalize('NFKC');
   const explicitLayers = namedDatasets(prompt, context.datasets);
   const previous = context.history && sameOperator(context.history.operator, moranLisa.descriptor)
     ? context.history.fileIds.target : undefined;
   const eligible = context.datasets.filter(item => fitsInput(item, moranLisa.descriptor.inputs.target));
-  const choices = explicitLayers.length ? explicitLayers : previous ? eligible.filter(item => item.fileId === previous)
-    : context.hasSelection ? eligible : [];
-  if (choices.length !== 1 || choices[0].fileId !== dataset.fileId) {
-    return clarification('请指明一个面图层的名称或只勾选要分析的面图层。');
+  const choices = explicitLayers.length ? eligible.filter(item => explicitLayers.includes(item))
+    : previous ? eligible.filter(item => item.fileId === previous) : eligible;
+  const month = requestedMonth(prompt);
+  const inPeriod = month ? choices.filter(item => item.dataMonth === month) : choices;
+  if (month && !inPeriod.length) {
+    return clarification(`当前场景中没有已核实为 ${month} 的社区统计数据。你可以补充这段时间的数据，或告诉我改用哪个已有时段。`);
   }
-  const explicitFields = dataset.fields.filter(field => mentions(prompt, field));
-  const numericFields = dataset.numericFields ?? [];
-  if (explicitFields.length > 1 || (explicitFields.length === 1 && explicitFields[0] !== target.valueField)
-    || (!explicitFields.length && numericFields.length > 1)) {
-    return clarification('请在需求中指明一个数值字段：' + numericFields.join('、').slice(0, 450));
+  const fields = inPeriod.flatMap(dataset => (dataset.numericFields ?? []).map(valueField => ({ dataset, valueField })));
+  const explicit = fields.filter(item => mentions(prompt, item.valueField));
+  const meaning = requestedFieldMeaning(prompt);
+  const inferred = meaning ? fields.filter(item => meaning.fields.test(item.valueField))
+    : fields.filter(item => !/(?:^|_)(?:id|code|编号|编码)(?:$|_)/i.test(item.valueField));
+  const bindings = explicit.length ? explicit : inferred;
+  if (bindings.length !== 1) {
+    if (!bindings.length && meaning) return clarification(`当前场景的可用面数据缺少「${meaning.label}」。你想补充这份统计数据，还是比较另一种指标？`);
+    const options = [...new Set(bindings.map(item => fieldLabel(item.valueField)))].slice(0, 5);
+    const layers = new Set(bindings.map(item => item.dataset.name));
+    return clarification(layers.size > 1 && options.length === 1
+      ? `当前场景有多份包含「${options[0]}」的数据。你想用哪份？候选为${[...layers].slice(0, 5).join('、')}。`
+      : `你想比较哪种指标？${options.length ? '可用指标有' + options.join('、') + '。' : ''}`);
   }
+  const { dataset, valueField } = bindings[0];
+  if (dataset.fileId !== proposed.dataset.fileId || valueField !== proposed.fields.valueField) {
+    return clarification(`当前需求对应「${fieldLabel(valueField)}」。请确认是否按「${dataset.name}」里的这一指标分析。`);
+  }
+  const labelField = ['community', 'community_name', 'name', 'NAME', '名称', '社区'].find(field => dataset.fields.includes(field));
+  const target = { fileId: dataset.fileId, valueField, ...(labelField ? { labelField } : {}) };
   if (/\bknn\b|最近邻|距离权重|自定义权重/i.test(prompt)) {
     return { status: 'unsupported' as const, message: 'Moran/LISA 当前提供 Queen 和 Rook 邻接。' };
   }
@@ -107,7 +124,8 @@ const planDraft = (context: OperatorDraftContext) => {
     seed: seed === undefined ? parameters.properties.seed.default : effective.seed,
   };
   return { status: 'ready' as const, source: 'llm' as const, message: 'Moran/LISA 空间自相关',
-    spec, inputs: { targetName: dataset.name } };
+    spec, inputs: { targetName: dataset.name, metricLabel: fieldLabel(valueField),
+      ...(dataset.dataMonth ? { dataMonth: dataset.dataMonth } : {}) } };
 };
 
 const maxFeatures = 20000;
@@ -129,9 +147,10 @@ async function capture(client: PoolClient, spec: MoranSpec): Promise<PythonSnaps
       bool_or(properties ? $2) AS field_present,
       convert_to(jsonb_build_object('crs',$4::text,'valueColumn',$2::text,'features',jsonb_agg(jsonb_build_object(
         'id',id::text,'wkb',encode(ST_AsBinary(geom,'NDR'),'hex'),'value',properties -> $2
-      ) ORDER BY id))::text,'UTF8') AS payload
+      ) || CASE WHEN $5::text IS NULL THEN '{}'::jsonb ELSE
+        jsonb_build_object('label', LEFT(properties ->> $5::text, 160)) END ORDER BY id))::text,'UTF8') AS payload
     FROM features
-`, [fileId, valueField, maxFeatures + 1, crs]);
+`, [fileId, valueField, maxFeatures + 1, crs, spec.target.labelField ?? null]);
   if (!row.present) throw new AnalysisInputError('面图层不存在', 'DATASET_NOT_FOUND');
   if (row.count < 3 || row.count > maxFeatures) throw invalid('面图层须包含 3–20000 个要素');
   if (!row.valid) throw new AnalysisInputError('面图层须由有效的 EPSG:4326 二维面组成', 'INVALID_GEOMETRY');
@@ -186,7 +205,7 @@ export const moranLisa: Operator = {
   descriptor: {
     id: 'spatial_autocorrelation', version: 2, name: 'Moran/LISA 空间自相关',
     aliases: ['Moran', 'LISA', '莫兰', '空间自相关', 'Queen', 'Rook'],
-    description: '根据一个面图层中的数值字段计算全局 Moran’s I 和局部 LISA。适用 Queen 或 Rook 邻接。',
+    description: '判断数值偏高或偏低的区域是否彼此相邻、哪里成片或和周围不同。使用面图层的数值指标计算 Moran’s I 与 LISA，适用 Queen 或 Rook 邻接。',
     executor: 'python',
     inputs: { target: { geometryTypes: ['ST_Polygon', 'ST_MultiPolygon'],
       fields: { valueField: { type: 'numeric', required: true, description: '分析使用的数值字段' } } } },
@@ -226,11 +245,11 @@ export const moranLisa: Operator = {
           },
           async writeRows(client, id) {
             const written = await client.query(`
-              INSERT INTO geocsv_analysis_moran_rows(artifact_id,feature_id,local_i,expected_i,z,lag_z,neighbor_count,p_value,quadrant,geom)
+              INSERT INTO geocsv_analysis_moran_rows(artifact_id,feature_id,local_i,expected_i,z,lag_z,neighbor_count,p_value,quadrant,geom,label)
               SELECT $1,r.id::int,r.i,r.expected_i,r.z,r.lag_z,r.neighbor_count,r.p,r.quadrant,
-                ST_GeomFromWKB(decode(f.wkb,'hex'),4326)
+                ST_GeomFromWKB(decode(f.wkb,'hex'),4326), f.label
               FROM jsonb_to_recordset($2::jsonb) AS r(id text,i float8,expected_i float8,z float8,lag_z float8,neighbor_count int,p float8,quadrant text)
-              JOIN jsonb_to_recordset($3::jsonb -> 'features') AS f(id text,wkb text) USING(id)
+              JOIN jsonb_to_recordset($3::jsonb -> 'features') AS f(id text,wkb text,label text) USING(id)
             `, [
               id, JSON.stringify(result.local), execution.payload.toString('utf8'),
             ]);

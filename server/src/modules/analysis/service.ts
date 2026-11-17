@@ -18,7 +18,7 @@ export interface SubmissionKey {
   key: string;
 }
 
-type PlanReference = { planId: string; planVersion: number };
+type PlanReference = { planId: string; planVersion: number; sceneId?: string };
 interface ReplayInput { expectedVersions?: InputVersions; replayRunId?: string }
 type RunSubmission = ({ spec: unknown } & ReplayInput) | PlanReference;
 type PreparedSubmission = ({ operator: PreparedOperator } & ReplayInput) | PlanReference;
@@ -164,7 +164,7 @@ export class AnalysisService {
     }
 
     const { plan, snapshotId } = 'planId' in request
-      ? await this.checkPlan(client, request.planId, request.planVersion)
+      ? await this.checkPlan(client, request.planId, request.planVersion, request.sceneId)
       : await this.implicitPlan(client, request);
     const runId = randomUUID();
     const existingDefinition = await client.query('SELECT id FROM geocsv_analysis_definitions WHERE spec_hash=$1', [plan.specHash]);
@@ -182,10 +182,13 @@ export class AnalysisService {
     return runFromRow(result.rows[0]);
   }
 
-  private async checkPlan(client: PoolClient, id: string, version: number) {
+  private async checkPlan(client: PoolClient, id: string, version: number, sceneId?: string) {
     const plan = await readPlan(client, id);
     if (!plan) throw new AnalysisError(404, 'PLAN_NOT_FOUND', '分析计划不存在');
     if (plan.version !== version) throw new AnalysisError(409, 'PLAN_VERSION_CONFLICT', '计划版本已变化，请重新加载并确认');
+    if (sceneId && !await sceneContainsFiles(client, sceneId, Object.values(plan.inputVersions).map(input => input.fileId))) {
+      throw new AnalysisInputError('计划引用了当前场景以外的图层', 'DATASET_NOT_FOUND');
+    }
     const operator = prepare(plan.spec);
     const stale = () => new InputVersionChanged('输入数据已改变，请重新校验并确认计划');
     let inputs;
@@ -244,10 +247,18 @@ export class AnalysisService {
     return result.rows[0] ? runFromRow(result.rows[0]) : null;
   }
 
-  async history(limit: number, operatorId?: string): Promise<AnalysisRun[]> {
+  async history(limit: number, operatorId?: string, sceneId?: string): Promise<AnalysisRun[]> {
+    const sceneScope = sceneId ? `
+        AND (
+          input_versions IS NOT NULL AND input_versions <> '{}'::jsonb
+          AND NOT EXISTS (
+            SELECT 1 FROM jsonb_each(input_versions) AS input(role, version)
+            WHERE NOT EXISTS (SELECT 1 FROM file_nodes WHERE id=input.version->>'fileId' AND scene_id=$3)
+          )
+        )` : '';
     const result = await this.db.query<RunRow>(`
-      SELECT * FROM geocsv_analysis_runs
-      WHERE ($2::text IS NULL OR spec->>'kind'=$2) ORDER BY created_at DESC, id LIMIT $1`, [limit, operatorId]);
+      SELECT * FROM geocsv_analysis_runs WHERE ($2::text IS NULL OR spec->>'kind'=$2)${sceneScope}
+      ORDER BY created_at DESC, id LIMIT $1`, sceneId ? [limit, operatorId, sceneId] : [limit, operatorId]);
     return result.rows.map(runFromRow);
   }
 

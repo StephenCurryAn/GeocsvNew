@@ -1,10 +1,13 @@
 import asyncio
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 from secrets import compare_digest
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from openai import (
     APIError,
     APIResponseValidationError,
@@ -17,13 +20,26 @@ from pydantic import ValidationError
 
 from contracts import Draft, PlanningRequest
 from planner import InvalidDraft, build_model, logger, plan
+from workflow import (CallbackError, WorkflowEngine, WorkflowEvent, WorkflowResponse,
+                      build_workflow, open_event_ledger, prepare_checkpoint_store)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.token = os.getenv("AGENT_SERVICE_TOKEN", "")
     app.state.model = build_model()
-    yield
+    checkpoint_path = os.getenv("AGENT_CHECKPOINT_PATH", "/data/checkpoints.sqlite")
+    if checkpoint_path != ":memory:":
+        Path(checkpoint_path).parent.mkdir(parents=True, exist_ok=True)
+    await prepare_checkpoint_store(checkpoint_path)
+    async with AsyncSqliteSaver.from_conn_string(checkpoint_path) as checkpointer:
+        await checkpointer.setup()
+        ledger = await open_event_ledger(checkpoint_path)
+        app.state.workflow = WorkflowEngine(build_workflow(checkpointer), ledger)
+        try:
+            yield
+        finally:
+            await ledger.close()
 
 
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
@@ -55,9 +71,26 @@ async def create_plan(body: PlanningRequest, request: Request):
     except RateLimitError:
         raise HTTPException(429, "model_rate_limited") from None
     except (InvalidDraft, ValidationError, APIResponseValidationError,
-            ContentFilterFinishReasonError, LengthFinishReasonError):
+            ContentFilterFinishReasonError, LengthFinishReasonError) as error:
+        logger.warning("Planner invalid response class=%s", type(error).__name__)
         raise HTTPException(502, "model_invalid_response") from None
     except APIError as error:
         logger.warning("Planner provider failure class=%s status=%s", type(error).__name__,
                        getattr(error, "status_code", None))
         raise HTTPException(502, "model_unavailable") from None
+
+
+@app.post("/workflow/{scene_id}/{thread_id}/events", response_model=WorkflowResponse,
+          dependencies=[Depends(authorize)])
+async def workflow_event(scene_id: UUID, thread_id: UUID, body: WorkflowEvent, request: Request):
+    try:
+        return await request.app.state.workflow.post(scene_id, thread_id, body)
+    except CallbackError as error:
+        logger.warning("Workflow callback unavailable class=%s", type(error).__name__)
+        raise HTTPException(502, "workflow_callback_unavailable") from None
+
+
+@app.get("/workflow/{scene_id}/{thread_id}", response_model=WorkflowResponse,
+         dependencies=[Depends(authorize)])
+async def workflow_state(scene_id: UUID, thread_id: UUID, request: Request):
+    return await request.app.state.workflow.get(scene_id, thread_id)

@@ -19,6 +19,8 @@ class Dataset(Contract):
     geometryTypes: list[str]
     fields: list[FieldName]
     numericFields: list[FieldName]
+    dataMonth: str | None = None
+    fieldLabels: dict[str, str] | None = None
 
 
 class OperatorRef(Contract):

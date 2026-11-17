@@ -97,6 +97,12 @@
     min-height: 425px;
 }
 
+.spatial-result-grid--moran {
+    flex: none;
+    min-height: 0;
+    grid-template-rows: 380px;
+}
+
 .spatial-result-inspector {
     display: grid;
     grid-template-rows: minmax(175px, 0.85fr) minmax(0, 1fr);
@@ -313,6 +319,10 @@
     .spatial-result-grid {
         grid-template-columns: minmax(0, 1fr);
         grid-template-rows: minmax(230px, 1fr) auto;
+    }
+
+    .spatial-result-grid--moran {
+        grid-template-rows: 350px 320px;
     }
 
     .spatial-result-inspector {

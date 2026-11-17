@@ -25,7 +25,7 @@ export interface OperatorDraftContext extends DraftContext {
 
 export type OperatorDraftResult =
   | { status: 'ready'; source: 'llm'; message: string; spec: AnalysisSpec;
-      inputs: { targetName: string; joinName?: string }; view?: AnalysisView; assumptions?: string[] }
+      inputs: { targetName: string; joinName?: string; metricLabel?: string; dataMonth?: string }; view?: AnalysisView; assumptions?: string[] }
   | { status: 'clarification'; message: string; questions: string[] }
   | { status: 'unsupported'; message: string };
 

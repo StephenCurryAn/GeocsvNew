@@ -129,7 +129,17 @@ const pythonSnapshotsAndResults = async (client: PoolClient) => {
   `);
 };
 
-const migrations = [baseline, submissionKeys, plansAndArtifactFormats, pythonSnapshotsAndResults];
+const sceneAnalysisMetadata = async (client: PoolClient) => {
+  await client.query(`
+    CREATE TABLE geocsv_analysis_dataset_periods (
+      file_id TEXT PRIMARY KEY REFERENCES file_nodes(id) ON DELETE CASCADE,
+      month TEXT NOT NULL CHECK (month ~ '^[0-9]{4}-(0[1-9]|1[0-2])$')
+    );
+    ALTER TABLE geocsv_analysis_moran_rows ADD COLUMN label TEXT;
+  `);
+};
+
+const migrations = [baseline, submissionKeys, plansAndArtifactFormats, pythonSnapshotsAndResults, sceneAnalysisMetadata];
 
 export const migrateAnalysis = async (db: Pool): Promise<void> => {
   await transaction(db, 'BEGIN', async client => {

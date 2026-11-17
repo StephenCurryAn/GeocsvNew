@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from langchain_openai import ChatOpenAI
 
 from main import app
+from planner import DRAFT_TOOL_SCHEMA, _native_draft
 
 TOKEN = "unit-test-token"
 CONTEXT = {
@@ -14,6 +15,7 @@ CONTEXT = {
     "datasets": [{
         "ref": "layer_1", "name": "社区.geojson", "geometryTypes": ["ST_Polygon"],
         "fields": ["total_requests"], "numericFields": ["total_requests"],
+        "dataMonth": "2024-01", "fieldLabels": {"total_requests": "311 服务请求总量"},
     }],
     "operators": [{
         "id": "spatial_autocorrelation", "version": 2, "name": "Moran/LISA",
@@ -69,7 +71,7 @@ class PlannerContractTest(unittest.TestCase):
                 result = client.post("/plan", json=body, headers={"Authorization": f"Bearer {token}"})
         return result, calls
 
-    def test_messages_json_mode_and_strict_response(self):
+    def test_non_deepseek_provider_uses_explicit_json_mode_fallback(self):
         payload = moran()
         result, calls = self.request(completion(payload))
         self.assertEqual(result.status_code, 200)
@@ -82,6 +84,60 @@ class PlannerContractTest(unittest.TestCase):
         self.assertEqual(json.loads(sent["messages"][1]["content"]), CONTEXT)
         self.assertNotIn("spatial_autocorrelation", sent["messages"][0]["content"])
         self.assertNotIn("total_requests", sent["messages"][0]["content"])
+        self.assertIn("dataMonth", json.loads(sent["messages"][1]["content"])["datasets"][0])
+        self.assertIn("fieldLabels", json.loads(sent["messages"][1]["content"])["datasets"][0])
+        self.assertIn("语义能唯一对应", sent["messages"][0]["content"])
+
+    def test_deepseek_uses_strict_tool_schema_without_prompt_embedded_schema(self):
+        payload = moran()
+        calls = []
+
+        def handle(request):
+            sent = json.loads(request.content)
+            calls.append(sent)
+            arguments = {
+                "status": "ready",
+                "operator": {"id": "spatial_autocorrelation", "version": 2},
+                "inputs": [{"role": "target", "ref": "layer_1",
+                            "fields": [{"role": "valueField", "field": "total_requests"}]}],
+                "parameters": [{"name": "contiguity", "value": "rook"},
+                               {"name": "permutations", "value": 199}],
+                "questions": None, "message": None,
+            }
+            return httpx.Response(200, json={
+                "id": "test", "model": "deepseek-flash", "choices": [{"index": 0, "finish_reason": "tool_calls",
+                    "message": {"role": "assistant", "content": None, "tool_calls": [{"id": "call_1", "type": "function",
+                        "function": {"name": "GeoCSVPlanningDraft", "arguments": json.dumps(arguments)}}]}}],
+                "usage": {"prompt_tokens": 50, "completion_tokens": 10, "total_tokens": 60},
+            })
+
+        model = ChatOpenAI(
+            model="deepseek-flash", base_url="https://api.deepseek.com/beta", api_key="test-key",
+            http_async_client=httpx.AsyncClient(transport=httpx.MockTransport(handle)), max_retries=0,
+            http_socket_options=(), use_responses_api=False,
+        )
+        with patch.dict("os.environ", {"AGENT_SERVICE_TOKEN": TOKEN}), patch("main.build_model", return_value=model):
+            with TestClient(app) as client:
+                result = client.post("/plan", json=CONTEXT, headers={"Authorization": f"Bearer {TOKEN}"})
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(result.json(), json.loads(payload))
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn("response_format", calls[0])
+        self.assertEqual(calls[0]["tool_choice"], {"type": "function", "function": {"name": "GeoCSVPlanningDraft"}})
+        tool = calls[0]["tools"][0]["function"]
+        self.assertTrue(tool["strict"])
+        self.assertEqual(tool["parameters"], DRAFT_TOOL_SCHEMA["parameters"])
+        self.assertNotIn("schema", calls[0]["messages"][0]["content"])
+
+    def test_native_omitted_parameters_leave_defaults_to_the_registered_operator(self):
+        draft = _native_draft({
+            "status": "ready",
+            "operator": {"id": "spatial_autocorrelation", "version": 2},
+            "inputs": [{"role": "target", "ref": "layer_1",
+                        "fields": [{"role": "valueField", "field": "pothole_requests"}]}],
+            "parameters": None,
+        })
+        self.assertEqual(draft["parameters"], {})
 
     def test_custom_catalog_entry_uses_identical_system_message_and_draft_shape(self):
         third = {

@@ -41,10 +41,14 @@ services:
       dockerfile: deploy/docker/agent.Dockerfile
     environment:
       AGENT_SERVICE_TOKEN: ${AGENT_SERVICE_TOKEN:-}
+      AGENT_CALLBACK_URL: http://server:3000
+      AGENT_CHECKPOINT_PATH: /data/checkpoints.sqlite
       ALIYUN_API_KEY: ${ALIYUN_API_KEY:-}
       LLM_BASE_URL: ${LLM_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
       LLM_PLANNER_MODEL: ${LLM_PLANNER_MODEL:-deepseek-v3}
       LLM_PROXY_URL: ${LLM_PROXY_URL:-}
+    volumes:
+      - agent-checkpoints:/data
     networks: [planner]
     healthcheck:
       test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8100/health', timeout=2).close()"]
@@ -112,6 +116,7 @@ volumes:
   uploads:
   models:
   analysis-worker:
+  agent-checkpoints:
 
 networks:
   planner:

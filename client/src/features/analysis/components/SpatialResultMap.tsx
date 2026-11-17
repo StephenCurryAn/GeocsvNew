@@ -3,20 +3,22 @@ import { AimOutlined } from '@ant-design/icons';
 import { Button, Empty, Spin } from 'antd';
 import maplibregl from 'maplibre-gl';
 import { bbox } from '@turf/turf';
-import { rasterStyle } from '../../map/basemaps';
+import { BasemapController, initialMapStyle, loadBasemap } from '../../map/basemaps';
 import { useWorkbenchAppearance } from '../../../layouts/WorkbenchTheme';
 import type { SpatialPivotGeoJSON } from '../../../services/spatialPivotService';
+import { LOCAL_ALPHA, MORAN_COLORS, MORAN_LABELS } from './moranPresentation';
 
 const RESULT_SOURCE = 'spatial-pivot-result';
 const FILL_LAYER = 'spatial-pivot-fill';
 const OUTLINE_LAYER = 'spatial-pivot-outline';
-const CONTEXT_SOURCE = 'spatial-pivot-context';
+const PROTOMAPS_KEY = (import.meta.env.VITE_PROTOMAPS_API_KEY || '').trim();
 
 interface SpatialResultMapProps {
   geoJSON: SpatialPivotGeoJSON | null;
   message: string | null;
   selectedFeatureId: number | null;
   onSelectFeature: (featureId: number) => void;
+  variant?: 'counts' | 'moran';
 }
 
 const getBounds = (data: SpatialPivotGeoJSON | SpatialPivotGeoJSON['features'][number]) => {
@@ -34,11 +36,12 @@ const readFeatureId = (value: unknown) => (
   (typeof value === 'number' || (typeof value === 'string' && value.trim())) ? Number(value) : NaN
 );
 
-export default function SpatialResultMap({ geoJSON, message, selectedFeatureId, onSelectFeature }: SpatialResultMapProps) {
+export default function SpatialResultMap({ geoJSON, message, selectedFeatureId, onSelectFeature, variant = 'counts' }: SpatialResultMapProps) {
   const container = useRef<HTMLDivElement>(null);
   const callback = useRef(onSelectFeature);
   const [map, setMap] = useState<maplibregl.Map | null>(null);
   const [mapError, setMapError] = useState(false);
+  const basemap = useRef<BasemapController | null>(null);
   const { palette, dark } = useWorkbenchAppearance();
   const bounds = useMemo(() => geoJSON ? getBounds(geoJSON) : null, [geoJSON]);
   const hasExtent = bounds !== null;
@@ -55,7 +58,7 @@ export default function SpatialResultMap({ geoJSON, message, selectedFeatureId, 
     try {
       preview = new maplibregl.Map({
         container: container.current,
-        style: { version: 8, sources: {}, layers: [] },
+        style: initialMapStyle(),
         center: [0, 0],
         zoom: 1,
         attributionControl: { compact: true },
@@ -68,7 +71,11 @@ export default function SpatialResultMap({ geoJSON, message, selectedFeatureId, 
 
     preview.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'bottom-right');
     preview.addControl(new maplibregl.ScaleControl(), 'bottom-left');
+    const resize = new ResizeObserver(() => preview.resize());
+    resize.observe(container.current);
     preview.once('load', () => {
+      basemap.current = new BasemapController(preview, (key, signal) =>
+        loadBasemap(key, { protomapsKey: PROTOMAPS_KEY, apiBase: '/api' }, signal));
       preview.addSource(RESULT_SOURCE, { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
       preview.addLayer({ id: FILL_LAYER, type: 'fill', source: RESULT_SOURCE, paint: { 'fill-opacity': 0.78 } });
       preview.addLayer({ id: OUTLINE_LAYER, type: 'line', source: RESULT_SOURCE });
@@ -80,7 +87,7 @@ export default function SpatialResultMap({ geoJSON, message, selectedFeatureId, 
       preview.on('mouseleave', FILL_LAYER, () => { preview.getCanvas().style.cursor = ''; });
       setMap(preview);
     });
-    return () => { preview.remove(); };
+    return () => { resize.disconnect(); basemap.current?.dispose(); basemap.current = null; preview.remove(); setMap(null); };
   }, [hasExtent]);
 
   useEffect(() => {
@@ -93,20 +100,8 @@ export default function SpatialResultMap({ geoJSON, message, selectedFeatureId, 
   }, [map, geoJSON, bounds]);
 
   useEffect(() => {
-    if (!map || !hasExtent) return;
-    // The thematic geometry can load immediately. Context tiles arrive independently.
-    const key = dark ? 'dark' : 'light';
-    const raster = rasterStyle(key, '').sources[key] as maplibregl.RasterSourceSpecification;
-    const context = map.getSource<maplibregl.RasterTileSource>(CONTEXT_SOURCE);
-    if (context) {
-      context.setTiles(raster.tiles ?? []);
-    } else {
-      map.addSource(CONTEXT_SOURCE, raster);
-      map.addLayer({
-        id: CONTEXT_SOURCE, type: 'raster', source: CONTEXT_SOURCE,
-        paint: { 'raster-opacity': 0.64, 'raster-saturation': -0.8 },
-      }, FILL_LAYER);
-    }
+    if (!map || !hasExtent || !PROTOMAPS_KEY) return;
+    void basemap.current?.switchTo(dark ? 'protomaps-dark' : 'protomaps-light').catch(() => undefined);
   }, [map, dark, hasExtent]);
 
   useEffect(() => {
@@ -114,7 +109,13 @@ export default function SpatialResultMap({ geoJSON, message, selectedFeatureId, 
     const isSelected: maplibregl.ExpressionSpecification = selectedFeatureId == null
       ? ['literal', false]
       : ['==', ['to-number', ['get', 'featureId'], -1], selectedFeatureId];
-    const fill: maplibregl.ExpressionSpecification = maxTotal > 0
+    const fill: maplibregl.ExpressionSpecification = variant === 'moran' ? [
+      'case',
+      ['all', ['!=', ['get', 'pValue'], null], ['<=', ['to-number', ['get', 'pValue'], 1], LOCAL_ALPHA]],
+      ['match', ['get', 'quadrant'], 'HH', MORAN_COLORS.HH, 'LL', MORAN_COLORS.LL,
+        'HL', MORAN_COLORS.HL, 'LH', MORAN_COLORS.LH, palette.mapLow],
+      palette.mapLow,
+    ] : maxTotal > 0
       ? ['interpolate', ['linear'], ['to-number', ['get', 'total'], 0], 0, palette.mapLow, maxTotal, palette.mapHigh]
       : ['literal', palette.mapLow];
 
@@ -123,10 +124,10 @@ export default function SpatialResultMap({ geoJSON, message, selectedFeatureId, 
     map.setPaintProperty(OUTLINE_LAYER, 'line-width', ['case', isSelected, 2.6, 1.1]);
     if (!selected) return;
     const extent = getBounds(selected);
-    if (extent && !map.getBounds().contains([(extent[0] + extent[2]) / 2, (extent[1] + extent[3]) / 2])) {
-      map.fitBounds(extent, { padding: 54, maxZoom: 15, duration: 220 });
+    if (extent) {
+      map.fitBounds(extent, { padding: 54, maxZoom: 15, duration: 360 });
     }
-  }, [map, maxTotal, palette, selectedFeatureId, selected, hasExtent]);
+  }, [map, maxTotal, palette, selectedFeatureId, selected, hasExtent, variant]);
 
   const fixExtent = () => {
     if (bounds) map?.fitBounds(bounds, { padding: 52, maxZoom: 15, duration: 220 });
@@ -141,7 +142,7 @@ export default function SpatialResultMap({ geoJSON, message, selectedFeatureId, 
         )}
       </header>
       <div className="spatial-result-map-stage" style={{ background: palette.mapSurface }}>
-        <div ref={container} className="spatial-result-map-canvas" aria-label="空间透视结果地图" />
+        <div ref={container} className="spatial-result-map-canvas" aria-label={variant === 'moran' ? '社区聚集结果地图' : '空间透视结果地图'} />
         {(message || !bounds || mapError || !map) && (
           <div className="spatial-result-placeholder">
             {!bounds || mapError
@@ -153,10 +154,16 @@ export default function SpatialResultMap({ geoJSON, message, selectedFeatureId, 
       {bounds && !mapError && (
         <div className="spatial-result-map-footer">
           <div className="spatial-result-legend" aria-label="地图颜色图例">
-            <span>合计</span>
-            <span>0</span>
-            <span className="spatial-result-ramp" style={{ background: 'linear-gradient(90deg, ' + palette.mapLow + ', ' + palette.mapHigh + ')' }} />
-            <span>{maxTotal.toLocaleString('zh-CN')}</span>
+            {variant === 'moran' ? <>
+              {(Object.keys(MORAN_COLORS) as (keyof typeof MORAN_COLORS)[]).map(key => <span key={key}
+                className="flex items-center gap-1"><i className="inline-block h-2.5 w-2.5 rounded-sm" style={{ background: MORAN_COLORS[key] }} />
+                {MORAN_LABELS[key]}</span>)}
+              <span>灰色为其他社区</span>
+            </> : <>
+              <span>合计</span><span>0</span>
+              <span className="spatial-result-ramp" style={{ background: 'linear-gradient(90deg, ' + palette.mapLow + ', ' + palette.mapHigh + ')' }} />
+              <span>{maxTotal.toLocaleString('zh-CN')}</span>
+            </>}
           </div>
           {selected && (
             <span className="spatial-result-map-selection" role="status">

@@ -28,7 +28,7 @@ export type NaturalLanguagePlan =
   | {
       status: 'ready'; source: 'llm'; message: string;
       confirmationStatus: 'pending_confirmation'; spec: MoranSpec;
-      plan: AnalysisPlan<MoranSpec>; inputs: { targetName: string };
+      plan: AnalysisPlan<MoranSpec>; inputs: { targetName: string; metricLabel?: string; dataMonth?: string };
     }
   | { status: 'clarification'; message: string; questions: string[] }
   | { status: 'unsupported'; message: string }
@@ -50,7 +50,7 @@ export interface MoranSpec {
   schemaVersion: 1;
   kind: 'spatial_autocorrelation';
   operatorVersion: 2;
-  target: { fileId: string; valueField: string };
+  target: { fileId: string; valueField: string; labelField?: string };
   contiguity: 'queen' | 'rook';
   permutations: number;
   seed: number;
@@ -72,7 +72,7 @@ export type RunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancell
 export interface Run {
   id: string;
   status: RunStatus;
-  spec: SpatialPivotSpec;
+  spec: AnalysisSpec;
   artifactId: string | null;
   error: string | null;
   createdAt: string;
@@ -88,6 +88,7 @@ export interface SpatialPivotArtifact {
   id: string;
   runId: string;
   spec: SpatialPivotSpec;
+  format: 'spatial_counts';
   columns: ArtifactColumn[];
   totalRows: number;
   summary: {
@@ -95,6 +96,33 @@ export interface SpatialPivotArtifact {
     joinCount: number;
     matchedPairs: number;
   };
+}
+
+export interface MoranArtifact {
+  id: string;
+  runId: string;
+  format: 'moran_lisa';
+  spec: MoranSpec;
+  columns: ArtifactColumn[];
+  totalRows: number;
+  summary: {
+    globalI: number;
+    expectedI: number;
+    pValue: number | null;
+    excludedValueIds: number[];
+  };
+}
+
+export type AnalysisArtifact = SpatialPivotArtifact | MoranArtifact;
+export type MoranQuadrant = 'HH' | 'HL' | 'LH' | 'LL';
+
+export interface MoranRow {
+  featureId: number;
+  label: string | null;
+  localI: number;
+  pValue: number | null;
+  quadrant: MoranQuadrant | null;
+  neighborCount: number;
 }
 
 export interface SpatialPivotRow {
@@ -105,7 +133,7 @@ export interface SpatialPivotRow {
 }
 
 export interface SpatialPivotRows {
-  rows: SpatialPivotRow[];
+  rows: (SpatialPivotRow | MoranRow)[];
   total: number;
   page: number;
   pageSize: number;
@@ -178,8 +206,8 @@ export const cancelRun = async (runId: string, signal?: AbortSignal): Promise<vo
   await apiClient.post(`/runs/${encodeURIComponent(runId)}/cancel`, undefined, { signal });
 };
 
-export const fetchArtifact = async (artifactId: string, signal?: AbortSignal): Promise<SpatialPivotArtifact> => {
-  const response = await apiClient.get<ApiEnvelope<SpatialPivotArtifact>>(`/artifacts/${encodeURIComponent(artifactId)}`, { signal });
+export const fetchArtifact = async (artifactId: string, signal?: AbortSignal): Promise<AnalysisArtifact> => {
+  const response = await apiClient.get<ApiEnvelope<AnalysisArtifact>>(`/artifacts/${encodeURIComponent(artifactId)}`, { signal });
   return unwrap(response.data);
 };
 
@@ -202,14 +230,14 @@ export const fetchArtifactGeoJSON = async (artifactId: string, signal?: AbortSig
   return response.data;
 };
 
-export const downloadArtifactCsv = async (artifactId: string): Promise<void> => {
+export const downloadArtifactCsv = async (artifactId: string, format: AnalysisArtifact['format'] = 'spatial_counts'): Promise<void> => {
   const response = await apiClient.get<Blob>(`/artifacts/${encodeURIComponent(artifactId)}/export.csv`, {
     responseType: 'blob',
   });
   const url = URL.createObjectURL(response.data);
   const link = document.createElement('a');
   link.href = url;
-  link.download = `spatial-pivot-${artifactId}.csv`;
+  link.download = `${format === 'moran_lisa' ? 'moran-lisa' : 'spatial-pivot'}-${artifactId}.csv`;
   link.click();
   URL.revokeObjectURL(url);
 };

@@ -1,4 +1,5 @@
 import { AnalysisError, AnalysisInputError } from '../../modules/analysis/errors';
+import { fieldLabel } from '../../modules/analysisPlanner/sceneDataMeaning';
 import { clarification } from '../../modules/analysisPlanner/types';
 import { explicitlyRequested, fitsInput, record, resolveDraftInputs, sameOperator,
   type DraftContext, type OperatorDraftResult } from '../../modules/operators/planning';
@@ -61,10 +62,15 @@ export async function requestDraft(context: DraftContext, registered: readonly O
     ? Object.fromEntries(Object.entries(history.fileIds).map(([role, id]) => [role, refs.get(id)])) : undefined;
   const body = {
     userPrompt: context.userPrompt,
-    datasets: datasets.map(({ fileId, name, geometryTypes, fields, numericFields }) => ({
+    datasets: datasets.map(({ fileId, name, geometryTypes, fields, numericFields, dataMonth }) => ({
       ref: refs.get(fileId), name, geometryTypes,
       fields: fields.filter(field => field.length > 0 && field.length <= 255),
       numericFields: numericFields?.filter(field => field.length > 0 && field.length <= 255) ?? [],
+      ...(dataMonth ? { dataMonth } : {}),
+      ...(numericFields?.some(field => fieldLabel(field) !== field) ? {
+        fieldLabels: Object.fromEntries(numericFields.filter(field => fieldLabel(field) !== field)
+          .map(field => [field, fieldLabel(field)])),
+      } : {}),
     })),
     operators,
     history: history && priorInputs ? { operator: history.operator, inputs: priorInputs, parameters: history.parameters } : undefined,

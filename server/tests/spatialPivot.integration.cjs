@@ -75,7 +75,7 @@ test('PostGIS: plan -> persisted run -> table/map/CSV artifact; boundaries, repl
     assert.deepEqual((await request('/operators')).find(operator => operator.id === examples.Operator.id), examples.Operator);
     await service.start();
     const freshLedger = (await db.query('SELECT version FROM geocsv_analysis_migrations ORDER BY version')).rows;
-    assert.deepEqual(freshLedger.map(row => row.version), [1, 2, 3, 4]);
+    assert.deepEqual(freshLedger.map(row => row.version), [1, 2, 3, 4, 5]);
     const beforePlanning = Number((await db.query('SELECT count(*) FROM geocsv_analysis_runs')).rows[0].count);
     const natural = await request('/analysis-plans/natural-language', {
       userPrompt: '按category分类统计每个街道内设施数量，排除边界', fileIds: ['districts', 'pois'],

@@ -834,7 +834,7 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({ sceneId, selectedFileIds = [] }
 
             {/* ── 消息列表 ── */}
             <div className={`min-h-0 min-w-0 flex-1 flex-col overflow-hidden ${assistantMode === 'operator' ? 'flex' : 'hidden'}`}>
-                <UnifiedAnalysisAssistant key={sceneId} sceneId={sceneId} selectedFileIds={selectedFileIds} onSwitchToLegacy={() => setAssistantMode('legacy')} />
+                <UnifiedAnalysisAssistant key={sceneId} sceneId={sceneId} onSwitchToLegacy={() => setAssistantMode('legacy')} />
             </div>
             <div
                 ref={scrollRef}

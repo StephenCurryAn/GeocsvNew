@@ -6,6 +6,7 @@ type Database = Pick<Pool | PoolClient, 'query'>;
 export interface DatasetSummary {
   fileId: string; name: string; featureCount: number; geometryTypes: string[]; fields: string[];
   numericFields?: string[];
+  dataMonth?: string;
 }
 
 export const readDataset = async (db: Database, fileId: string, includeNumericFields = false): Promise<DatasetSummary> => {

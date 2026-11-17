@@ -278,6 +278,12 @@
               "type": "string",
               "maxLength": 255,
               "pattern": "^(?=[\\s\\S]*\\S)[^\\u0000]+$"
+            },
+            "labelField": {
+              "title": "区域名称字段",
+              "type": "string",
+              "maxLength": 255,
+              "pattern": "^(?=[\\s\\S]*\\S)[^\\u0000]+$"
             }
           },
           "required": [

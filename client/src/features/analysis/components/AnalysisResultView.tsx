@@ -1,6 +1,8 @@
 import { Alert, Button, Empty, Spin } from 'antd';
 import { DownloadOutlined } from '@ant-design/icons';
 import SpatialPivotResult from './SpatialPivotResult';
+import MoranResult from './MoranResult';
+import type { SpatialPivotRow } from '../../../services/spatialPivotService';
 import type { AnalysisRunController } from './useAnalysisRun';
 import './spatial-results.css';
 
@@ -9,7 +11,7 @@ export default function AnalysisResultView({ analysis }: { analysis: AnalysisRun
   return (
     <div className="spatial-result-view">
       <header className="spatial-result-heading">
-        <h2>空间透视结果</h2>
+        <h2>{artifact?.format === 'moran_lisa' ? '空间自相关结果' : '分析结果'}</h2>
         {artifact && (
           <Button size="small" icon={<DownloadOutlined />} loading={analysis.csvDownloading}
             onClick={() => void analysis.exportCsv()}>导出 CSV</Button>
@@ -17,10 +19,11 @@ export default function AnalysisResultView({ analysis }: { analysis: AnalysisRun
       </header>
       {analysis?.resultError && <Alert className="spatial-result-error" type="error"
         showIcon title={analysis.resultError} closable onClose={() => analysis.setResultError(null)} />}
-      {analysis && artifact ? (
+      {analysis && artifact?.format === 'moran_lisa' ? <MoranResult artifact={artifact} analysis={analysis} />
+        : analysis && artifact?.format === 'spatial_counts' ? (
         <SpatialPivotResult
           artifact={artifact}
-          rows={analysis.rows}
+          rows={analysis.rows.filter((row): row is SpatialPivotRow => 'counts' in row)}
           page={analysis.tablePage}
           pageSize={analysis.tablePageSize}
           rowsLoading={analysis.rowsLoading}

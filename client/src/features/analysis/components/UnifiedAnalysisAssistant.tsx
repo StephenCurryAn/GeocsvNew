@@ -1,225 +1,192 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, App, Button, Card, Input, Space, Spin, Tag, Typography } from 'antd';
-import { CheckCircleOutlined, SendOutlined } from '@ant-design/icons';
+import { useEffect, useRef, useState } from 'react';
+import { Alert, Button, Card, Input, Tag, Typography } from 'antd';
+import { SendOutlined } from '@ant-design/icons';
+import { fetchAnalysisSession, sendAnalysisEvent, type AnalysisSession, type AnalysisSessionEvent } from '../../../services/analysisWorkflowService';
+import { fetchRun, getRequestErrorMessage } from '../../../services/spatialPivotService';
 import AnalysisRunView from './AnalysisRunView';
 import { useAnalysisWorkspace } from './AnalysisWorkspace';
-import {
-  createNaturalLanguagePlan, getRequestErrorMessage,
-  type NaturalLanguagePlan, type SpatialPivotPlan,
-} from '../../../services/spatialPivotService';
 
-interface UnifiedAnalysisAssistantProps {
-  sceneId: string;
-  selectedFileIds: string[];
-  onSwitchToLegacy: () => void;
+const example = '2024 年 1 月，芝加哥坑洞投诉多的社区，是否也挨着投诉多的社区？如果有这种聚集，具体在哪里？';
+
+function sceneThread(sceneId: string, next?: string | null) {
+  try {
+    const key = 'geocsv:analysis-session:' + sceneId;
+    if (next === undefined) return localStorage.getItem(key);
+    if (next === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, next);
+  } catch { /* The session can still run when browser storage is disabled. */ }
+  return null;
 }
 
-const UnifiedAnalysisAssistant = ({ sceneId, selectedFileIds, onSwitchToLegacy }: UnifiedAnalysisAssistantProps) => {
-  const { message } = App.useApp();
+export default function UnifiedAnalysisAssistant({ sceneId, onSwitchToLegacy }: {
+  sceneId: string;
+  onSwitchToLegacy: () => void;
+}) {
   const { runs: { assistant: analysis }, openResult } = useAnalysisWorkspace();
   const [prompt, setPrompt] = useState('');
-  const [planning, setPlanning] = useState(false);
-  const [plan, setPlan] = useState<NaturalLanguagePlan | null>(null);
-  const [planBinding, setPlanBinding] = useState<{ prompt: string; fileIdsKey: string; contextRunId: string } | null>(null);
-  const [planError, setPlanError] = useState<string | null>(null);
-  const [feedback, setFeedback] = useState<string | null>(null);
-  const [starting, setStarting] = useState(false);
-  const [reusing, setReusing] = useState(false);
-  const requestEpoch = useRef(0);
-  const planningController = useRef<AbortController | null>(null);
-  const previousMoranPlan = useRef<{ id: string; fileIdsKey: string } | null>(null);
-  const reuseLock = useRef(false);
-  const fileIdsKey = JSON.stringify([...new Set(selectedFileIds)].sort());
-  const fileIds = JSON.parse(fileIdsKey) as string[];
-  const contextRunId = analysis.run?.status === 'succeeded' ? analysis.run.id : '';
-  const hasReusableContext = Boolean(contextRunId && analysis.run?.artifactId);
-  const planIsCurrent = Boolean(planBinding
-    && planBinding.prompt === prompt.trim()
-    && planBinding.fileIdsKey === fileIdsKey
-    && planBinding.contextRunId === contextRunId);
-
-  const invalidatePlanRequest = useCallback(() => {
-    requestEpoch.current += 1;
-    planningController.current?.abort();
-    planningController.current = null;
-    setPlanning(false);
-    setPlan(null);
-    setPlanBinding(null);
-  }, []);
+  const [answer, setAnswer] = useState('');
+  const [session, setSession] = useState<AnalysisSession | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const activeRequest = useRef<AbortController | null>(null);
+  const retry = useRef<{ threadId: string; event: AnalysisSessionEvent } | null>(null);
+  const attachedRun = useRef<string | null>(null);
+  const restoreRun = analysis.restoreRun;
+  const resetRun = analysis.reset;
 
   useEffect(() => {
-    invalidatePlanRequest();
-  }, [fileIdsKey, contextRunId, invalidatePlanRequest]);
+    resetRun();
+    const thread = sceneId && sceneThread(sceneId);
+    if (thread) {
+      const controller = new AbortController();
+      activeRequest.current = controller;
+      setBusy(true);
+      void fetchAnalysisSession(sceneId, thread, controller.signal).then(value => {
+        if (!controller.signal.aborted) { setSession(value); setPrompt(value.prompt); }
+      }).catch(reason => {
+        if (!controller.signal.aborted) setError(getRequestErrorMessage(reason));
+      }).finally(() => {
+        if (!controller.signal.aborted) { activeRequest.current = null; setBusy(false); }
+      });
+    }
+    return () => { activeRequest.current?.abort(); };
+  }, [sceneId, resetRun]);
 
-  useEffect(() => () => {
-    requestEpoch.current += 1;
-    planningController.current?.abort();
-  }, []);
-
-  const handlePlan = async () => {
-    if (!sceneId || !prompt.trim()) return;
-    invalidatePlanRequest();
-    const epoch = ++requestEpoch.current;
+  useEffect(() => {
+    const runId = session?.runId;
+    if (!runId || attachedRun.current === runId) return;
     const controller = new AbortController();
-    planningController.current = controller;
-    const submittedPrompt = prompt.trim();
-    const submittedContextRunId = contextRunId;
-    setPlanning(true);
-    setPlanError(null);
-    setFeedback(null);
+    void fetchRun(runId, controller.signal).then(run => {
+      if (!controller.signal.aborted) {
+        attachedRun.current = runId;
+        restoreRun(run);
+      }
+    }).catch(reason => {
+      if (!controller.signal.aborted) setError(getRequestErrorMessage(reason));
+    });
+    return () => { controller.abort(); };
+  }, [session?.runId, restoreRun]);
+
+  const applyEvent = async (threadId: string, event: AnalysisSessionEvent) => {
+    if (!sceneId || activeRequest.current) return;
+    const controller = new AbortController();
+    activeRequest.current = controller;
+    retry.current = { threadId, event };
+    setBusy(true);
+    setError('');
     try {
-      const result = await createNaturalLanguagePlan(sceneId, {
-        userPrompt: submittedPrompt, fileIds, contextRunId: submittedContextRunId || undefined,
-        contextPlanId: previousMoranPlan.current?.fileIdsKey === fileIdsKey ? previousMoranPlan.current.id : undefined,
-      }, controller.signal);
-      if (controller.signal.aborted || requestEpoch.current !== epoch) return;
-      setPlan(result);
-      setPlanBinding({ prompt: submittedPrompt, fileIdsKey, contextRunId: submittedContextRunId });
-      if ('view' in result) analysis.setChartType(result.view.chartType);
-      if (result.status === 'ready') {
-        previousMoranPlan.current = 'view' in result ? null : { id: result.plan.id, fileIdsKey };
-      }
-    } catch (error) {
-      if (!controller.signal.aborted && requestEpoch.current === epoch) setPlanError(`自然语言规划失败：${getRequestErrorMessage(error)}`);
+      const next = await sendAnalysisEvent(sceneId, threadId, event, controller.signal);
+      if (controller.signal.aborted) return;
+      retry.current = null;
+      setSession(next);
+      setPrompt(next.prompt);
+      setAnswer('');
+    } catch (reason) {
+      if (!controller.signal.aborted) setError(getRequestErrorMessage(reason));
     } finally {
-      if (requestEpoch.current === epoch) {
-        planningController.current = null;
-        setPlanning(false);
-      }
+      if (!controller.signal.aborted) { activeRequest.current = null; setBusy(false); }
     }
   };
 
-  const handlePromptChange = (value: string) => {
-    if (value.trim() !== prompt.trim()) {
-      invalidatePlanRequest();
-      setPlanError(null);
-      setFeedback(null);
-    }
-    setPrompt(value);
+  const start = () => {
+    const threadId = crypto.randomUUID();
+    sceneThread(sceneId, threadId);
+    setSession(null);
+    const reusable = session?.runId === analysis.run?.id && analysis.run?.status === 'succeeded' ? analysis.run.id : undefined;
+    void applyEvent(threadId, { action: 'start', requestId: crypto.randomUUID(), prompt: prompt.trim(), contextRunId: reusable });
   };
 
-  const handleClearDraft = () => {
-    invalidatePlanRequest();
-    previousMoranPlan.current = null;
+  const respond = (action: 'answer' | 'confirm' | 'cancel' | 'resume') => {
+    const threadId = session?.threadId ?? sceneThread(sceneId);
+    if (!threadId) return;
+    void applyEvent(threadId, { action, requestId: crypto.randomUUID(),
+      interactionId: session?.interactionId ?? undefined, ...(action === 'answer' ? { prompt: answer.trim() } : {}) });
+  };
+
+  const reset = () => {
+    sceneThread(sceneId, null);
+    retry.current = null;
+    setSession(null);
     setPrompt('');
-    setPlanError(null);
-    setFeedback(null);
+    setAnswer('');
+    setError('');
   };
 
-  const handleExecute = async (plan: SpatialPivotPlan) => {
-    setStarting(true);
-    setPlanError(null);
-    try {
-      await analysis.start(plan);
-      setPlan(null);
-      setPlanBinding(null);
-      message.success('已提交已验证空间透视算子');
-    } catch (error) {
-      setPlanError(`提交分析任务失败：${getRequestErrorMessage(error)}`);
-    } finally {
-      setStarting(false);
-    }
-  };
-
-  const handleReuse = async (runId: string, artifactId: string) => {
-    if (reuseLock.current) return;
-    reuseLock.current = true;
-    setReusing(true);
-    setPlanError(null);
-    try {
-      if (!await analysis.restoreExistingRun(runId, artifactId)) return;
-      openResult('assistant');
-      setFeedback('已复用已有结果并更新展示方式，没有重新计算。');
-    } catch (error) {
-      setPlanError(`无法复用已有结果：${getRequestErrorMessage(error)}`);
-    } finally {
-      reuseLock.current = false;
-      setReusing(false);
-    }
-  };
+  const proposal = session?.proposal;
+  const pending = session?.status === 'pending_confirmation' && proposal?.status === 'ready';
+  const clarifying = session?.status === 'clarification' && proposal?.status === 'clarification';
+  const processing = session?.status === 'processing';
+  const reusable = proposal?.status === 'view_only' ? proposal : null;
+  const metric = proposal?.status === 'ready' && !('view' in proposal) ? proposal.inputs.metricLabel : undefined;
+  const dataMonth = proposal?.status === 'ready' && !('view' in proposal) ? proposal.inputs.dataMonth : undefined;
 
   return (
     <div className="assistant-content flex h-full min-h-0 flex-col gap-3 overflow-y-auto">
       <Card size="small" className="assistant-plan-card" title="分析需求">
         <div className="space-y-3">
-          <Typography.Paragraph className="!mb-0 text-xs text-slate-400">
-            支持面内点计数和 Moran/LISA 空间自相关。可从左侧打开图层，也可在需求中写出当前场景的图层名称。
+          <Typography.Paragraph className="!mb-0 text-xs text-geo-text-secondary">
+            直接描述你想知道什么。助手会从当前场景查找可用数据，并把选用的数据与分析方法列给你确认。
           </Typography.Paragraph>
-          {selectedFileIds.length === 0 && hasReusableContext && <Alert type="info" showIcon title="可复用当前场景中已打开的运行结果来更换图表。" />}
           <Input.TextArea
-            value={prompt}
-            onChange={event => handlePromptChange(event.target.value)}
-            placeholder="例如：用社区图层的 total_requests 字段做 Moran/LISA，采用 Queen 邻接"
-            autoSize={{ minRows: 2, maxRows: 5 }}
-            disabled={!sceneId}
+            aria-label="分析需求" value={prompt} onChange={event => setPrompt(event.target.value)}
+            placeholder={example} autoSize={{ minRows: 3, maxRows: 6 }}
+            disabled={!sceneId || busy || pending || clarifying || processing}
           />
           <div className="flex gap-2">
-            <Button className="flex-1" type="primary" icon={<SendOutlined />} loading={planning} disabled={!sceneId || !prompt.trim()} onClick={() => void handlePlan()}>
-              规划分析
+            <Button className="flex-1" type="primary" icon={<SendOutlined />} loading={busy}
+              disabled={!sceneId || !prompt.trim() || pending || clarifying || processing} onClick={start}>规划分析</Button>
+            <Button disabled={busy || !prompt || processing} onClick={pending || clarifying ? () => respond('cancel') : reset}>
+              {pending || clarifying ? '取消本次分析' : '清空'}
             </Button>
-            <Button onClick={handleClearDraft} disabled={!prompt && !plan && !planError && !feedback && !planning}>清空草案</Button>
           </div>
 
-          {planError && <Alert type="error" showIcon title={planError} />}
-          {feedback && <Alert type="success" showIcon title={feedback} closable onClose={() => setFeedback(null)} />}
-          {planning && <div className="text-center"><Spin size="small" /></div>}
-
-          {plan?.status === 'ready' && 'view' in plan && planIsCurrent && (
-            <div className="space-y-2 rounded-md border border-cyan-900/50 bg-slate-900/60 p-3">
-              <div className="flex items-center gap-2 text-xs font-semibold text-cyan-200"><CheckCircleOutlined />已生成待确认计划（{plan.source === 'rules' ? '规则规划' : '模型规划'}）</div>
-              <Typography.Paragraph className="!mb-1 text-xs text-slate-300">{plan.message}</Typography.Paragraph>
-              <div className="text-xs text-slate-300">
-                目标面：{plan.inputs.targetName}（标识字段：{plan.spec.target.labelField || '要素 ID'}）<br />
-                关联点：{plan.inputs.joinName}（类别字段：{plan.spec.join.categoryField || '统计总数'}）<br />
-                边界点：{plan.spec.boundaryPolicy === 'include' ? '纳入统计' : '排除统计'}；展示：{{ bar: '柱状图', line: '折线图', pie: '饼图' }[plan.view.chartType]}
-              </div>
-              {plan.assumptions.length > 0 && <div className="text-xs text-amber-200">假设：<ul className="ml-4 list-disc">{plan.assumptions.map((assumption, index) => <li key={`${index}-${assumption}`}>{assumption}</li>)}</ul></div>}
-              <Button block type="primary" loading={starting} disabled={!planIsCurrent || Boolean(analysis.activeRun)} onClick={() => void handleExecute(plan.plan)}>
-                执行已验证算子
-              </Button>
-            </div>
-          )}
-
-          {plan?.status === 'ready' && !('view' in plan) && planIsCurrent && (
-            <Card size="small" title="Moran/LISA 空间自相关">
-              <Tag className="!mb-2" color="processing">待确认</Tag>
-              <dl className="!mb-0 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">
-                <dt>面图层</dt><dd className="break-all">{plan.inputs.targetName}</dd>
-                <dt>数值字段</dt><dd className="break-all">{plan.spec.target.valueField}</dd>
-                <dt>邻接规则</dt><dd>{plan.spec.contiguity === 'queen' ? 'Queen（共点或共边）' : 'Rook（共边）'}</dd>
-                <dt>置换次数</dt><dd>{plan.spec.permutations}</dd>
-                <dt>随机种子</dt><dd>{plan.spec.seed}</dd>
-              </dl>
+          {error && <Alert type="error" showIcon title={error} action={
+            <Button size="small" disabled={busy} onClick={() => {
+              const latest = retry.current;
+              if (latest) void applyEvent(latest.threadId, latest.event);
+              else respond('resume');
+            }}>恢复或重试</Button>
+          } />}
+          {processing && !error && <Alert type="info" showIcon title="分析可以从上次中断处继续"
+            action={<Button size="small" loading={busy} onClick={() => respond('resume')}>恢复分析</Button>} />}
+          {pending && (
+            <Card size="small" title={<><Tag color="processing">待确认</Tag>{proposal.message}</>}>
+              {'view' in proposal ? (
+                <dl className="mb-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">
+                  <dt>统计范围</dt><dd className="break-all">{proposal.inputs.targetName}</dd>
+                  <dt>统计数据</dt><dd className="break-all">{proposal.inputs.joinName}</dd>
+                </dl>
+              ) : (
+                <dl className="mb-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">
+                  <dt>分析指标</dt><dd>{metric ?? proposal.spec.target.valueField}</dd>
+                  {dataMonth && <><dt>数据时段</dt><dd>{dataMonth}</dd></>}
+                  <dt>数据来源</dt><dd className="break-all">{proposal.inputs.targetName}</dd>
+                  <dt>邻居定义</dt><dd>{proposal.spec.contiguity === 'queen' ? 'Queen（共边或共点）' : 'Rook（仅共边）'}</dd>
+                  <dt>置换检验</dt><dd>{proposal.spec.permutations} 次 · 种子 {proposal.spec.seed}</dd>
+                </dl>
+              )}
+              <Button block type="primary" loading={busy} onClick={() => respond('confirm')}>确认并运行</Button>
             </Card>
           )}
-
-          {plan?.status === 'clarification' && planIsCurrent && (
-            <Alert type="warning" showIcon title={plan.message} description={<ul className="ml-4 list-disc">{plan.questions.map((question, index) => <li key={`${index}-${question}`}>{question}</li>)}</ul>} />
-          )}
-
-          {plan?.status === 'unsupported' && planIsCurrent && (
-            <Alert type="info" showIcon title={plan.message} description={<Button size="small" className="mt-2" onClick={onSwitchToLegacy}>切换到原有实验流程</Button>} />
-          )}
-
-          {plan?.status === 'view_only' && planIsCurrent && (
-            <div className="space-y-2 rounded-md border border-indigo-900/50 bg-slate-900/60 p-3">
-              <Alert type="info" showIcon title={plan.message} description="只复用既有运行结果；不会创建新任务。" />
-              <Space wrap>
-                {(['bar', 'line', 'pie'] as const).map(type => (
-                  <Button key={type} size="small" type={analysis.chartType === type ? 'primary' : 'default'} onClick={() => analysis.setChartType(type)}>
-                    {{ bar: '柱状图', line: '折线图', pie: '饼图' }[type]}
-                  </Button>
-                ))}
-                <Button type="primary" size="small" loading={reusing} disabled={reusing} onClick={() => void handleReuse(plan.runId, plan.artifactId)}>复用已有结果</Button>
-              </Space>
-            </div>
-          )}
+          {clarifying && <>
+            <Alert type="warning" showIcon title={proposal.message}
+              description={<ul className="ml-4 list-disc">{proposal.questions.map((question, index) => <li key={index}>{question}</li>)}</ul>} />
+            <Input aria-label="补充分析条件" placeholder="用自己的话补充" value={answer} disabled={busy}
+              onChange={event => setAnswer(event.target.value)} onPressEnter={() => { if (answer.trim()) respond('answer'); }} />
+            <Button size="small" type="primary" disabled={busy || !answer.trim()} onClick={() => respond('answer')}>继续规划</Button>
+          </>}
+          {proposal?.status === 'unsupported' && <Alert type="info" showIcon title={proposal.message}
+            description={<Button size="small" onClick={onSwitchToLegacy}>打开原有实验流程</Button>} />}
+          {reusable && <Alert type="info" showIcon title={reusable.message} action={<Button size="small" onClick={() => {
+            analysis.setChartType(reusable.view.chartType);
+            void analysis.restoreExistingRun(reusable.runId, reusable.artifactId).then(restored => {
+              if (restored) openResult('assistant');
+            }).catch(reason => setError(getRequestErrorMessage(reason)));
+          }}>查看已有结果</Button>} />}
+          {session?.status === 'cancelled' && <Alert type="info" showIcon title="已取消本次分析" />}
         </div>
       </Card>
-
-      <AnalysisRunView source="assistant" />
+      <AnalysisRunView source="assistant" sceneId={sceneId} />
     </div>
   );
-};
-
-export default UnifiedAnalysisAssistant;
+}
