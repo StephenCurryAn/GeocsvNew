@@ -1,4 +1,4 @@
-import type { MoranQuadrant } from '../../../services/spatialPivotService';
+import type { MoranQuadrant } from '../../../services/analysisService';
 
 export const LOCAL_ALPHA = 0.05;
 export const MORAN_COLORS: Record<MoranQuadrant, string> = {

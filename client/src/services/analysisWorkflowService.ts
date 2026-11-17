@@ -1,5 +1,5 @@
 import apiClient from './apiClient';
-import type { ApiEnvelope, NaturalLanguagePlan, Run } from './spatialPivotService';
+import type { ApiEnvelope, NaturalLanguagePlan, Run } from './analysisService';
 
 export interface AnalysisSession {
   threadId: string;

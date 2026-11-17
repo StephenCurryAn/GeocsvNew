@@ -8,7 +8,7 @@ const { setTimeout: delay } = require('node:timers/promises');
 const { Pool } = require('pg');
 const express = require('express');
 const { AnalysisService } = require('../src/modules/analysis/service');
-const { createSpatialPivotRouter } = require('../src/modules/spatialPivot/router');
+const { createAnalysisRouter } = require('../src/modules/analysis/router');
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
 const serverRoot = resolve(__dirname, '..');
@@ -48,7 +48,7 @@ function makeApp(db, timeoutMs = 30000) {
   const service = new AnalysisService(db, timeoutMs);
   const app = express();
   app.use(express.json());
-  app.use('/api', createSpatialPivotRouter(db, service));
+  app.use('/api', createAnalysisRouter(db, service));
   return { app, service };
 }
 

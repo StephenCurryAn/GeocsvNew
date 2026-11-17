@@ -2,7 +2,7 @@ import { Alert, Button, Empty, Spin } from 'antd';
 import { DownloadOutlined } from '@ant-design/icons';
 import SpatialPivotResult from './SpatialPivotResult';
 import MoranResult from './MoranResult';
-import type { SpatialPivotRow } from '../../../services/spatialPivotService';
+import type { SpatialPivotRow } from '../../../services/analysisService';
 import type { AnalysisRunController } from './useAnalysisRun';
 import './spatial-results.css';
 

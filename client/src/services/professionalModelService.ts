@@ -1,5 +1,5 @@
 import apiClient from './apiClient';
-import type { ApiEnvelope, DatasetSummary, Run } from './spatialPivotService';
+import type { ApiEnvelope, DatasetSummary, Run } from './analysisService';
 
 export type Parameters = Record<string, number | string>;
 export type Parameter = { description: string } & (

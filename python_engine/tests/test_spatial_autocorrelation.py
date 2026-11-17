@@ -14,7 +14,7 @@ from shapely.geometry import box
 
 # SQLAlchemy creates the engine lazily. Never use the caller's database settings.
 with patch.dict(os.environ, {"PG_URI": "postgresql://offline.invalid/geocsv_baseline"}):
-    import main as engine_api
+    from legacy import spatial_autocorrelation as engine_api
 
 
 def four_polygons():

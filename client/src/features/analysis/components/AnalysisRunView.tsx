@@ -4,7 +4,7 @@ import { ArrowUpRight, History } from 'lucide-react';
 import { CheckCircleOutlined, ClockCircleOutlined, LoadingOutlined, StopOutlined } from '@ant-design/icons';
 import { useAnalysisWorkspace, type AnalysisSource } from './AnalysisWorkspace';
 import { fetchSceneRuns } from '../../../services/analysisWorkflowService';
-import { getRequestErrorMessage, type Run } from '../../../services/spatialPivotService';
+import { getRequestErrorMessage, type Run } from '../../../services/analysisService';
 
 const statusLabel = { queued: '排队中', running: '计算中', succeeded: '已完成', failed: '失败', cancelled: '已取消' } as const;
 const historyTime = new Intl.DateTimeFormat('zh-CN', {

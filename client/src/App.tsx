@@ -8,7 +8,7 @@ import MapView, { type DrawStatus, type FileLayerInfo } from './features/map/com
 import type { SelectionStyle } from './features/map/fileLayers';
 import { featureId, replacePageSelection, selectedFromTable, selectionKey, toggleFeature, type SelectedFeature } from './features/map/featureSelection';
 import { readLayerOrder, readSelectionStyle, saveLayerOrder, saveSelectionStyle } from './features/workspace/scenePreferences';
-import GeoAIAgent from './features/agent/components/GeoAIAgent';
+import AnalysisAssistant from './features/agent/components/AnalysisAssistant';
 import { useAnalysisWorkspace } from './features/analysis/components/AnalysisWorkspace';
 import ProfessionalModels from './features/analysis/components/ProfessionalModels';
 import { geoService, type PaginatedGeoResponse } from './services/geoService';
@@ -488,7 +488,7 @@ function App() {
                     />
                 </SplitTablePanel>
             }
-            assistant={<GeoAIAgent sceneId={activeSceneId} selectedFileIds={selectedFileIds} />}
+            assistant={<AnalysisAssistant sceneId={activeSceneId} selectedFileIds={selectedFileIds} />}
         />
     );
 }

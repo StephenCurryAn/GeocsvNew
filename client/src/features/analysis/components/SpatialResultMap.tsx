@@ -5,7 +5,7 @@ import maplibregl from 'maplibre-gl';
 import { bbox } from '@turf/turf';
 import { BasemapController, initialMapStyle, loadBasemap } from '../../map/basemaps';
 import { useWorkbenchAppearance } from '../../../layouts/WorkbenchTheme';
-import type { SpatialPivotGeoJSON } from '../../../services/spatialPivotService';
+import type { AnalysisGeoJSON } from '../../../services/analysisService';
 import { LOCAL_ALPHA, MORAN_COLORS, MORAN_LABELS } from './moranPresentation';
 
 const RESULT_SOURCE = 'spatial-pivot-result';
@@ -14,14 +14,14 @@ const OUTLINE_LAYER = 'spatial-pivot-outline';
 const PROTOMAPS_KEY = (import.meta.env.VITE_PROTOMAPS_API_KEY || '').trim();
 
 interface SpatialResultMapProps {
-  geoJSON: SpatialPivotGeoJSON | null;
+  geoJSON: AnalysisGeoJSON | null;
   message: string | null;
   selectedFeatureId: number | null;
   onSelectFeature: (featureId: number) => void;
   variant?: 'counts' | 'moran';
 }
 
-const getBounds = (data: SpatialPivotGeoJSON | SpatialPivotGeoJSON['features'][number]) => {
+const getBounds = (data: AnalysisGeoJSON | AnalysisGeoJSON['features'][number]) => {
   try {
     const bounds = bbox(data);
     return bounds.length === 4 && bounds.every(Number.isFinite)

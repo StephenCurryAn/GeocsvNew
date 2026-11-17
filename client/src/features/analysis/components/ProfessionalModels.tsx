@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Empty, Form, Input, Segmented, Select, Spin, Tag } from 'antd';
 import { useAnalysisWorkspace } from './AnalysisWorkspace';
 import { ModelEditor, ModelRunForm, ModelSummary } from './ProfessionalModelForms';
-import { getRequestErrorMessage, type Run } from '../../../services/spatialPivotService';
+import { getRequestErrorMessage, type Run } from '../../../services/analysisService';
 import {
   professionalModelService as modelsApi, type ModelInputs, type ModelLayer, type ModelOperator, type ProfessionalModel,
 } from '../../../services/professionalModelService';

@@ -21,6 +21,7 @@ import pool from './config/db';
 import { AnalysisService } from './modules/analysis/service';
 import { createScenePlannerRouter } from './modules/analysisPlanner/sceneRouter';
 import { createWorkflowRouter } from './modules/analysisPlanner/workflowRouter';
+import { createAnalysisRouter } from './modules/analysis/router';
 import { createSpatialPivotRouter } from './modules/spatialPivot/router';
 import { createBasemapRouter } from './modules/basemaps/router';
 import { createProfessionalModelRouter } from './modules/professionalModels/router';
@@ -61,6 +62,7 @@ const analysis = new AnalysisService(pool);
 app.use('/api', createProfessionalModelRouter(pool, analysis));
 app.use('/api', createScenePlannerRouter(pool, analysis));
 app.use('/api', createWorkflowRouter(analysis));
+app.use('/api', createAnalysisRouter(pool, analysis));
 app.use('/api', createSpatialPivotRouter(pool, analysis));
 
 // 3. 测试路由

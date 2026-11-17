@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Alert, Button, Descriptions, Form, Input, InputNumber, Select } from 'antd';
-import { getRequestErrorMessage } from '../../../services/spatialPivotService';
+import { getRequestErrorMessage } from '../../../services/analysisService';
 import {
   professionalModelService, type ModelConfig, type ModelDataset, type ModelInputs, type ModelLayer,
   type ModelOperator, type OperatorInput, type Parameters, type ProfessionalModel,

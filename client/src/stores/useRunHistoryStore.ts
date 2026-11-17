@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Run } from '../services/spatialPivotService';
+import type { Run } from '../services/analysisService';
 
 export const RUN_HISTORY_LIMIT = 20;
 

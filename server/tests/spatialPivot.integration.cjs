@@ -5,6 +5,7 @@ const { readFileSync } = require('node:fs');
 const { join } = require('node:path');
 const { Pool } = require('pg');
 const express = require('express');
+const { createAnalysisRouter } = require('../src/modules/analysis/router');
 const { createSpatialPivotRouter } = require('../src/modules/spatialPivot/router');
 const { AnalysisService } = require('../src/modules/analysis/service');
 const { queryAttributePivot } = require('../src/modules/attributePivot');
@@ -30,6 +31,7 @@ test('PostGIS: plan -> persisted run -> table/map/CSV artifact; boundaries, repl
     }
     next();
   });
+  app.use('/api', createAnalysisRouter(db, service));
   app.use('/api', createSpatialPivotRouter(db, service));
   const server = app.listen(0, '127.0.0.1');
   await new Promise(resolve => server.once('listening', resolve));

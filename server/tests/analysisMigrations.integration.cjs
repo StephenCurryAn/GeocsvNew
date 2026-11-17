@@ -6,7 +6,7 @@ const { Pool } = require('pg');
 const { LEGACY_ANALYSIS_SCHEMA } = require('../src/modules/analysis/legacySchema');
 const { migrateAnalysis } = require('../src/modules/analysis/migrations');
 const { AnalysisService } = require('../src/modules/analysis/service');
-const { createSpatialPivotRouter } = require('../src/modules/spatialPivot/router');
+const { createAnalysisRouter } = require('../src/modules/analysis/router');
 const { SpatialPivotSpec: spec } = require('../../docs/contracts/analysis.examples.json');
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
@@ -51,7 +51,7 @@ test('PostGIS migration: upgrade legacy rows, preserve exports, and accept old w
   assert.equal((await db.query('SELECT trace_id FROM geocsv_analysis_runs WHERE id=$1', [runId])).rows[0].trace_id, null);
   const service = new AnalysisService(db);
   const app = express();
-  app.use('/api', createSpatialPivotRouter(db, service));
+  app.use('/api', createAnalysisRouter(db, service));
   const server = app.listen(0, '127.0.0.1');
   try {
     await new Promise(resolve => server.once('listening', resolve));

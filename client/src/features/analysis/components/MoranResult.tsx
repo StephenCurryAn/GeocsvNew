@@ -1,5 +1,5 @@
 import { Alert, Button, Pagination, Table } from 'antd';
-import type { MoranArtifact, MoranRow } from '../../../services/spatialPivotService';
+import type { MoranArtifact, MoranRow } from '../../../services/analysisService';
 import type { AnalysisRunController } from './useAnalysisRun';
 import { LOCAL_ALPHA, MORAN_LABELS } from './moranPresentation';
 import SpatialResultMap from './SpatialResultMap';

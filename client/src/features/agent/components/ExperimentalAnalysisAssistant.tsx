@@ -10,7 +10,6 @@ import { getApiUrl } from '../../../services/apiConfig';
 import { consumeNdjsonResponse } from '../../../services/pipelineStream';
 import ReactECharts from 'echarts-for-react';
 import { useAnalysisStore, type ChartType } from '../../../stores/useAnalysisStore';
-import UnifiedAnalysisAssistant from '../../analysis/components/UnifiedAnalysisAssistant';
 
 // ============================================================
 // 类型定义
@@ -88,8 +87,8 @@ interface ChatMessage {
     sourceFileIds?: string[];
 }
 
-interface GeoAIAgentProps {
-    sceneId: string;
+interface ExperimentalAnalysisAssistantProps {
+    active: boolean;
     selectedFileIds?: string[];
 }
 
@@ -180,9 +179,8 @@ const QUICK_PROMPTS = [
 
 const AIAvatar = () => <span className="agent-avatar" aria-hidden="true"><MessageOutlined /></span>;
 
-const GeoAIAgent: React.FC<GeoAIAgentProps> = ({ sceneId, selectedFileIds = [] }) => {
+const ExperimentalAnalysisAssistant: React.FC<ExperimentalAnalysisAssistantProps> = ({ active, selectedFileIds = [] }) => {
     const { message } = App.useApp();
-    const [assistantMode, setAssistantMode] = useState<'operator' | 'legacy'>('operator');
     const [agentMode, setAgentMode] = useState<'pivot' | 'feature_calc' | 'pro_model'>('pivot');
     const [inputValue, setInputValue] = useState('');
     const [loading, setLoading] = useState(false);
@@ -814,34 +812,13 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({ sceneId, selectedFileIds = [] }
 
     // ─────────────────────────────────────────────
     return (
-        <div className="agent-panel">
-            <div className="agent-mode">
-                <Segmented
-                    aria-label="助手模式"
-                    options={[{ label: '自然语言', value: 'operator' }, { label: '实验流程', value: 'legacy' }]}
-                    value={assistantMode}
-                    onChange={setAssistantMode}
-                    size="small"
-                    block
-                />
-                {assistantMode === 'legacy' && (
-                    <Button
-                        type="text" size="small" icon={<ClearOutlined />}
-                        onClick={handleClear} aria-label="清空对话" title="清空对话"
-                    />
-                )}
-            </div>
-
-            {/* ── 消息列表 ── */}
-            <div className={`min-h-0 min-w-0 flex-1 flex-col overflow-hidden ${assistantMode === 'operator' ? 'flex' : 'hidden'}`}>
-                <UnifiedAnalysisAssistant key={sceneId} sceneId={sceneId} onSwitchToLegacy={() => setAssistantMode('legacy')} />
-            </div>
+        <div className={active ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
             <div
                 ref={scrollRef}
                 style={{
                     flex: 1, overflowY: 'auto', overflowX: 'hidden',
                     padding: '12px',
-                    display: assistantMode === 'legacy' ? 'flex' : 'none',
+                    display: 'flex',
                     flexDirection: 'column', gap: 16,
                     scrollbarWidth: 'thin',
                     scrollbarColor: 'var(--workbench-border) transparent',
@@ -850,16 +827,17 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({ sceneId, selectedFileIds = [] }
                 {messages.map(renderMessage)}
             </div>
 
-            {assistantMode === 'legacy' && (
-                <div className="agent-composer">
-                    {messages.length <= 2 && selectedFileIds.length > 0 && (
-                        <div className="agent-prompts">
-                            {QUICK_PROMPTS.map(prompt => (
-                                <Button key={prompt} size="small" onClick={() => setInputValue(prompt)}>{prompt}</Button>
-                            ))}
-                        </div>
-                    )}
+            <div className="agent-composer">
+                {messages.length <= 2 && selectedFileIds.length > 0 && (
+                    <div className="agent-prompts">
+                        {QUICK_PROMPTS.map(prompt => (
+                            <Button key={prompt} size="small" onClick={() => setInputValue(prompt)}>{prompt}</Button>
+                        ))}
+                    </div>
+                )}
+                <div className="flex items-center gap-2">
                     <Segmented
+                        className="min-w-0 flex-1"
                         aria-label="实验分析模式"
                         options={[
                             { label: '数据透视', value: 'pivot' },
@@ -871,32 +849,34 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({ sceneId, selectedFileIds = [] }
                         size="small"
                         block
                     />
-                    <div className="agent-input">
-                        <Input.TextArea
-                            aria-label="分析需求"
-                            value={inputValue}
-                            onChange={event => setInputValue(event.target.value)}
-                            onKeyDown={event => {
-                                if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
-                                    event.preventDefault();
-                                    void handleSend();
-                                }
-                            }}
-                            placeholder={selectedFileIds.length > 0 ? '输入分析需求' : '请先选择地理图层'}
-                            disabled={loading}
-                            autoSize={{ minRows: 2, maxRows: 5 }}
-                        />
-                        <Button
-                            type="primary"
-                            icon={<SendOutlined />}
-                            aria-label="发送"
-                            loading={loading}
-                            onClick={handleSend}
-                            disabled={!inputValue.trim() || loading}
-                        />
-                    </div>
+                    <Button type="text" size="small" icon={<ClearOutlined />}
+                        onClick={handleClear} aria-label="清空对话" title="清空对话" />
                 </div>
-            )}
+                <div className="agent-input">
+                    <Input.TextArea
+                        aria-label="分析需求"
+                        value={inputValue}
+                        onChange={event => setInputValue(event.target.value)}
+                        onKeyDown={event => {
+                            if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+                                event.preventDefault();
+                                void handleSend();
+                            }
+                        }}
+                        placeholder={selectedFileIds.length > 0 ? '输入分析需求' : '请先选择地理图层'}
+                        disabled={loading}
+                        autoSize={{ minRows: 2, maxRows: 5 }}
+                    />
+                    <Button
+                        type="primary"
+                        icon={<SendOutlined />}
+                        aria-label="发送"
+                        loading={loading}
+                        onClick={handleSend}
+                        disabled={!inputValue.trim() || loading}
+                    />
+                </div>
+            </div>
 
             {/* 🌟 新增：全屏沉浸式代码编辑器弹窗 */}
             <Modal
@@ -953,4 +933,4 @@ const GeoAIAgent: React.FC<GeoAIAgentProps> = ({ sceneId, selectedFileIds = [] }
     );
 };
 
-export default GeoAIAgent;
+export default ExperimentalAnalysisAssistant;

@@ -2,15 +2,15 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   cancelRun, createRun, downloadArtifactCsv, fetchArtifact, fetchArtifactGeoJSON,
   fetchArtifactRows, fetchRun, fetchRuns, getRequestErrorMessage,
-  type ResultChartType, type Run, type AnalysisArtifact, type SpatialPivotGeoJSON, type SpatialPivotRow, type MoranRow,
+  type ResultChartType, type Run, type AnalysisArtifact, type AnalysisGeoJSON, type SpatialPivotRow, type MoranRow,
   type SpatialPivotPlan,
-} from '../../../services/spatialPivotService';
+} from '../../../services/analysisService';
 import { useRunHistoryStore } from '../../../stores/useRunHistoryStore';
 
 const TERMINAL_STATUSES = new Set<Run['status']>(['succeeded', 'failed', 'cancelled']);
 const MAP_PREVIEW_LIMIT = 5000;
 
-export type { ResultChartType } from '../../../services/spatialPivotService';
+export type { ResultChartType } from '../../../services/analysisService';
 
 export const useAnalysisRun = (loadHistory = true) => {
   const selectionEpoch = useRef(0);
@@ -35,7 +35,7 @@ export const useAnalysisRun = (loadHistory = true) => {
   const [rowsLoading, setRowsLoading] = useState(false);
   const [tablePage, setTablePage] = useState(1);
   const [tablePageSize, setTablePageSize] = useState(20);
-  const [geoJSON, setGeoJSON] = useState<SpatialPivotGeoJSON | null>(null);
+  const [geoJSON, setGeoJSON] = useState<AnalysisGeoJSON | null>(null);
   const [mapMessage, setMapMessage] = useState<string | null>(null);
   const [selectedFeatureId, setSelectedFeatureId] = useState<number | null>(null);
   const [chartType, setChartType] = useState<ResultChartType>('bar');
@@ -52,7 +52,7 @@ export const useAnalysisRun = (loadHistory = true) => {
     if (!loadHistory) return;
     const controller = new AbortController();
     setHistoryLoading(true);
-    fetchRuns(20, controller.signal)
+    fetchRuns(20, 'spatial_pivot', controller.signal)
       .then(setRunHistory)
       .catch(error => { if (!controller.signal.aborted) setRequestError(getRequestErrorMessage(error)); })
       .finally(() => { if (!controller.signal.aborted) setHistoryLoading(false); });

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Card, Input, Tag, Typography } from 'antd';
 import { SendOutlined } from '@ant-design/icons';
 import { fetchAnalysisSession, sendAnalysisEvent, type AnalysisSession, type AnalysisSessionEvent } from '../../../services/analysisWorkflowService';
-import { fetchRun, getRequestErrorMessage } from '../../../services/spatialPivotService';
+import { fetchRun, getRequestErrorMessage } from '../../../services/analysisService';
 import AnalysisRunView from './AnalysisRunView';
 import { useAnalysisWorkspace } from './AnalysisWorkspace';
 

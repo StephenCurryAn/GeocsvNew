@@ -4,7 +4,7 @@ import type { ColumnsType, TableRef } from 'antd/es/table';
 import type { EChartsOption } from 'echarts';
 import ReactECharts from 'echarts-for-react';
 import { usePanelSize } from '../../../layouts/usePanelSize';
-import type { ResultChartType, SpatialPivotArtifact, SpatialPivotGeoJSON, SpatialPivotRow } from '../../../services/spatialPivotService';
+import type { ResultChartType, SpatialPivotArtifact, AnalysisGeoJSON, SpatialPivotRow } from '../../../services/analysisService';
 import SpatialResultMap from './SpatialResultMap';
 import { useWorkbenchAppearance } from '../../../layouts/WorkbenchTheme';
 
@@ -16,7 +16,7 @@ interface SpatialPivotResultProps {
   rowsLoading: boolean;
   rowsError?: string | null;
   onPageChange: (page: number, pageSize: number) => void;
-  geoJSON: SpatialPivotGeoJSON | null;
+  geoJSON: AnalysisGeoJSON | null;
   mapMessage: string | null;
   selectedFeatureId: number | null;
   onSelectFeature: (featureId: number) => void;

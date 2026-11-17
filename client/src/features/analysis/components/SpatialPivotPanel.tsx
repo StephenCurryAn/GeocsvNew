@@ -7,10 +7,11 @@ import {
 } from '@ant-design/icons';
 import AnalysisRunView from './AnalysisRunView';
 import { useAnalysisWorkspace } from './AnalysisWorkspace';
+import { createAnalysisPlan, fetchDatasets } from '../../../services/spatialPivotService';
 import {
-  createAnalysisPlan, fetchDatasets, getRequestErrorMessage,
+  getRequestErrorMessage,
   type BoundaryPolicy, type DatasetSummary, type SpatialPivotPlan, type SpatialPivotSpec,
-} from '../../../services/spatialPivotService';
+} from '../../../services/analysisService';
 
 
 const isPolygonDataset = (dataset: DatasetSummary): boolean =>
