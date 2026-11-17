@@ -95,6 +95,72 @@ class WorkflowTest(unittest.TestCase):
                 self.assertEqual(retry.json()["status"], "pending_confirmation")
                 self.assertEqual(callback.await_count, 2)
 
+    def test_resume_initial_planning_with_fresh_request_id_after_restart(self):
+        from workflow import CallbackError
+
+        callback = AsyncMock(side_effect=[CallbackError("temporary"), self.ready])
+        with patch.dict("os.environ", {"AGENT_SERVICE_TOKEN": TOKEN, "AGENT_CHECKPOINT_PATH": self.checkpoint_path}), \
+                patch("main.build_model", return_value=None), patch("workflow.request_plan", new=callback):
+            with self.client() as client:
+                failed = client.post(self.path + "/events", json=event("start", prompt="分析社区请求"), headers=self.headers)
+                self.assertEqual(failed.status_code, 502)
+            with self.client() as client:
+                state = client.get(self.path, headers=self.headers).json()
+                self.assertEqual(state["status"], "processing")
+                self.assertIsNone(state["interactionId"])
+                resumed = client.post(self.path + "/events", json=event("resume"), headers=self.headers)
+                self.assertEqual(resumed.status_code, 200, resumed.text)
+                self.assertEqual(resumed.json()["status"], "pending_confirmation")
+                self.assertEqual(callback.await_count, 2)
+
+    def test_oversized_answer_leaves_clarification_open_for_a_shorter_answer(self):
+        clarify = {"status": "clarification", "questions": ["请选择要分析的月份。"]}
+        callback = AsyncMock(side_effect=[clarify, self.ready])
+        with patch.dict("os.environ", {"AGENT_SERVICE_TOKEN": TOKEN, "AGENT_CHECKPOINT_PATH": self.checkpoint_path}), \
+                patch("main.build_model", return_value=None), patch("workflow.request_plan", new=callback):
+            with self.client() as client:
+                first = client.post(self.path + "/events", json=event("start", prompt="月" * 3990), headers=self.headers)
+                self.assertEqual(first.status_code, 200, first.text)
+                interaction_id = first.json()["interactionId"]
+                oversized = client.post(self.path + "/events",
+                    json=event("answer", interactionId=interaction_id, prompt="一" * 20), headers=self.headers)
+                self.assertEqual(oversized.status_code, 422, oversized.text)
+            with self.client() as client:
+                state = client.get(self.path, headers=self.headers)
+                self.assertEqual(state.json(), first.json())
+                shorter = client.post(self.path + "/events",
+                    json=event("answer", interactionId=interaction_id, prompt="一月"), headers=self.headers)
+                self.assertEqual(shorter.status_code, 200, shorter.text)
+                self.assertEqual(shorter.json()["status"], "pending_confirmation")
+                self.assertEqual(callback.await_count, 2)
+
+    def test_rejected_stale_plan_can_be_cancelled_after_restart(self):
+        from workflow import callback_status
+
+        async def reject(*_args):
+            callback_status(409, {"errorCode": "INPUT_VERSION_CHANGED", "message": "输入数据已改变"})
+
+        submit_callback = AsyncMock(side_effect=reject)
+        with patch.dict("os.environ", {"AGENT_SERVICE_TOKEN": TOKEN, "AGENT_CHECKPOINT_PATH": self.checkpoint_path}), \
+                patch("main.build_model", return_value=None), patch("workflow.submit_plan", new=submit_callback):
+            with self.client() as client:
+                pending = self.start_ready(client)
+                interaction_id = pending["interactionId"]
+                confirm = event("confirm", interactionId=interaction_id)
+                rejected = client.post(self.path + "/events", json=confirm, headers=self.headers)
+                self.assertEqual(rejected.status_code, 409, rejected.text)
+                self.assertEqual(rejected.json()["detail"], "输入数据已改变")
+            with self.client() as client:
+                restored = client.get(self.path, headers=self.headers)
+                self.assertEqual(restored.json(), pending)
+                retry = client.post(self.path + "/events", json=confirm, headers=self.headers)
+                self.assertEqual(retry.status_code, 409, retry.text)
+                cancelled = client.post(self.path + "/events",
+                    json=event("cancel", interactionId=interaction_id), headers=self.headers)
+                self.assertEqual(cancelled.status_code, 200, cancelled.text)
+                self.assertEqual(cancelled.json()["status"], "cancelled")
+                self.assertEqual(submit_callback.await_count, 2)
+
     def test_get_is_read_only_and_resume_retries_failed_submit(self):
         from workflow import CallbackError
 
@@ -112,6 +178,7 @@ class WorkflowTest(unittest.TestCase):
                 self.assertEqual(state.status_code, 200)
                 self.assertEqual(state.json()["status"], "processing")
                 self.assertEqual(submit_callback.await_count, 1)
+            with self.client() as client:
                 resumed = client.post(self.path + "/events", json=event("resume", interactionId=pending["interactionId"]), headers=self.headers)
                 self.assertEqual(resumed.status_code, 200, resumed.text)
                 self.assertEqual(resumed.json()["status"], "submitted")

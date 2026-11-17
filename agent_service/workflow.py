@@ -14,6 +14,10 @@ from langgraph.types import Command, interrupt
 from pydantic import BaseModel, ConfigDict, StringConstraints, model_validator
 
 
+MAX_PROMPT_LENGTH = 4000
+STALE_PLAN_ERRORS = {"INPUT_VERSION_CHANGED", "PLAN_NOT_FOUND", "PLAN_VERSION_CONFLICT", "DATASET_NOT_FOUND"}
+
+
 class WorkflowState(TypedDict, total=False):
     sceneId: str
     threadId: str
@@ -26,6 +30,7 @@ class WorkflowState(TypedDict, total=False):
     decision: str | None
     pendingRequestId: str
     clarificationCount: int
+    submissionRejection: tuple[int, str] | None
 
 
 class WorkflowEvent(BaseModel):
@@ -33,7 +38,7 @@ class WorkflowEvent(BaseModel):
 
     action: Literal["start", "answer", "confirm", "cancel", "resume"]
     requestId: Annotated[str, StringConstraints(pattern=r"^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$")]
-    prompt: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=4000)] | None = None
+    prompt: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=MAX_PROMPT_LENGTH)] | None = None
     interactionId: Annotated[str, StringConstraints(pattern=r"^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$")] | None = None
     contextRunId: Annotated[str, StringConstraints(pattern=r"^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$")] | None = None
 
@@ -75,6 +80,12 @@ class CallbackError(Exception):
     pass
 
 
+class CallbackRejection(HTTPException):
+    def __init__(self, status: int, message: str, error_code: str | None):
+        super().__init__(status, message)
+        self.error_code = error_code
+
+
 def callback_status(status: int, body: object):
     if status == 429:
         raise HTTPException(429, "model_rate_limited")
@@ -82,7 +93,9 @@ def callback_status(status: int, body: object):
         raise HTTPException(504, "workflow_callback_timeout")
     if status in (400, 404, 409, 422):
         detail = body.get("message") if isinstance(body, dict) else None
-        raise HTTPException(status, detail or "workflow_request_rejected")
+        code = body.get("errorCode") if isinstance(body, dict) else None
+        raise CallbackRejection(status, detail if isinstance(detail, str) else "workflow_request_rejected",
+                                code if isinstance(code, str) else None)
     raise CallbackError("workflow_callback_unavailable")
 
 
@@ -130,6 +143,13 @@ async def submit_plan(scene_id: str, thread_id: str, proposal: dict, interaction
     })
 
 
+def clarified_prompt(prompt: str, answer: str) -> str:
+    combined = prompt + "\n用户补充：" + answer.strip()
+    if len(combined) > MAX_PROMPT_LENGTH:
+        raise HTTPException(422, "补充后的分析需求超过 4000 字，请缩短补充内容")
+    return combined
+
+
 def build_workflow(checkpointer: AsyncSqliteSaver):
     async def plan_node(state: WorkflowState) -> WorkflowState:
         proposal = await request_plan(state["sceneId"], state["userPrompt"], state.get("contextRunId"))
@@ -158,13 +178,10 @@ def build_workflow(checkpointer: AsyncSqliteSaver):
         if answer["action"] == "cancel":
             return {"status": "cancelled", "interactionId": None}
         response = answer.get("prompt")
-        if not isinstance(response, str) or not response.strip() or len(response) > 4000:
+        if not isinstance(response, str) or not response.strip():
             raise HTTPException(422, "workflow_answer_invalid")
-        prompt = state["userPrompt"] + "\n用户补充：" + response.strip()
-        if len(prompt) > 4000:
-            raise HTTPException(422, "workflow_prompt_too_long")
         return {
-            "userPrompt": prompt, "status": "planning",
+            "userPrompt": clarified_prompt(state["userPrompt"], response), "status": "planning",
             "clarificationCount": state.get("clarificationCount", 0) + 1,
             "pendingRequestId": answer["requestId"],
         }
@@ -177,11 +194,19 @@ def build_workflow(checkpointer: AsyncSqliteSaver):
         if not isinstance(decision, dict) or decision.get("action") not in {"confirm", "cancel"}:
             raise HTTPException(400, "workflow_confirmation_invalid")
         if decision["action"] == "cancel":
-            return {"status": "cancelled"}
-        return {"decision": "confirmed", "status": "approved", "pendingRequestId": decision["requestId"]}
+            return {"status": "cancelled", "submissionRejection": None}
+        return {"decision": "confirmed", "status": "approved", "pendingRequestId": decision["requestId"],
+                "submissionRejection": None}
 
     async def submit_node(state: WorkflowState) -> WorkflowState:
-        run = await submit_plan(state["sceneId"], state["threadId"], state["proposal"], state["interactionId"])
+        try:
+            run = await submit_plan(state["sceneId"], state["threadId"], state["proposal"], state["interactionId"])
+        except CallbackRejection as error:
+            if error.error_code not in STALE_PLAN_ERRORS:
+                raise
+            # The submission transaction rejected the plan. Open the review again so it can be cancelled.
+            return {"status": "pending_confirmation", "decision": None,
+                    "submissionRejection": (error.status_code, error.detail)}
         run_id = run.get("id")
         if not isinstance(run_id, str):
             raise HTTPException(502, "workflow_run_response_invalid")
@@ -211,7 +236,7 @@ def build_workflow(checkpointer: AsyncSqliteSaver):
     builder.add_conditional_edges("plan", after_plan)
     builder.add_conditional_edges("clarification", after_clarification)
     builder.add_conditional_edges("review", after_review)
-    builder.add_edge("submit", END)
+    builder.add_conditional_edges("submit", lambda state: "review" if state.get("submissionRejection") else END)
     return builder.compile(checkpointer=checkpointer)
 
 
@@ -261,6 +286,12 @@ class WorkflowEngine:
         async with lock:
             return await self._read(scene_id, thread_id)
 
+    async def _advance(self, config: dict, input_value: WorkflowState | Command | None) -> None:
+        # Persist approval before making the submission callback, which can commit independently.
+        state = await self.graph.ainvoke(input_value, config=config, durability="sync")
+        if rejection := state.get("submissionRejection"):
+            raise HTTPException(*rejection)
+
     async def post(self, scene_id: UUID, thread_id: UUID, event: WorkflowEvent) -> WorkflowResponse:
         checkpoint_id = f"{scene_id}:{thread_id}"
         lock = await self._lock(checkpoint_id)
@@ -281,7 +312,7 @@ class WorkflowEngine:
                 if values:
                     if values.get("pendingRequestId") != event.requestId:
                         raise HTTPException(409, "workflow_request_id_conflict")
-                    await self.graph.ainvoke(None, config=config)
+                    await self._advance(config, None)
                 else:
                     initial: WorkflowState = {
                         "sceneId": str(scene_id), "threadId": str(thread_id),
@@ -289,19 +320,15 @@ class WorkflowEngine:
                         "status": "planning", "interactionId": None, "proposal": None, "runId": None,
                         "pendingRequestId": event.requestId, "clarificationCount": 0,
                     }
-                    await self.graph.ainvoke(initial, config=config)
+                    await self._advance(config, initial)
             elif event.action == "resume":
                 if not values:
                     raise HTTPException(404, "workflow_not_found")
                 if values.get("status") in {"clarification", "pending_confirmation", "planning", "approved"}:
-                    active_interaction = values.get("interactionId")
-                    if active_interaction:
-                        if event.interactionId != active_interaction:
-                            raise HTTPException(409, "workflow_interaction_stale")
-                    elif values.get("pendingRequestId") != event.requestId:
-                        raise HTTPException(409, "workflow_request_id_conflict")
+                    if event.interactionId != values.get("interactionId"):
+                        raise HTTPException(409, "workflow_interaction_stale")
                 if values.get("status") in {"planning", "approved"}:
-                    await self.graph.ainvoke(None, config=config)
+                    await self._advance(config, None)
             elif event.action in {"answer", "confirm", "cancel"}:
                 if not values:
                     raise HTTPException(404, "workflow_not_found")
@@ -311,7 +338,7 @@ class WorkflowEngine:
                         raise HTTPException(409, "workflow_interaction_stale")
                     if values.get("pendingRequestId") != event.requestId:
                         raise HTTPException(409, "workflow_request_id_conflict")
-                    await self.graph.ainvoke(None, config=config)
+                    await self._advance(config, None)
                     response = await self._read(scene_id, thread_id)
                     await self._save_receipt(scene_id, thread_id, event, fingerprint, response)
                     return response
@@ -329,11 +356,13 @@ class WorkflowEngine:
                         await self._save_receipt(scene_id, thread_id, event, fingerprint, response)
                         return response
                     raise HTTPException(409, "workflow_interaction_stale")
-                resumed = {"action": event.action}
-                resumed["requestId"] = event.requestId
+                resumed = {"action": event.action, "requestId": event.requestId}
                 if event.prompt is not None:
+                    if event.action == "answer":
+                        # A resume value is persisted even if its node subsequently raises.
+                        clarified_prompt(values["userPrompt"], event.prompt)
                     resumed["prompt"] = event.prompt
-                await self.graph.ainvoke(Command(resume=resumed), config=config)
+                await self._advance(config, Command(resume=resumed))
 
             response = await self._read(scene_id, thread_id)
             await self._save_receipt(scene_id, thread_id, event, fingerprint, response)
