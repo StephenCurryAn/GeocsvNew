@@ -2,18 +2,22 @@
 
 这套 Compose 配置用于本机开发和验收。它启动 Web 前端、Express、Python/FastAPI 和 PostgreSQL 16 + PostGIS，并使用独立的数据库和上传存储。Docker 数据库首次启动时应用现有的初始化 SQL。另有可选的自然语言规划服务。旧库升级、备份及恢复的实测步骤见[阶段 07 验收记录](sessions/07-deployment.md)。
 
-在 Docker Desktop 启动后，从包含 `compose.yaml` 的 GeoCSV 工作目录运行：
+本机开发、联调和验收共用 Docker Compose 项目 `geocsv-local`。同一套服务一次运行一个分支或集成版本。当前工作台继续使用端口 8089，恢复后的卷名和环境变量分别由仓库根目录下的 `.tmp/geocsv-local.compose.yaml` 和 `.tmp/geocsv-local.env` 管理。两个本地文件由 Git 忽略。
+
+在 Docker Desktop 启动后，从要运行的分支工作目录执行以下命令。切换版本时沿用同一项目和两个本地配置文件。
 
 ```powershell
-docker compose up --build --detach --wait
-docker compose ps
+$geoLocal = @('-p', 'geocsv-local', '--profile', 'planner', '-f', 'compose.yaml',
+    '-f', 'D:/GeoCSV/.tmp/geocsv-local.compose.yaml', '--env-file', 'D:/GeoCSV/.tmp/geocsv-local.env')
+docker compose @geoLocal up --build --detach --wait
+docker compose @geoLocal ps
 ```
 
-打开 [Docker 版 GeoCSV](http://127.0.0.1:8080/)，从「资源管理」上传资料。除了本机 Web 入口，数据库、Python 和 Node 端口均由容器内部访问。Nginx 同源转发 `/api` 和瓦片请求，并保留流式响应。数据库、上传文件和旧模型文件分别存入 Docker 卷。停止和重新启动 Compose 后会保留这些数据。
+打开 [Docker 版 GeoCSV](http://localhost:8089/)，从「资源管理」上传资料。只有 Web 端口对本机开放，数据库、Python、Agent 和 Node 通过容器网络通信。Nginx 同源转发 `/api` 和瓦片请求并保留流式响应。数据库、上传文件、模型文件和 Agent 检查点各自保存在 Docker 卷中，容器可以按同一配置重建。
 
-前端和后端镜像从仓库中的锁文件安装和构建。修改源码后重新执行带 `--build` 的启动命令。需要热更新时可继续使用现有 Vite 开发方式。
+前端和后端镜像从仓库中的锁文件安装和构建。修改源码后重新执行带 `--build` 的启动命令。
 
-现有 Windows/WSL 开发版仍使用 5173、3000、8000 和现有 PostgreSQL。它与 Docker 版各有自己的数据库，旧版数据不会自动出现在 Docker 版。如 8080 已占用，可先设 `$env:GEOCSV_WEB_PORT = '8088'`，再执行启动命令。
+在另一台电脑首次启动空工作台时，执行 `docker compose -p geocsv-local --profile planner up --build --detach --wait` 可使用默认卷和端口 8080。需恢复现有工作台时，先按下文校验备份并选择新卷。
 
 Compose 使用 BuildKit 构建依赖镜像，需 Docker Compose 2.22 或更新版本。`server` 复用 `python` 服务的镜像层，使用同一位置的 CPython、`uv.lock`、虚拟环境和 Worker 代码。FastAPI 仍由独立的 `python` 服务提供。 [Docker Compose 依赖镜像说明](https://docs.docker.com/compose/how-tos/dependent-images/)
 
@@ -23,48 +27,31 @@ Compose 使用 BuildKit 构建依赖镜像，需 Docker Compose 2.22 或更新�
 
 业务图层和现有确定性分析功能无需配置 Key。如需加载默认的 Protomaps light 底图或使用外部模型，可以在工作目录创建被 Git 忽略的 `.env`，参照 [地图接入](map-services.md) 和 [模型配置](environment-baseline.md) 设置变量。
 
-- `VITE_PROTOMAPS_API_KEY` 是浏览器使用的 Key，修改后执行 `docker compose up --build --detach --wait` 重新构建前端，并在供应商控制台允许实际使用的本机 Web 地址。
+- `VITE_PROTOMAPS_API_KEY` 是浏览器使用的 Key，修改后用上面的共享配置重新构建前端，并在供应商控制台允许实际使用的本机 Web 地址。
 - `TIANDITU_SERVER_KEY`、`ALIYUN_API_KEY`、`LLM_BASE_URL` 和 `LLM_PLANNER_MODEL` 由 Compose 在运行时传给服务端。启动时重新应用配置。Docker 版与本机 Node 版分别读取其配置。
 
 ### 启用自然语言规划
 
 在工作目录被忽略的 `.env` 或传给 Compose 的本地环境文件中，设置 `AGENT_SERVICE_TOKEN` 为随机生成的共享凭据，并设置模型的 `ALIYUN_API_KEY`、`LLM_BASE_URL` 和 `LLM_PLANNER_MODEL`。DeepSeek 官方接口使用 `https://api.deepseek.com` 和 `deepseek-flash`。模型若需要代理，可设置规划容器可达的 `LLM_PROXY_URL`。然后启用 `planner` profile。
 
-```powershell
-$env:GEOCSV_WEB_PORT = '8083'
-docker compose -p geocsv-phase3 --profile planner up --build --detach --wait
-```
-
 规划容器使用专用 Compose 网络，只有 Express 连接该网络并携带共享凭据。浏览器继续通过 Web 的同源 API 请求。普通启动可省略 `planner` profile，空间透视表单和规则规划仍可用。旧自然语言路由的模型回退也使用该 profile。规划验收见 [阶段 03](sessions/03-langchain-planner.md)。
 
 ## 排查与停机
 
 ```powershell
-docker compose logs --tail 100
-docker compose stop
+docker compose @geoLocal logs --tail 100
+docker compose @geoLocal stop
 ```
 
 如果 Docker Desktop 报 `dockerInference` 或 `docker-secrets-engine/engine.sock` 无法删除，先查看 Docker Desktop 的启动日志。这次修复将两个只含运行时套接字的目录改名留为备份后重启 Docker Desktop。[Docker Windows 启动问题记录](https://github.com/docker/desktop-feedback/issues/460)
 
 恢复或重新构建时使用同一个 Compose 项目。上传的数据保存在 Docker 卷内，删除卷会清除对应的数据。
 
-## Moran/LISA 的独立 Compose 验收
+## 备份和恢复共享工作台
 
-在仓库根目录执行。`geocsv-moran-check` 使用独立的数据库、上传和 Worker 卷，Nginx 入口为 `127.0.0.1:8082`。首次运行时 Compose 创建这些卷。
+确认运行中的分析完成后，保留数据库容器并停掉写入服务。使用 [备份恢复脚本](../deploy/docker/scene-backup.ps1) 的 `-ComposeOverride` 指向当前卷配置，使脚本按 Compose 实际挂载的卷备份。恢复时准备一份指向全新卷名的覆盖文件，移除目标项目的旧容器，再用同一个 `geocsv-local` 项目恢复。脚本拒绝已有的目标卷，并校验归档的 SHA-256 和数据库版本。旧卷继续保留供回退。
 
-```powershell
-$env:GEOCSV_WEB_PORT = '8082'
-docker compose -p geocsv-moran-check up --build --detach --wait
-$receipt = Join-Path $PWD 'python_engine/.tmp/docker-moran-check/receipt.json'
-New-Item -ItemType Directory -Force (Split-Path $receipt) | Out-Null
-$report = node server/tests/moranDocker.cjs
-if ($LASTEXITCODE -ne 0) { throw 'Moran/LISA 验收失败' }
-$report | Set-Content -Encoding utf8 $receipt
-docker compose -p geocsv-moran-check up --detach --no-build --force-recreate --wait
-node server/tests/moranDocker.cjs $receipt
-```
-
-脚本通过 Nginx 创建场景并上传四面样例和点数据，从 Plan 提交 Queen、Rook 和空间计数。提供已有报告时，脚本经相同入口复读原 Run、Artifact、分页行、GeoJSON 和 CSV。四面样例及本轮容器验收记录见 [阶段 02](sessions/02-python-execution.md)。
+Moran/LISA 四面样例和此前独立实例的实验记录见 [阶段 02](sessions/02-python-execution.md)。数据库升级、同版恢复和 Chicago 311 全流程记录见 [阶段 07](sessions/07-deployment.md)。
 
 ## 本机验证记录
 

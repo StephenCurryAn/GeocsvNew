@@ -4,18 +4,30 @@ param(
     [Parameter(Mandatory)][ValidateSet('Backup', 'Restore')][string]$Operation,
     [Parameter(Mandatory)][ValidatePattern('^[a-z0-9][a-z0-9_-]*$')][string]$Project,
     [Parameter(Mandatory)][string]$EnvFile,
-    [Parameter(Mandatory)][string]$Directory
+    [Parameter(Mandatory)][string]$Directory,
+    [string]$ComposeOverride
 )
 
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 $composeFile = Join-Path $PSScriptRoot '../../compose.yaml'
-$compose = @('compose', '-f', $composeFile, '--env-file', (Resolve-Path -LiteralPath $EnvFile).Path,
-    '-p', $Project, '--profile', 'planner')
+$compose = @('compose', '-f', $composeFile)
+if ($ComposeOverride) {
+    $compose += @('-f', (Resolve-Path -LiteralPath $ComposeOverride).Path)
+}
+$compose += @('--env-file', (Resolve-Path -LiteralPath $EnvFile).Path, '-p', $Project, '--profile', 'planner')
 $projectFilter = "label=com.docker.compose.project=$Project"
 $databaseFile = 'database.pgdump'
 # The worker spool is only needed for queued or running tasks, which backup checks below.
 $volumeNames = @('uploads', 'models', 'agent-checkpoints')
+$allVolumeNames = @('database', 'analysis-worker') + $volumeNames
+$config = docker @compose config --format json | ConvertFrom-Json -AsHashtable
+$configuredVolumes = @{}
+foreach ($name in $allVolumeNames) {
+    $volume = $config.volumes[$name].name
+    if (!$volume -or $volume -in $configuredVolumes.Values) { throw "Expected a separate named volume for $name." }
+    $configuredVolumes[$name] = $volume
+}
 $archiveNames = @($databaseFile) + @($volumeNames | ForEach-Object { "$_.tar" })
 $tempDump = '/tmp/geocsv-' + [Guid]::NewGuid().ToString('N') + '.pgdump'
 
@@ -26,8 +38,7 @@ function Get-DatabaseContainer {
 }
 
 function Get-VolumeName([string]$Name) {
-    $volume = "${Project}_$Name"
-    docker volume inspect -f '{{.Name}}' $volume
+    docker volume inspect -f '{{.Name}}' $configuredVolumes[$Name]
 }
 
 function Get-DatabaseVersions {
@@ -81,12 +92,12 @@ foreach ($name in $archiveNames) {
         throw "Backup checksum differs for $name."
     }
 }
-if (@(docker ps -aq --filter $projectFilter).Count -or @(docker volume ls -q --filter $projectFilter).Count) {
-    throw 'Use a fresh Compose project with no containers or volumes.'
+if (@(docker ps -aq --filter $projectFilter).Count) {
+    throw 'Remove the target Compose containers before restoring into fresh volumes.'
 }
 $existingVolumes = @(docker volume ls -q)
-foreach ($name in @('database', 'analysis-worker') + $volumeNames) {
-    if ("${Project}_$name" -in $existingVolumes) { throw "Target volume ${Project}_$name already exists." }
+foreach ($volume in $configuredVolumes.Values) {
+    if ($volume -in $existingVolumes) { throw "Target volume $volume already exists." }
 }
 
 docker @compose create --no-build --pull never
