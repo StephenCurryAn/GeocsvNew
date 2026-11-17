@@ -1,6 +1,6 @@
 # 用 Docker 运行 GeoCSV
 
-这套 Compose 配置用于本机开发和验收。它启动 Web 前端、Express、Python/FastAPI 和 PostgreSQL 16 + PostGIS，并使用独立的数据库和上传存储。Docker 数据库首次启动时应用现有的初始化 SQL。另有可选的自然语言规划服务。正式部署和备份恢复按阶段 7 的计划验收。
+这套 Compose 配置用于本机开发和验收。它启动 Web 前端、Express、Python/FastAPI 和 PostgreSQL 16 + PostGIS，并使用独立的数据库和上传存储。Docker 数据库首次启动时应用现有的初始化 SQL。另有可选的自然语言规划服务。旧库升级、备份及恢复的实测步骤见[阶段 07 验收记录](sessions/07-deployment.md)。
 
 在 Docker Desktop 启动后，从包含 `compose.yaml` 的 GeoCSV 工作目录运行：
 
