@@ -13,7 +13,7 @@ const { createSpatialPivotRouter } = require('../src/modules/spatialPivot/router
 const databaseUrl = process.env.TEST_DATABASE_URL;
 const serverRoot = resolve(__dirname, '..');
 const projectRoot = resolve(serverRoot, '..');
-const python = resolve(projectRoot, 'python_engine/.venv/Scripts/python.exe');
+const python = resolve(projectRoot, 'python_engine/.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
 
 async function isolatedDatabase(t) {
   assert.match(new URL(databaseUrl).pathname, /test|tmp/i, 'Use a dedicated test database');

@@ -12,6 +12,7 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 from pydantic import BaseModel, ConfigDict, StringConstraints, model_validator
+from observability import trace_headers
 
 
 MAX_PROMPT_LENGTH = 4000
@@ -109,7 +110,7 @@ async def _post_callback(path: str, body: dict) -> dict:
             response = await client.post(
                 base_url.rstrip("/") + path,
                 json=body,
-                headers={"Authorization": f"Bearer {token}"},
+                headers={"Authorization": f"Bearer {token}", **trace_headers()},
             )
     except httpx.TimeoutException:
         raise HTTPException(504, "workflow_callback_timeout") from None

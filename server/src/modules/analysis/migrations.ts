@@ -164,7 +164,13 @@ const professionalModels = async (client: PoolClient) => {
   `);
 };
 
-const migrations = [baseline, submissionKeys, plansAndArtifactFormats, pythonSnapshotsAndResults, sceneAnalysisMetadata, professionalModels];
+const runTrace = async (client: PoolClient) => {
+  await client.query(`ALTER TABLE geocsv_analysis_runs ADD COLUMN trace_id TEXT
+    CHECK (trace_id ~ '^[a-f0-9]{32}$')`);
+};
+
+const migrations = [baseline, submissionKeys, plansAndArtifactFormats, pythonSnapshotsAndResults, sceneAnalysisMetadata,
+  professionalModels, runTrace];
 
 export const migrateAnalysis = async (db: Pool): Promise<void> => {
   await transaction(db, 'BEGIN', async client => {

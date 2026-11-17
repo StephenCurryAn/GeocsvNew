@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, readdir, readFile, stat, unlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { AnalysisError } from '../analysis/errors';
+import { traceEvent } from '../analysis/trace';
 
 const engineDir = resolve(__dirname, '../../../../python_engine');
 const resultVersion = 'moran-lisa/2.0.0';
@@ -36,6 +37,7 @@ export class PythonWorker {
     const lockDigest = sha256(Buffer.from(lockText.replace(/\r\n/g, '\n')));
     const resultFile = this.resultFile(execution.id);
     let text = await this.readResult(resultFile);
+    const reusedResult = text !== null;
     if (text === null) {
       await mkdir(this.directory, { recursive: true, mode: 0o700 });
       await this.runProcess(execution, resultFile, parameters);
@@ -48,6 +50,8 @@ export class PythonWorker {
       throw workerFailure('Python Worker 返回的执行身份或版本不匹配');
     }
     if (typeof envelope.error === 'string') throw new AnalysisError(400, 'INVALID_SPEC', envelope.error);
+    traceEvent('python.worker.result', { runId: execution.id, algorithmVersion: resultVersion,
+      dependencyLockDigest: lockDigest, reusedResult });
     return { result: envelope.result as unknown, algorithmVersion: resultVersion, dependencyLockDigest: lockDigest };
   }
 
@@ -100,7 +104,6 @@ export class PythonWorker {
         env: { ...env, PYTHONUTF8: '1', OPENBLAS_NUM_THREADS: '1', OMP_NUM_THREADS: '1' },
       });
       let stopReason: unknown;
-      let details = '';
       const stop = (reason: unknown) => {
         stopReason ??= reason;
         child.stdin.destroy();
@@ -109,7 +112,7 @@ export class PythonWorker {
       const abort = () => stop(execution.signal.reason);
       const timeout = setTimeout(() => stop(new AnalysisError(500, 'EXECUTION_TIMEOUT', 'Python Worker 执行超时')), execution.timeoutMs);
       execution.signal.addEventListener('abort', abort, { once: true });
-      child.stderr.setEncoding('utf8').on('data', chunk => { details = (details + chunk).slice(-2048); });
+      child.stderr.resume();
       child.stdin.on('error', () => undefined); // An early process exit is reported on close.
       child.on('error', error => { stopReason ??= workerFailure('无法启动 Python Worker：' + error.message); });
       child.on('exit', () => {
@@ -120,7 +123,6 @@ export class PythonWorker {
         execution.signal.removeEventListener('abort', abort);
         if (stopReason) fail(stopReason);
         else if (code !== 0) {
-          if (details) console.error('[Python Worker]', details);
           fail(new AnalysisError(500, 'WORKER_INTERRUPTED', 'Python Worker 提前退出（' + (signal ?? code) + '）'));
         } else done();
       });

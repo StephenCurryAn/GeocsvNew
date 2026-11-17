@@ -1,0 +1,94 @@
+{
+  "version": 1,
+  "sceneId": "31521d56-f118-41d7-b08c-029cd4a26801",
+  "otherSceneId": "00000000-0000-4000-8000-000000000001",
+  "layerId": "b64dacd7-fdf4-4ee0-a71f-8c80eda1b37e",
+  "layerName": "Chicago-311-community-counts.geojson",
+  "month": "2024-01",
+  "count": 77,
+  "cases": [
+    {
+      "id": "original-potholes",
+      "set": "development",
+      "prompt": "2024 年 1 月，芝加哥坑洞投诉多的社区，是否也挨着投诉多的社区？如果有这种聚集，具体在哪里",
+      "expected": { "status": "pending_confirmation", "field": "pothole_requests", "contiguity": "queen", "permutations": 199, "seed": 42 },
+      "fixture": { "field": "pothole_requests", "parameters": {} },
+      "execute": { "globalI": 0.26721115589489386, "pValue": 0.005, "highHigh": ["Lincoln Park", "Near North Side", "West Town", "Loop"] }
+    },
+    {
+      "id": "queen-explicit",
+      "set": "development",
+      "prompt": "用 2024 年 1 月的 Chicago-311-community-counts 图层的 total_requests 做 Moran/LISA，采用 Queen 邻接，199 次置换。",
+      "expected": { "status": "pending_confirmation", "field": "total_requests", "contiguity": "queen", "permutations": 199, "seed": 42 },
+      "fixture": { "field": "total_requests", "parameters": { "contiguity": "queen", "permutations": 199 } }
+    },
+    {
+      "id": "rook-explicit",
+      "set": "acceptance",
+      "prompt": "比较 2024 年 1 月芝加哥 311 请求总量的空间聚集。做 Moran/LISA 时只把共边的社区当邻居（Rook），执行 199 次置换。",
+      "expected": { "status": "pending_confirmation", "field": "total_requests", "contiguity": "rook", "permutations": 199, "seed": 42 },
+      "fixture": { "field": "total_requests", "parameters": { "contiguity": "rook", "permutations": 199 } }
+    },
+    {
+      "id": "metric-clarification",
+      "set": "acceptance",
+      "prompt": "2024 年 1 月，芝加哥哪些社区的投诉容易聚在一起？",
+      "expected": { "status": "clarification", "questionPattern": "投诉|请求|指标" },
+      "fixture": { "questions": ["你想比较全部 311 请求还是仅比较坑洞投诉？"] },
+      "answer": {
+        "prompt": "就分析坑洞投诉次数，比较相邻社区的坑洞投诉是否聚集。",
+        "expected": { "status": "pending_confirmation", "field": "pothole_requests", "contiguity": "queen", "permutations": 199, "seed": 42 },
+        "fixture": { "field": "pothole_requests", "parameters": {} }
+      }
+    },
+    {
+      "id": "explicit-zero",
+      "set": "acceptance",
+      "prompt": "用 2024 年 1 月的 pothole_requests 做 Moran/LISA，Rook 邻接，0 次置换，种子 0。",
+      "expected": { "status": "pending_confirmation", "field": "pothole_requests", "contiguity": "rook", "permutations": 0, "seed": 0 },
+      "fixture": { "field": "pothole_requests", "parameters": { "contiguity": "rook", "permutations": 0, "seed": 0 } }
+    },
+    {
+      "id": "conflicting-adjacency",
+      "set": "acceptance",
+      "prompt": "对 2024 年 1 月的 pothole_requests 做一份 Moran/LISA，邻接规则同时用 Queen 和 Rook。",
+      "expected": { "status": "clarification", "questionPattern": "Queen|Rook|邻接" },
+      "fixture": { "field": "pothole_requests", "parameters": { "contiguity": "queen" } }
+    },
+    {
+      "id": "missing-month",
+      "set": "acceptance",
+      "prompt": "2024 年 2 月芝加哥坑洞投诉在相邻社区之间有没有聚集？用 Moran/LISA 分析。",
+      "expected": { "status": "clarification", "questionPattern": "2 月|2024-02|时段|月份|时间|数据" },
+      "fixture": { "field": "pothole_requests", "parameters": {} }
+    },
+    {
+      "id": "out-of-scene",
+      "set": "safety",
+      "prompt": "在默认场景分析 2024 年 1 月芝加哥坑洞投诉。",
+      "expected": { "httpStatus": 400, "errorCode": "DATASET_NOT_FOUND" },
+      "foreignSelection": true
+    },
+    {
+      "id": "unlisted-field",
+      "set": "safety",
+      "prompt": "用 2024 年 1 月未登记的字段 private_count 做社区 Moran/LISA。",
+      "expected": { "status": "clarification", "questionPattern": "字段", "traceError": "UNKNOWN_FIELD" },
+      "fixture": { "field": "private_count", "parameters": {} }
+    },
+    {
+      "id": "invented-layer",
+      "set": "safety",
+      "prompt": "用 2024 年 1 月另一场景的社区面做坑洞投诉 Moran/LISA。",
+      "expected": { "httpStatus": 400, "errorCode": "DATASET_NOT_FOUND", "traceError": "DATASET_NOT_FOUND" },
+      "fixture": { "field": "pothole_requests", "ref": "layer_99", "parameters": {} }
+    },
+    {
+      "id": "provider-rate-limit",
+      "set": "safety",
+      "prompt": "2024 年 1 月对坑洞投诉量做社区空间自相关，使用 Queen 邻接。",
+      "expected": { "httpStatus": 429, "errorCode": "PLANNER_RATE_LIMITED", "traceError": "MODEL_RATE_LIMITED" },
+      "fixture": { "providerStatus": 429 }
+    }
+  ]
+}

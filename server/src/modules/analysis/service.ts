@@ -11,6 +11,7 @@ import { AnalysisError, AnalysisInputError, InputVersionChanged, RequestKeyConfl
 import { migrateAnalysis } from './migrations';
 import { confirmPlan, readPlan, writePlan } from './plans';
 import { operatorOf, type AnalysisRun, type AnalysisSpec, type InputVersions, type ProfessionalModelRun, type RunStatus } from './protocol';
+import { analysisTrace, traceError, traceEvent, withRunTrace } from './trace';
 
 export interface SubmissionKey {
   actor: string;
@@ -42,6 +43,7 @@ interface RunRow {
   created_at: Date;
   completed_at: Date | null;
   professional_model: ProfessionalModelRun | null;
+  trace_id: string | null;
 }
 
 const runFromRow = (row: RunRow): AnalysisRun => ({
@@ -179,11 +181,11 @@ export class AnalysisService {
       [randomUUID(), plan.specHash, plan.spec])).rows[0].id;
     const result = await client.query<RunRow>(`
       INSERT INTO geocsv_analysis_runs(id, definition_id, spec, input_versions, plan_id,
-        request_actor, request_scope, request_key, request_hash, snapshot_id, professional_model)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+        request_actor, request_scope, request_key, request_hash, snapshot_id, professional_model, trace_id)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
       [runId, definitionId, plan.spec, plan.inputVersions, plan.id,
         submission?.actor, submission?.scope, submission?.key, requestHash, snapshotId,
-        'operator' in request ? request.professionalModel : null]);
+        'operator' in request ? request.professionalModel : null, analysisTrace()?.traceId]);
     await confirmPlan(client, plan);
     return runFromRow(result.rows[0]);
   }
@@ -323,13 +325,13 @@ export class AnalysisService {
         if (!next.rowCount) break;
         const row = next.rows[0];
         const run = runFromRow(row);
-        if (row.snapshot_id) await this.executePython(client, run, row.snapshot_id);
-        else await this.executePostgis(client, run);
+        await withRunTrace(row.trace_id, () => row.snapshot_id
+          ? this.executePython(client, run, row.snapshot_id) : this.executePostgis(client, run));
       }
     } catch (error) {
       // A failed archive transaction leaves the Python run and published result resumable.
       discardClient = true;
-      console.error('[Analysis worker]', error instanceof Error ? error.message : error);
+      console.error('[Analysis worker]', traceError(error));
     } finally {
       if (connection) {
         if (locked) await connection.client.query('SELECT pg_advisory_unlock(193607241)').catch(() => undefined);
@@ -394,6 +396,8 @@ export class AnalysisService {
       } finally { checking = false; }
     }, 500);
     let draft: ArtifactDraft;
+    const started = performance.now();
+    const ids = { runId: run.id, planId: run.planId, operatorId: run.operator.id, operatorVersion: run.operator.version };
     try {
       if (!payload) throw snapshotExpired();
       if (!Object.values(run.inputVersions ?? {}).some(version => version.fingerprint === digest)) {
@@ -402,8 +406,9 @@ export class AnalysisService {
       draft = await prepared.execute(this.worker, {
         id: run.id, digest, payload, signal: controller.signal, timeoutMs: this.timeoutMs,
       });
+      traceEvent('execution.python.completed', { ...ids, durationMs: Math.round(performance.now() - started) });
     } catch (error) {
-      if (!this.stopped && error !== cancelled) await this.failRun(client, run.id, error);
+      if (!this.stopped && error !== cancelled) await this.failRun(client, run.id, error, started);
       if (!this.stopped) await this.worker.forget(run.id);
       return;
     } finally {
@@ -412,23 +417,32 @@ export class AnalysisService {
     }
 
     if (this.stopped) return;
+    const archiveStarted = performance.now();
+    const artifactId = randomUUID();
     try {
       await client.query('BEGIN');
       await client.query("SELECT set_config('statement_timeout', $1, true)", [String(this.timeoutMs)]);
-      const artifactId = randomUUID();
       await writeArtifact(client, artifactId, run, operator.descriptor.output, draft);
       const succeeded = await client.query(`UPDATE geocsv_analysis_runs SET status='succeeded',artifact_id=$2,completed_at=now()
         WHERE id=$1 AND status='running' AND snapshot_id=$3 AND NOT cancel_requested`, [run.id, artifactId, snapshotId]);
       if (!succeeded.rowCount) throw cancelled;
       await client.query('COMMIT');
+      traceEvent('artifact.postgis.committed', { ...ids, artifactId, durationMs: Math.round(performance.now() - archiveStarted) });
     } catch (error) {
       await client.query('ROLLBACK');
-      if (error !== cancelled) throw error;
+      if (error !== cancelled) {
+        traceEvent('artifact.postgis.error', { ...ids, errorCategory: traceError(error, 'ARCHIVE_FAILED'),
+          durationMs: Math.round(performance.now() - archiveStarted) });
+        throw error;
+      }
     }
     await this.worker.forget(run.id);
   }
 
   private async executePostgis(client: PoolClient, run: AnalysisRun) {
+    const started = performance.now();
+    const ids = { runId: run.id, planId: run.planId, operatorId: run.operator.id, operatorVersion: run.operator.version };
+    let archiveStarted: number | undefined;
     try {
       await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ');
       await client.query(`SELECT set_config('statement_timeout', $1, true),
@@ -442,6 +456,8 @@ export class AnalysisService {
       }
       const artifactId = randomUUID();
       const draft = await prepared.execute(client);
+      traceEvent('execution.postgis.completed', { ...ids, durationMs: Math.round(performance.now() - started) });
+      archiveStarted = performance.now();
       await writeArtifact(client, artifactId, run, operator.descriptor.output, draft);
       // This update serializes completion with cancellation; losing the race rolls back the artifact.
       const completed = await client.query(`UPDATE geocsv_analysis_runs
@@ -449,15 +465,22 @@ export class AnalysisService {
         WHERE id=$1 AND status='running' AND NOT cancel_requested RETURNING id`, [run.id, artifactId, versions]);
       if (!completed.rowCount) throw new Error('任务已取消');
       await client.query('COMMIT');
+      traceEvent('artifact.postgis.committed', { ...ids, artifactId, durationMs: Math.round(performance.now() - archiveStarted) });
     } catch (error) {
       await client.query('ROLLBACK');
-      await this.failRun(client, run.id, error);
+      if (archiveStarted !== undefined) {
+        traceEvent('artifact.postgis.error', { ...ids, errorCategory: traceError(error, 'ARCHIVE_FAILED'),
+          durationMs: Math.round(performance.now() - archiveStarted) });
+      }
+      await this.failRun(client, run.id, error, started);
     }
   }
 
-  private async failRun(client: PoolClient, id: string, error: unknown) {
+  private async failRun(client: PoolClient, id: string, error: unknown, started?: number) {
     const details = error instanceof Error ? error.message : '空间分析执行失败';
     const code = error instanceof AnalysisError ? error.errorCode : 'EXECUTION_FAILED';
+    traceEvent('execution.failed', { runId: id, errorCategory: code,
+      durationMs: started === undefined ? undefined : Math.round(performance.now() - started) });
     await client.query(`UPDATE geocsv_analysis_runs
       SET status=CASE WHEN cancel_requested THEN 'cancelled' ELSE 'failed' END,
           error=$2, error_code=CASE WHEN cancel_requested THEN NULL ELSE $3 END,

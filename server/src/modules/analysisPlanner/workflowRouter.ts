@@ -1,16 +1,15 @@
-import { timingSafeEqual } from 'node:crypto';
 import { Router, type Request } from 'express';
+import { authorizedAgentCallback } from '../../integrations/agent/auth';
 import { AnalysisError, AnalysisInputError } from '../analysis/errors';
 import { analysisRoute, integer, uuid } from '../analysis/router';
 import type { AnalysisService } from '../analysis/service';
+import { traceEvent, traceHeaders } from '../analysis/trace';
 import { record } from '../operators/planning';
 
 export function requireAgentCallback(req: Request) {
   const token = process.env.AGENT_SERVICE_TOKEN;
   if (!token) throw new AnalysisError(503, 'PLANNER_UNAVAILABLE', '分析助手服务尚未配置');
-  const header = Buffer.from(req.get('authorization') ?? '');
-  const expected = Buffer.from('Bearer ' + token);
-  if (header.length !== expected.length || !timingSafeEqual(header, expected)) {
+  if (!authorizedAgentCallback(req.get('authorization'))) {
     throw new AnalysisError(401, 'INVALID_REQUEST', '无权调用分析助手内部接口');
   }
 }
@@ -27,7 +26,7 @@ async function agentWorkflow(sceneId: string, threadId: string, event?: Record<s
       method: event ? 'POST' : 'GET',
       redirect: 'error',
       signal,
-      headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+      headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json', ...traceHeaders() },
       ...(event ? { body: JSON.stringify(event) } : {}),
     });
   } catch {
@@ -61,7 +60,7 @@ export function createWorkflowRouter(service: AnalysisService) {
   router.get(path, route(async (req, res) => {
     const data = await agentWorkflow(uuid(req.params.sceneId), uuid(req.params.threadId));
     res.json({ code: 200, data });
-  }));
+  }, 'workflow.http.get'));
   router.post(path + '/events', route(async (req, res) => {
     const { body } = req;
     if (!record(body) || Object.keys(body).some(key => !['action', 'requestId', 'prompt', 'interactionId', 'contextRunId'].includes(key))
@@ -72,7 +71,7 @@ export function createWorkflowRouter(service: AnalysisService) {
     const threadId = uuid(req.params.threadId);
     const data = await agentWorkflow(sceneId, threadId, { ...body, requestId: uuid(body.requestId) });
     res.json({ code: 200, data });
-  }));
+  }, 'workflow.http.event'));
   router.post('/internal/analysis/workflow/submit', route(async (req, res) => {
     requireAgentCallback(req);
     const { sceneId, threadId, planId, planVersion, interactionId } = record(req.body) ? req.body : {};
@@ -82,9 +81,15 @@ export function createWorkflowRouter(service: AnalysisService) {
     }
     const scene = uuid(sceneId);
     const thread = uuid(threadId);
+    const started = performance.now();
     const run = await service.create({ planId: uuid(planId), planVersion, sceneId: scene },
       { actor: 'agent', scope: `workflow:${scene}:${thread}`, key: interactionId });
+    traceEvent('workflow.run.accepted', {
+      sceneId: scene, threadId: thread, planId: run.planId, planVersion, runId: run.id,
+      operatorId: run.operator.id, operatorVersion: run.operator.version, status: run.status,
+      durationMs: Math.round(performance.now() - started),
+    });
     res.status(202).json({ code: 202, data: run });
-  }));
+  }, 'workflow.callback.submit'));
   return router;
 }

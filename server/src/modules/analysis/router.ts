@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from 'express';
 import { listOperators } from '../operators/registry';
 import { AnalysisError, AnalysisInputError } from './errors';
 import type { AnalysisService } from './service';
+import { traceError, traceEvent, traceRequest } from './trace';
 
 export const submissionKey = (req: Request, scope: string) => {
   const key = req.headers['idempotency-key'];
@@ -29,17 +30,22 @@ export const integer = (value: unknown, fallback: number, max: number): number =
 };
 
 export const analysisRoute = (service: AnalysisService) =>
-  (handler: (req: Request, res: Response) => Promise<unknown>) => async (req: Request, res: Response) => {
-    try { await service.initialize(); await handler(req, res); }
-    catch (error) {
-      if (res.headersSent) { res.destroy(error instanceof Error ? error : undefined); return; }
-      const status = error instanceof AnalysisError ? error.status : 500;
-      res.status(status).json({
-        code: status,
-        message: error instanceof Error ? error.message : '分析服务失败',
-        ...(error instanceof AnalysisError ? { errorCode: error.errorCode } : {}),
-      });
-    }
+  (handler: (req: Request, res: Response) => Promise<unknown>, operation?: string) => async (req: Request, res: Response) => {
+    const work = async () => {
+      try { await service.initialize(); await handler(req, res); }
+      catch (error) {
+        traceEvent('http.error', { operation, errorCategory: traceError(error) });
+        if (res.headersSent) { res.destroy(error instanceof Error ? error : undefined); return; }
+        const status = error instanceof AnalysisError ? error.status : 500;
+        res.status(status).json({
+          code: status,
+          message: error instanceof Error ? error.message : '分析服务失败',
+          ...(error instanceof AnalysisError ? { errorCode: error.errorCode } : {}),
+        });
+      }
+    };
+    if (operation) await traceRequest(req, res, operation, work);
+    else await work();
   };
 
 export const createAnalysisRouter = (service: AnalysisService) => {

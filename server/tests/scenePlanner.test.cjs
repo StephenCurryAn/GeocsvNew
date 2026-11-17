@@ -70,7 +70,7 @@ test('scene planner scopes metadata and persists only validated plans', async t 
   const agent = express();
   agent.use(express.json());
   agent.post('/plan', (req, res) => {
-    calls.push({ authorization: req.get('authorization'), body: req.body });
+    calls.push({ authorization: req.get('authorization'), traceId: req.get('x-geocsv-trace-id'), body: req.body });
     if (typeof providerResponse === 'string') return res.status(providerStatus).send(providerResponse);
     return res.status(providerStatus).json(providerResponse);
   });
@@ -108,12 +108,13 @@ test('scene planner scopes metadata and persists only validated plans', async t 
   const server = app.listen(0, '127.0.0.1');
   t.after(() => new Promise(resolve => server.close(resolve)));
   await once(server, 'listening');
+  const spoofedTrace = 'a'.repeat(32);
   async function post(userPrompt, options = {}, scene = sceneId) {
     const response = await fetch('http://127.0.0.1:' + server.address().port + '/scenes/' + scene + '/analysis/plans/natural-language', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-geocsv-trace-id': spoofedTrace },
       body: JSON.stringify({ userPrompt, fileIds: [], ...options }),
     });
-    return { status: response.status, ...(await response.json()) };
+    return { status: response.status, traceId: response.headers.get('x-geocsv-trace-id'), ...(await response.json()) };
   }
 
   const result = await post(prompt);
@@ -123,6 +124,9 @@ test('scene planner scopes metadata and persists only validated plans', async t 
   assert.equal(result.data.plan.spec.contiguity, 'rook');
   assert.equal(result.data.plan.spec.seed, 42);
   assert.equal(calls[0].authorization, 'Bearer ' + token);
+  assert.match(result.traceId, /^[a-f0-9]{32}$/);
+  assert.notEqual(result.traceId, spoofedTrace);
+  assert.equal(calls[0].traceId, result.traceId);
   assert.deepEqual(calls[0].body.datasets[0], {
     ref: 'layer_1', name: '社区.geojson', geometryTypes: ['ST_Polygon'],
     fields: ['名称', 'pothole_requests', 'total_requests'], numericFields: ['pothole_requests', 'total_requests'],

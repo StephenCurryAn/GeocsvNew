@@ -1,0 +1,10 @@
+services:
+  agent:
+    environment:
+      ALIYUN_API_KEY: ""
+    volumes:
+      - ./agent_service/evals:/app/agent_service/evals:ro
+    command: ["uvicorn", "evals.fixture_app:app", "--host", "0.0.0.0", "--port", "8100"]
+  server:
+    environment:
+      ALIYUN_API_KEY: ""

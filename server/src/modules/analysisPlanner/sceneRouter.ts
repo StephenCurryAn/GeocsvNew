@@ -5,6 +5,7 @@ import { sceneContainsFiles } from '../../models/Scene';
 import { AnalysisInputError } from '../analysis/errors';
 import { analysisRoute, uuid } from '../analysis/router';
 import type { AnalysisService } from '../analysis/service';
+import { traceError, traceEvent } from '../analysis/trace';
 import { explicitlyRequested, record, type OperatorDraftResult, type PlanningHistory } from '../operators/planning';
 import { listRegisteredOperators } from '../operators/registry';
 import { pivotPlanningHistory } from '../operators/spatialPivot';
@@ -73,8 +74,20 @@ export const createScenePlannerRouter = (
     if (!datasets.length) return reply(clarification('请在当前场景上传或选择有空间要素的图层。'));
     const datasetIds = new Set(datasets.map(item => item.fileId));
     const allowedPreviousPivot = scopedPivot && previousPivotIds.every(id => datasetIds.has(id)) ? scopedPivot : undefined;
-    const save = async (data: Extract<NaturalPlan | OperatorDraftResult, { status: 'ready' }>) =>
-      reply({ ...data, confirmationStatus: 'pending_confirmation', plan: await service.createPlan(data.spec, sceneId) });
+    const save = async (data: Extract<NaturalPlan | OperatorDraftResult, { status: 'ready' }>) => {
+      const started = performance.now();
+      try {
+        const saved = await service.createPlan(data.spec, sceneId);
+        traceEvent('plan.persisted', { sceneId, planId: saved.id, planVersion: saved.version,
+          operatorId: saved.operator.id, operatorVersion: saved.operator.version, status: saved.status,
+          durationMs: Math.round(performance.now() - started) });
+        return reply({ ...data, confirmationStatus: 'pending_confirmation', plan: saved });
+      } catch (error) {
+        traceEvent('plan.validation.error', { sceneId, errorCategory: traceError(error),
+          durationMs: Math.round(performance.now() - started) });
+        throw error;
+      }
+    };
 
     if (!requestsOtherOperator) {
       const unsupported = unsupportedRequirement(userPrompt);
@@ -97,11 +110,11 @@ export const createScenePlannerRouter = (
   };
   router.post('/scenes/:sceneId/analysis/plans/natural-language', route(async (req, res) => {
     await plan(uuid(req.params.sceneId), req.body, res);
-  }));
+  }, 'plan.http.create'));
   router.post('/internal/analysis/workflow/plan', route(async (req, res) => {
     requireAgentCallback(req);
     const { sceneId, userPrompt, contextRunId } = record(req.body) ? req.body : {};
     await plan(uuid(sceneId), { userPrompt, fileIds: [], ...(contextRunId ? { contextRunId } : {}) }, res);
-  }));
+  }, 'workflow.callback.plan'));
   return router;
 };

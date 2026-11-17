@@ -1,4 +1,5 @@
 import { AnalysisError, AnalysisInputError } from '../../modules/analysis/errors';
+import { traceError, traceEvent, traceHeaders } from '../../modules/analysis/trace';
 import { fieldLabel } from '../../modules/analysisPlanner/sceneDataMeaning';
 import { clarification } from '../../modules/analysisPlanner/types';
 import { explicitlyRequested, fitsInput, record, resolveDraftInputs, sameOperator,
@@ -84,7 +85,7 @@ export async function requestDraft(context: DraftContext, registered: readonly O
   try {
     response = await fetch(new URL('/plan', url), {
       method: 'POST', redirect: 'error', signal,
-      headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+      headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json', ...traceHeaders() },
       body: payload,
     });
   } catch {
@@ -114,12 +115,14 @@ export async function requestDraft(context: DraftContext, registered: readonly O
     || typeof result.operator.version !== 'number' || !record(result.parameters)) throw invalidDraft();
   const ref = { id: result.operator.id, version: result.operator.version };
   const selected = available.find(({ operator }) => sameOperator(operator.descriptor, ref));
-  if (!selected) throw new AnalysisInputError('模型选择了候选范围外的算子或版本', 'UNSUPPORTED_OPERATOR');
   const datasetsByRef = new Map(datasets.map(dataset => [refs.get(dataset.fileId)!, dataset]));
+  const started = performance.now();
   try {
+    if (!selected) throw new AnalysisInputError('模型选择了候选范围外的算子或版本', 'UNSUPPORTED_OPERATOR');
     const inputs = resolveDraftInputs(selected.operator.descriptor.inputs, result.inputs, datasetsByRef);
     return await selected.operator.planDraft({ ...context, inputs, parameters: result.parameters });
   } catch (error) {
+    traceEvent('draft.validation.error', { errorCategory: traceError(error), durationMs: Math.round(performance.now() - started) });
     if (error instanceof AnalysisInputError && error.errorCode === 'UNKNOWN_FIELD') return clarification(error.message);
     throw error;
   }

@@ -5,9 +5,12 @@ const { once } = require('node:events');
 const { createInterface } = require('node:readline');
 const { setTimeout: delay } = require('node:timers/promises');
 
-const base = process.env.GEOCSV_WORKFLOW_TEST_URL ?? 'http://127.0.0.1:8086';
+const phase06 = process.argv.includes('--phase06');
+const expectedBase = phase06 ? 'http://127.0.0.1:8087' : 'http://127.0.0.1:8086';
+const base = process.env.GEOCSV_WORKFLOW_TEST_URL ?? expectedBase;
 const restart = process.argv.includes('--restart-agent');
-const project = 'geocsv-04-acceptance';
+const project = phase06 ? 'geocsv-phase06' : 'geocsv-04-acceptance';
+const dbName = phase06 ? 'phase06_test' : 'workflow_acceptance';
 const agent = project + '-agent-1';
 const database = project + '-db-1';
 const sceneId = '31521d56-f118-41d7-b08c-029cd4a26801';
@@ -15,10 +18,12 @@ const otherScene = '00000000-0000-4000-8000-000000000001';
 const scope = '/scenes/' + sceneId + '/analysis';
 const otherScope = '/scenes/' + otherScene + '/analysis';
 const prompt = '2024 年 1 月，芝加哥坑洞投诉多的社区，是否也挨着投诉多的社区？如果有这种聚集，具体在哪里';
-const clarificationPrompt = '芝加哥 2024 年 1 月的社区投诉有没有空间聚集？请先问我选哪个投诉指标，等我答复后再生成计划。';
+const clarificationPrompt = phase06
+  ? require('../../agent_service/evals/chicago311.json').cases.find(item => item.id === 'metric-clarification').prompt
+  : '芝加哥 2024 年 1 月的社区投诉有没有空间聚集？请先问我选哪个投诉指标，等我答复后再生成计划。';
 const clarificationAnswer = '就分析坑洞投诉次数，比较相邻社区的坑洞投诉是否聚集。';
 const docker = (...args) => execFileSync('docker', args, { encoding: 'utf8', timeout: 20000 }).trim();
-const sql = ['psql', '-XAtq', '-U', 'geocsv', '-d', 'workflow_acceptance', '-v', 'ON_ERROR_STOP=1'];
+const sql = ['psql', '-XAtq', '-U', 'geocsv', '-d', dbName, '-v', 'ON_ERROR_STOP=1'];
 const query = statement => docker('exec', database, ...sql, '-c', statement);
 const send = (path, action, fields, status) => api(path + '/events', { action, requestId: randomUUID(), ...fields }, status);
 const api = async (path, body, status = 200) => {
@@ -32,13 +37,13 @@ const api = async (path, body, status = 200) => {
 };
 
 function verifyIsolatedDocker() {
-  assert.equal(base, 'http://127.0.0.1:8086', 'Use the independent acceptance instance for fault injection');
+  assert.equal(base, expectedBase, 'Use the independent acceptance instance for fault injection');
   const server = project + '-server-1';
   for (const container of [agent, database, server]) {
     assert.equal(docker('inspect', container, '--format', '{{index .Config.Labels "com.docker.compose.project"}}'), project);
   }
-  assert.equal(docker('port', server, '8080/tcp'), '127.0.0.1:8086');
-  assert.equal(query('SELECT current_database()'), 'workflow_acceptance');
+  assert.equal(docker('port', server, '8080/tcp'), expectedBase.slice('http://'.length));
+  assert.equal(query('SELECT current_database()'), dbName);
 }
 
 async function waitFor(read, label, timeout = 15000) {
@@ -210,8 +215,17 @@ async function main() {
     properties.quadrant === 'HH' && properties.pValue !== null && properties.pValue <= 0.05)
     .map(({ properties }) => properties.label);
   assert.ok(highHigh.length > 0);
+  const traceId = phase06 ? query("SELECT trace_id FROM geocsv_analysis_runs WHERE id='" + run.id + "'") : undefined;
+  if (phase06) {
+    assert.match(traceId, /^[a-f0-9]{32}$/);
+    const entries = docker('logs', project + '-server-1').split(/\r?\n/).flatMap(line => {
+      try { return [JSON.parse(line)]; } catch { return []; }
+    }).filter(entry => entry.traceId === traceId);
+    assert.ok(entries.some(entry => entry.event === 'workflow.run.accepted' && entry.runId === run.id));
+    assert.ok(entries.some(entry => entry.event === 'artifact.postgis.committed' && entry.artifactId === artifact.id));
+  }
   const updatedInput = restart ? await verifyUpdatedInput(path, submitted) : undefined;
-  console.log(JSON.stringify({ threadId, planId: proposal.proposal.plan.id, runId: run.id, artifactId: artifact.id,
+  console.log(JSON.stringify({ traceId, threadId, planId: proposal.proposal.plan.id, runId: run.id, artifactId: artifact.id,
     globalI: artifact.summary.globalI, pValue: artifact.summary.pValue, regions: geometry.features.length, highHigh,
     recoveredAfterCommit: Boolean(recovered), updatedInput }));
 }

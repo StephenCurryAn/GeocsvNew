@@ -1,0 +1,7 @@
+services:
+  python:
+    environment:
+      PG_URI: postgresql://geocsv:geocsv_local_dev@db:5432/phase06_test
+  server:
+    environment:
+      DATABASE_URL: postgresql://geocsv:geocsv_local_dev@db:5432/phase06_test
