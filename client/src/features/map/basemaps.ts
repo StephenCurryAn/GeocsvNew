@@ -1,8 +1,10 @@
+import { layers, namedFlavor } from '@protomaps/basemaps';
 import type { Map as LibreMap, StyleSpecification, SourceSpecification, LayerSpecification } from 'maplibre-gl';
 
 export const BASEMAP_ANCHOR = 'geocsv-basemap-anchor';
 export const DEFAULT_BASEMAP = 'protomaps-light';
 const THEMES = ['light', 'white', 'grayscale', 'dark', 'black'] as const;
+const PROTOMAPS_ASSETS = 'https://protomaps.github.io/basemaps-assets';
 export const BASEMAP_OPTIONS = [
   ...THEMES.map(theme => ({ key: `protomaps-${theme}`, name: `Protomaps ${theme}` })),
   { key: 'tianditu-vector', name: '天地图矢量' },
@@ -57,19 +59,26 @@ export function initialMapStyle(): StyleSpecification {
 }
 
 export async function loadBasemap(key: string, config: BasemapConfig, signal: AbortSignal): Promise<StyleSpecification> {
+  signal.throwIfAborted();
   if (!key.startsWith('protomaps-')) return rasterStyle(key, config.apiBase);
   const theme = key.slice('protomaps-'.length);
   if (!(THEMES as readonly string[]).includes(theme)) throw new Error('不支持的 Protomaps 主题');
-  if (!config.protomapsKey.trim()) throw new Error('尚未配置 Protomaps Key');
-  const url = `https://api.protomaps.com/styles/v5/${theme}/en.json?key=${encodeURIComponent(config.protomapsKey.trim())}`;
-  try {
-    const response = await fetch(url, { signal, credentials: 'omit', redirect: 'error' });
-    if (!response.ok) throw new Error('provider unavailable');
-    return await response.json() as StyleSpecification;
-  } catch {
-    // Provider URLs may include a browser key; do not surface raw errors or URLs.
-    throw new Error('Protomaps 样式加载失败，请检查 Key、允许来源和网络');
-  }
+  const apiKey = config.protomapsKey.trim();
+  if (!apiKey) throw new Error('尚未配置 Protomaps Key');
+
+  return {
+    version: 8,
+    glyphs: `${PROTOMAPS_ASSETS}/fonts/{fontstack}/{range}.pbf`,
+    sprite: `${PROTOMAPS_ASSETS}/sprites/v4/${theme}`,
+    sources: {
+      protomaps: {
+        type: 'vector', maxzoom: 15,
+        tiles: [`https://api.protomaps.com/tiles/v4/{z}/{x}/{y}.mvt?key=${encodeURIComponent(apiKey)}`],
+        attribution: '<a href="https://github.com/protomaps/basemaps">Protomaps</a> © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+      },
+    },
+    layers: layers('protomaps', namedFlavor(theme), { lang: 'en' }),
+  };
 }
 
 type BasemapMap = Pick<LibreMap, 'addLayer' | 'addSource' | 'getLayer' | 'getSource' | 'removeLayer' | 'removeSource'
@@ -127,7 +136,10 @@ export class BasemapController {
           if (style.glyphs && style.glyphs !== glyphs) { assetsChanged = true; this.map.setGlyphs(style.glyphs); }
           if (typeof style.sprite === 'string' && style.sprite !== sprite) { assetsChanged = true; this.map.setSprite(style.sprite); }
           for (const [id, source] of Object.entries(style.sources)) this.map.addSource(id, source);
-          for (const layer of style.layers) this.map.addLayer(layer, BASEMAP_ANCHOR);
+          for (const layer of style.layers) {
+            this.map.addLayer(layer, BASEMAP_ANCHOR);
+            if (!this.map.getLayer(layer.id)) throw new Error('invalid basemap layer');
+          }
         } catch {
           abort.abort();
         }
@@ -175,9 +187,10 @@ export class BasemapController {
       };
       const onAbort = () => finish(new Error('cancelled'));
       const onError = (event: { sourceId?: string; error?: { status?: number } }) => {
-        if (event.sourceId && !ids.includes(event.sourceId)) return;
+        // Sprite requests can fail independently of the candidate's tile sources.
+        if (!event.sourceId || !ids.includes(event.sourceId)) return;
         const status = event.error?.status;
-        const reason = isTianditu && event.sourceId && status !== undefined ? TIANDITU_TILE_ERRORS[status] : undefined;
+        const reason = isTianditu && status !== undefined ? TIANDITU_TILE_ERRORS[status] : undefined;
         finish(reason ? new TiandituTileError(`${reason}。已保留原底图。`) : new Error('provider failed'));
       };
       const interval = setInterval(() => {

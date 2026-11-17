@@ -17,6 +17,7 @@
     "@deck.gl/geo-layers": "9.4.1",
     "@deck.gl/maplibre": "9.4.1",
     "@loaders.gl/mvt": "4.5.4",
+    "@protomaps/basemaps": "5.7.2",
     "@turf/turf": "^7.3.3",
     "ag-grid-community": "^35.0.0",
     "ag-grid-react": "^35.0.0",

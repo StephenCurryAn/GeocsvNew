@@ -114,13 +114,14 @@ test('tile timeout removes staged resources and restores glyphs and sprites', as
   assert.deepEqual(Object.keys(map.sources), ['business']);
 });
 
-test('basemap readiness ignores pending and failed business tiles', async () => {
+test('basemap readiness ignores business tiles and independent sprite errors', async () => {
   const map = new MapDouble();
   map.isStyleLoaded = () => false;
   const controller = new BasemapController(map, async () => vectorStyle());
   const switching = controller.switchTo('protomaps-light');
   await new Promise(resolve => setImmediate(resolve));
   map.fail('business', { status: 502 });
+  map.fail(undefined, new Error('sprite unavailable'));
   assert.equal(await switching, true);
 });
 
@@ -177,20 +178,25 @@ test('dispose cancels a pending tile wait before the map is removed', async () =
   assert.equal(map.handlers.size, 0);
 });
 
-test('Protomaps loader uses configured key, fixed themes and no browser credentials', async () => {
-  const originalFetch = globalThis.fetch;
-  try {
-    globalThis.fetch = async (url, options) => {
-      assert.equal(new URL(url).origin, 'https://api.protomaps.com');
-      assert.equal(new URL(url).searchParams.get('key'), 'test key');
-      assert.equal(new URL(url).pathname, '/styles/v5/dark/en.json');
-      assert.equal(options.credentials, 'omit');
-      return Response.json(vectorStyle());
-    };
-    const signal = new AbortController().signal;
-    assert.equal((await loadBasemap('protomaps-dark', { protomapsKey: 'test key', apiBase: '/api' }, signal)).version, 8);
-    await assert.rejects(loadBasemap('protomaps-dark', { protomapsKey: '', apiBase: '/api' }, signal), /未配置/);
-    await assert.rejects(loadBasemap('protomaps-invalid', { protomapsKey: 'test', apiBase: '/api' }, signal));
-    await assert.rejects(loadBasemap('blank', { protomapsKey: 'test', apiBase: '/api' }, signal), /不支持/);
-  } finally { globalThis.fetch = originalFetch; }
+test('Protomaps styles are generated locally for each theme and use the configured tile key', async t => {
+  const fetch = t.mock.method(globalThis, 'fetch', () => assert.fail('style must not make a network request'));
+  const signal = new AbortController().signal;
+  const config = { protomapsKey: ' test key ', apiBase: '/api' };
+  for (const option of BASEMAP_OPTIONS.filter(option => option.key.startsWith('protomaps-'))) {
+    const style = await loadBasemap(option.key, config, signal);
+    const source = style.sources.protomaps;
+    const tile = new URL(source.tiles[0]);
+    assert.equal(style.version, 8);
+    assert.equal(source.maxzoom, 15);
+    assert.equal(tile.origin, 'https://api.protomaps.com');
+    assert.equal(tile.searchParams.get('key'), 'test key');
+    assert.ok(source.tiles[0].includes('/tiles/v4/{z}/{x}/{y}.mvt'));
+    assert.ok(style.sprite.endsWith(`/sprites/v4/${option.key.slice('protomaps-'.length)}`));
+    assert.ok(style.layers.some(layer => layer.source === 'protomaps' && layer['source-layer']));
+    assert.ok(prepareBasemap(style, 'candidate-').sources['candidate-protomaps']);
+  }
+  assert.equal(fetch.mock.callCount(), 0);
+  await assert.rejects(loadBasemap('protomaps-dark', { ...config, protomapsKey: '' }, signal), /未配置/);
+  await assert.rejects(loadBasemap('protomaps-invalid', config, signal), /不支持/);
+  await assert.rejects(loadBasemap('blank', config, signal), /不支持/);
 });
