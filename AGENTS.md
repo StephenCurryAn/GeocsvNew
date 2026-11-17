@@ -7,4 +7,4 @@
 5. Review meaningful diffs and run relevant verification. Broaden checks only when risk or failures justify it.
 6. Final report: Implemented / Decisions / Verification / Issues. Explain concrete code changes and their purpose in Chinese.
 
-For parallel module sessions, read `docs/parallel-development.md`. Work only in the assigned checkout and branch. Never switch another session's branch, modify its files, stop its services, or overwrite shared environment configuration. Do not commit secrets or automatically merge/push module branches.
+For module sessions, read `docs/parallel-development.md` and work in the assigned checkout and branch. All local work uses the shared Docker Compose project `geocsv-local`, including parallel development. Coordinate which branch is running and rebuild its services in the same project. Keep shared environment configuration and data volumes when updating containers. Do not switch other sessions' branches, commit secrets, or automatically merge or push module branches.
