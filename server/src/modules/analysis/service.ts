@@ -10,7 +10,7 @@ import { connectSafely, transaction } from './database';
 import { AnalysisError, AnalysisInputError, InputVersionChanged, RequestKeyConflict, type AnalysisErrorCode } from './errors';
 import { migrateAnalysis } from './migrations';
 import { confirmPlan, readPlan, writePlan } from './plans';
-import { operatorOf, type AnalysisRun, type AnalysisSpec, type InputVersions, type RunStatus } from './protocol';
+import { operatorOf, type AnalysisRun, type AnalysisSpec, type InputVersions, type ProfessionalModelRun, type RunStatus } from './protocol';
 
 export interface SubmissionKey {
   actor: string;
@@ -20,8 +20,9 @@ export interface SubmissionKey {
 
 type PlanReference = { planId: string; planVersion: number; sceneId?: string };
 interface ReplayInput { expectedVersions?: InputVersions; replayRunId?: string }
-type RunSubmission = ({ spec: unknown } & ReplayInput) | PlanReference;
-type PreparedSubmission = ({ operator: PreparedOperator } & ReplayInput) | PlanReference;
+type ModelInput = { professionalModel?: ProfessionalModelRun };
+type RunSubmission = ({ spec: unknown } & ReplayInput & ModelInput) | PlanReference;
+type PreparedSubmission = ({ operator: PreparedOperator } & ReplayInput & ModelInput) | PlanReference;
 type StoredSnapshot = { digest: string; payload: Buffer | null };
 const snapshotExpired = () => new AnalysisError(410, 'INPUT_SNAPSHOT_EXPIRED', '输入快照已过保留期，请重新创建分析');
 const cancelled = new Error('任务已取消');
@@ -40,6 +41,7 @@ interface RunRow {
   error_code: AnalysisErrorCode | null;
   created_at: Date;
   completed_at: Date | null;
+  professional_model: ProfessionalModelRun | null;
 }
 
 const runFromRow = (row: RunRow): AnalysisRun => ({
@@ -47,6 +49,7 @@ const runFromRow = (row: RunRow): AnalysisRun => ({
   status: row.status, spec: row.spec, inputVersions: row.input_versions, artifactId: row.artifact_id,
   error: row.error, errorCode: row.error_code,
   createdAt: row.created_at.toISOString(), completedAt: row.completed_at?.toISOString() ?? null,
+  ...(row.professional_model ? { professionalModel: row.professional_model } : {}),
 });
 
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -125,11 +128,13 @@ export class AnalysisService {
     await this.initialize();
     if ('planId' in request && !submission) throw new AnalysisInputError('确认计划需要提供 Idempotency-Key');
     const prepared: PreparedSubmission = 'spec' in request
-      ? { operator: prepare(request.spec), expectedVersions: request.expectedVersions, replayRunId: request.replayRunId }
+      ? { operator: prepare(request.spec), expectedVersions: request.expectedVersions, replayRunId: request.replayRunId,
+        professionalModel: request.professionalModel }
       : request;
     // The legacy form and replay keep the request digest introduced with submission keys.
     const requestHash = submission ? digest('operator' in prepared
-      ? { spec: prepared.operator.spec, expectedVersions: prepared.expectedVersions ?? null }
+      ? { spec: prepared.operator.spec, expectedVersions: prepared.expectedVersions ?? null,
+        ...(prepared.professionalModel ? { professionalModel: prepared.professionalModel } : {}) }
       : { planId: prepared.planId, planVersion: prepared.planVersion }) : null;
 
     for (let retry = 0; ; retry++) {
@@ -174,10 +179,11 @@ export class AnalysisService {
       [randomUUID(), plan.specHash, plan.spec])).rows[0].id;
     const result = await client.query<RunRow>(`
       INSERT INTO geocsv_analysis_runs(id, definition_id, spec, input_versions, plan_id,
-        request_actor, request_scope, request_key, request_hash, snapshot_id)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+        request_actor, request_scope, request_key, request_hash, snapshot_id, professional_model)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
       [runId, definitionId, plan.spec, plan.inputVersions, plan.id,
-        submission?.actor, submission?.scope, submission?.key, requestHash, snapshotId]);
+        submission?.actor, submission?.scope, submission?.key, requestHash, snapshotId,
+        'operator' in request ? request.professionalModel : null]);
     await confirmPlan(client, plan);
     return runFromRow(result.rows[0]);
   }
@@ -209,9 +215,9 @@ export class AnalysisService {
     return { plan, snapshotId: await this.saveSnapshot(client, inputs.snapshot) };
   }
 
-  private async implicitPlan(client: PoolClient, { operator, expectedVersions, replayRunId }: {
+  private async implicitPlan(client: PoolClient, { operator, expectedVersions, replayRunId, professionalModel }: {
     operator: PreparedOperator;
-  } & ReplayInput) {
+  } & ReplayInput & ModelInput) {
     let versions: InputVersions;
     let snapshotId: string | null = null;
     if (operator.executor === 'python' && replayRunId && expectedVersions) {
@@ -228,6 +234,12 @@ export class AnalysisService {
     } else {
       const inputs = await this.readInputs(client, operator);
       versions = inputs.versions;
+      if (professionalModel) {
+        if (!await sceneContainsFiles(client, professionalModel.sceneId, Object.values(versions).map(item => item.fileId))) {
+          throw new AnalysisInputError('所选图层不属于当前场景', 'DATASET_NOT_FOUND');
+        }
+        if (operator.executor === 'python') await operator.validatePlanningFields?.(client);
+      }
       snapshotId = await this.saveSnapshot(client, inputs.snapshot);
     }
     const plan = await writePlan(client, operator.spec, digest(operator.spec), versions, true);
@@ -247,15 +259,16 @@ export class AnalysisService {
     return result.rows[0] ? runFromRow(result.rows[0]) : null;
   }
 
-  async history(limit: number, operatorId?: string, sceneId?: string): Promise<AnalysisRun[]> {
-    const sceneScope = sceneId ? `
-        AND (
+  async history(limit: number, operatorId?: string, sceneId?: string, professionalOnly = false): Promise<AnalysisRun[]> {
+    const sceneScope = !sceneId ? '' : professionalOnly ? "AND professional_model->>'sceneId'=$3" : `
+        AND (professional_model->>'sceneId'=$3 AND professional_model->>'purpose'='run'
+          OR professional_model IS NULL AND
           input_versions IS NOT NULL AND input_versions <> '{}'::jsonb
           AND NOT EXISTS (
             SELECT 1 FROM jsonb_each(input_versions) AS input(role, version)
-            WHERE NOT EXISTS (SELECT 1 FROM file_nodes WHERE id=input.version->>'fileId' AND scene_id=$3)
+            WHERE NOT EXISTS (SELECT 1 FROM file_nodes WHERE id=input.version->>'fileId' AND scene_id=$3::uuid)
           )
-        )` : '';
+        )`;
     const result = await this.db.query<RunRow>(`
       SELECT * FROM geocsv_analysis_runs WHERE ($2::text IS NULL OR spec->>'kind'=$2)${sceneScope}
       ORDER BY created_at DESC, id LIMIT $1`, sceneId ? [limit, operatorId, sceneId] : [limit, operatorId]);

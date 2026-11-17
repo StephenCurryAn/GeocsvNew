@@ -1,0 +1,73 @@
+.professional-models {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 16px;
+}
+
+.professional-models-header,
+.professional-model-actions,
+.professional-model-history li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.professional-models-header,
+.professional-model-history li {
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.professional-model-card,
+.professional-model-history li {
+  background: var(--workbench-panel);
+  border: 1px solid var(--workbench-border);
+  border-radius: var(--workbench-radius);
+  padding: 14px;
+}
+
+.professional-model-card,
+.professional-model-history {
+  display: grid;
+  gap: 12px;
+}
+
+.professional-model-card h3,
+.professional-model-history h3 {
+  color: var(--workbench-text);
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.professional-model-description span,
+.professional-model-description p,
+.professional-model-history p {
+  color: var(--workbench-muted);
+  font-size: 13px;
+  margin: 3px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.professional-model-card .ant-form-item {
+  margin-bottom: 14px;
+}
+
+.professional-model-select {
+  width: 100%;
+}
+
+.professional-model-parameters {
+  display: grid;
+  gap: 0 12px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 155px), 1fr));
+}
+
+.professional-model-history {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}

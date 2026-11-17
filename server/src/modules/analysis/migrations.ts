@@ -139,7 +139,32 @@ const sceneAnalysisMetadata = async (client: PoolClient) => {
   `);
 };
 
-const migrations = [baseline, submissionKeys, plansAndArtifactFormats, pythonSnapshotsAndResults, sceneAnalysisMetadata];
+const professionalModels = async (client: PoolClient) => {
+  await client.query(`
+    CREATE TABLE geocsv_professional_models (
+      id UUID NOT NULL,
+      version INTEGER NOT NULL CHECK (version > 0),
+      revision UUID NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL,
+      operator_id TEXT NOT NULL,
+      operator_version INTEGER NOT NULL,
+      parameters JSONB NOT NULL,
+      published_at TIMESTAMPTZ,
+      trial_run_id UUID REFERENCES geocsv_analysis_runs(id),
+      PRIMARY KEY (id, version),
+      CHECK ((published_at IS NULL) = (trial_run_id IS NULL))
+    );
+    CREATE UNIQUE INDEX geocsv_professional_model_draft ON geocsv_professional_models(id) WHERE published_at IS NULL;
+    ALTER TABLE geocsv_analysis_runs ADD COLUMN professional_model JSONB;
+    CREATE INDEX geocsv_professional_model_trial ON geocsv_analysis_runs((professional_model->>'revision'))
+      WHERE professional_model->>'purpose' = 'trial' AND status = 'succeeded';
+    CREATE INDEX geocsv_professional_model_history ON geocsv_analysis_runs((professional_model->>'sceneId'), created_at DESC)
+      WHERE professional_model IS NOT NULL;
+  `);
+};
+
+const migrations = [baseline, submissionKeys, plansAndArtifactFormats, pythonSnapshotsAndResults, sceneAnalysisMetadata, professionalModels];
 
 export const migrateAnalysis = async (db: Pool): Promise<void> => {
   await transaction(db, 'BEGIN', async client => {

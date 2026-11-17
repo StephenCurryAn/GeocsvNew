@@ -156,7 +156,8 @@
 }
 
 .workbench-map-layout,
-.workbench-results {
+.workbench-results,
+.workbench-models {
     grid-area: 1 / 1;
     min-width: 0;
     min-height: 0;
@@ -166,6 +167,11 @@
 .workbench-results {
     overflow: auto;
     container: results / inline-size;
+    scrollbar-width: thin;
+}
+
+.workbench-models {
+    overflow: auto;
     scrollbar-width: thin;
 }
 

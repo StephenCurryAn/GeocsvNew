@@ -201,17 +201,24 @@ function checkResult(output: unknown, spec: MoranSpec, payload: Buffer): MoranRe
   return result;
 }
 
+const targetInput = { geometryTypes: ['ST_Polygon', 'ST_MultiPolygon'],
+  fields: { valueField: { type: 'numeric', required: true, description: '分析使用的数值字段' } },
+} as const;
+
 export const moranLisa: Operator = {
   descriptor: {
     id: 'spatial_autocorrelation', version: 2, name: 'Moran/LISA 空间自相关',
     aliases: ['Moran', 'LISA', '莫兰', '空间自相关', 'Queen', 'Rook'],
     description: '判断数值偏高或偏低的区域是否彼此相邻、哪里成片或和周围不同。使用面图层的数值指标计算 Moran’s I 与 LISA，适用 Queen 或 Rook 邻接。',
     executor: 'python',
-    inputs: { target: { geometryTypes: ['ST_Polygon', 'ST_MultiPolygon'],
-      fields: { valueField: { type: 'numeric', required: true, description: '分析使用的数值字段' } } } },
+    inputs: { target: targetInput },
     parameterSchema: '#/$defs/MoranLisaSpec', output: { format: 'moran_lisa', schemaVersion: 1 },
     planningParameters: parameters,
   },
+  professionalInputs: { target: { ...targetInput, fields: {
+    ...targetInput.fields,
+    labelField: { type: 'any', required: false, description: '区域名称字段' },
+  } } },
   planDraft,
   prepare(input) {
     const spec = parseMoranSpec(input);
@@ -223,6 +230,9 @@ export const moranLisa: Operator = {
         const data = await readDataset(client, spec.target.fileId, true);
         if (!data.numericFields?.includes(spec.target.valueField)) {
           throw invalid('所选字段须包含至少三个有效数值');
+        }
+        if (spec.target.labelField && !data.fields.includes(spec.target.labelField)) {
+          throw new AnalysisInputError('所选区域名称字段不存在', 'UNKNOWN_FIELD');
         }
       },
       async execute(worker, execution) {

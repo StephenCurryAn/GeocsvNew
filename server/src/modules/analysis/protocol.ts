@@ -53,6 +53,15 @@ export interface AnalysisPlan {
 
 export type RunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 
+export interface ProfessionalModelRun {
+  id: string;
+  version: number;
+  revision: string;
+  name: string;
+  sceneId: string;
+  purpose: 'trial' | 'run';
+}
+
 export interface AnalysisRun {
   schemaVersion: 1;
   id: string;
@@ -67,6 +76,7 @@ export interface AnalysisRun {
   errorCode: AnalysisErrorCode | null;
   createdAt: string;
   completedAt: string | null;
+  professionalModel?: ProfessionalModelRun;
 }
 
 export interface ArtifactColumn { key: string; label: string }
