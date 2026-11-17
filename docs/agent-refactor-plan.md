@@ -2,7 +2,7 @@
 
 编制日期为 2026-11-15。代码基线为 `agent-refactor` 分支的 `a08cf2f45ea75c232c0589d4765c038f059a3128`。
 
-阶段 0 已于 2026-11-16 完成本轮约定的环境与核心功能基线，DeepSeek 官方模型调用已通过应用接口验收，详见 [环境与功能基线](environment-baseline.md)。阶段 1—7 待开始，文中的目标目录、接口和测试仍是拟议改动。既有能力以 [空间透视协议](spatial-pivot.md)、[自然语言实施记录](ai-refactor-progress.md) 和当前源码为依据；历史记录与本轮验证分开记录。
+截至 2026-11-17，整合工作台已完成场景内 LangChain 规划、LangGraph 确认与重启恢复，以及专业模型 Queen/Rook 的配置、试跑、发布和目录运行。用户已在 `http://localhost:8088/` 验收底图、工作流恢复和两个模型预设。验收记录见 [LangChain 规划](sessions/03-langchain-planner.md)、[LangGraph 工作流](sessions/04-scene-analysis-workflow.md) 和 [专业模型](sessions/05-professional-models.md)。
 
 ## 目标与投入
 
@@ -67,6 +67,16 @@ Express 中对话代理路由与分析执行路由分别处理请求，Agent 工
 | 7 | 第 15—16 周 | 10—16 小时 | 可部署版本与迁移收尾 | 服务生命周期与生产故障处理 |
 
 阶段 1 的协议与幂等提交可与阶段 2 的离线算法对照并行。阶段 2 的统一任务接入等阶段 1 契约验收后开始，随后依次完成阶段 3 和 4。阶段 5 与 6 在阶段 4 的接口验收后并行，两者合入后进入阶段 7。会话与分支见 [并行执行安排](parallel-development.md)。日常修复和小优化由主会话集中处理。
+
+## Agent 开发与学习验收
+
+每次实现先核对当前 GeoCSV 代码和版本对应的官方资料。框架用法以 LangChain、LangGraph 文档和实际依赖为准，专业模型目录及分析图以 NeoGIS 的具体源码为参考。验收记录写明参考来源、GeoCSV 采用的设计、产品入口、一次正常流程和一次失败流程。现场讲解沿同一条芝加哥 311 请求查看关键输入、代码位置和数据库结果。明确标注学习实验、已进入产品的功能和计划中的功能。
+
+| 阶段 | 你可以亲手验证的内容 |
+| --- | --- |
+| 03 · LangChain 规划 | 用同一图层先输入「Rook」，再分别加上一个有效置换值和一个超范围值。对照发送给模型的候选、模型草案、Express 校验后的 Plan，指出哪个值来自用户、哪个来自服务端默认，以及为什么非法请求未增加 Plan、合法草案尚未增加 Run。[模型调用与结构化输出](https://docs.langchain.com/oss/python/langchain/models#structured-output) · [现有 GeoCSV 规划入口](../agent_service/planner.py) |
+| 04 · LangGraph 编排 | 先用小图观察 `State`、条件边、`interrupt()` 与 checkpoint，再在真实工作台暂停确认、重启服务、恢复并重复确认。用同一个 `planId` 和 `runId` 核对会话恢复与任务幂等。恢复时中断所在节点会从头运行，因此确认节点只读取和返回用户决定，提交由后续节点执行并复用服务端幂等键。[中断与恢复](https://docs.langchain.com/oss/python/langgraph/interrupts) · [持久化](https://docs.langchain.com/oss/python/langgraph/persistence) |
+| 05 · NeoGIS 模型目录与分析节点 | 从同一执行入口发布 Queen/Rook 两个预设，再检查一个节点如何绑定模型版本、输入和参数。多节点试点核对面内统计的计数如何回填到社区面，再作为 Moran/LISA 的输入。把不匹配的端口连接交给校验，观察它如何拒绝生成可执行计划。[NeoGIS 节点定义](https://github.com/GeoScenarioScripter/neogis-server-micro-service/blob/1edf89032e5a5e379563d15b4c22f8f586fe83b8/ngis-workflow/src/main/java/io/ngis/workflow/graph/WfNode.java) |
 
 ## 阶段 0 · 环境与基线
 
@@ -189,10 +199,37 @@ Operator 契约补充算法来源、实现标识、依赖锁摘要、参数单�
 
 - 新增 `agent_service/`，包含 `pyproject.toml`、锁文件、FastAPI 入口、设置、模型适配和测试。
 - 模型配置从环境读取，验证选定提供商的工具调用与结构化输出能力，记录实际依赖和模型版本。
-- 封装 `get_datasets`、`get_operator`、`validate_analysis_plan`、`get_run`、`get_artifact` 工具，通过 HTTP 调用 Express。
+- 产品目前由 Express 一次提供经过场景校验的图层和算子元数据，LangChain 单次调用模型生成草案。阶段 3 保持这条链路。学习实验用只读的图层和算子查询演示 Tool Calling，任务与结果读取按阶段 4 的流程需要再接入。
 - 在 `server/src/integrations/agent/` 增加服务客户端，对话代理端点单独组织。工具访问的数据/任务端点有显式服务认证与访问范围校验。
 - 将 `analysisPlanner/provider.ts` 的模型草案职责迁到 Python。现有规则规划可继续作为确定性入口，规则未命中时调用新规划服务。
 - 前端与业务执行使用原计划协议，模型返回值仍经过业务侧校验。
+
+### 03 收尾 · 由算子注册表提供规划描述
+
+阶段 03 收尾前，`planner.py` 的系统提示词包含算子专用业务语义和默认值，Python 契约也直接枚举算子。现在由 Express 按场景从注册表组织候选，Python 校验通用草案，具体参数交给选定的算子校验。下表记录本轮改造的分工。[阶段 03 验收](sessions/03-langchain-planner.md)
+
+| 位置 | 职责与改动 |
+| --- | --- |
+| `server/src/modules/operators/` 和分析协议 Schema | 扩展现有 `OperatorDescriptor`。每个 `operatorId@version` 登记能力说明、名称与别名、用途及限制、输入角色、几何与字段类型和参数 Schema 引用。参数定义与默认值由该版本的参数契约统一提供，给规划、表单和业务校验复用。算子同时持有其草案转换和业务校验入口。 |
+| `server/src/integrations/agent/client.ts` | 按活动场景、可用图层、几何及字段类型筛出本次候选。保留显式提及的算子，当其没有合适的数据时给出可回答的澄清。仅将候选描述和临时图层引用发送给 Python，并限制候选与字段规模。 |
+| `agent_service/planner.py` 与 `contracts.py` | `SystemMessage` 约束通用行为，包括只使用候选、保留明确参数、歧义时提问、返回结构化草案。把当前算子说明和图层目录作为独立的结构化请求数据。Pydantic 严格验证通用草案外壳，包括状态、算子 ID 与版本、输入引用和显式参数，具体参数由选中的算子校验。 |
+| `server/src/modules/analysisPlanner/sceneRouter.ts` | 保留确定性计数规则。模型草案返回后，核对算子仍在本次候选中，按注册项处理临时引用和业务约束，再调用 `AnalysisService.createPlan`。把算子专用校验从通用路由迁到各自的注册项，保持 03 已有的图层、字段及明确参数校验。 |
+
+以芝加哥 311 的 Moran/LISA 为例，注册项声明需要一个面图层上的数值字段，Queen 共点或共边，Rook 只共边。用户只说「对坑洞投诉量用 Rook」时，模型草案填写明确指定的 `rook` 和对应字段。服务器校验后，只对缺失项补足 199 次置换和种子 42，再将完整有效参数保存为待确认计划。显式参数越界或冲突时提示修正。表单和自然语言共用同一套默认值与校验。
+
+本轮沿用现有 Plan、Run 与 Artifact 协议。先从已有的空间透视和 Moran/LISA 提取描述，再用仅测试可见的第三个算子验证可扩展性。每个新算法仍要登记输入转换、可信执行入口和结果校验。阶段 5 的专业模型目录复用这些信息，管理员可以为同一已部署执行入口创建、试跑和发布不同预设。已发布预设引用固定算子版本和参数，发布新版本后历史结果仍关联原版本。
+
+[LangChain Messages](https://docs.langchain.com/oss/python/langchain/messages) · [LangChain 结构化输出](https://docs.langchain.com/oss/python/langchain/structured-output)
+
+### 参考 NeoGIS 的模型目录与工作流节点
+
+NeoGIS 的模型注册表维护模型定义、参数 Schema、版本和使用权限。专业分析节点用 `modelToolId` 和 `toolVersion` 引用注册的模型，并记录实例的参数和输入输出。Agent 提供检索模型、读取 Schema、生成并校验多步骤草案的工具。图中的边通过输出与输入端口传递数据。[模型注册表](https://github.com/GeoScenarioScripter/neogis-server-micro-service/blob/1edf89032e5a5e379563d15b4c22f8f586fe83b8/ngis-geoanalysis/ngis_geoanalysis/registry/tool_registry.py) · [工作流节点](https://github.com/GeoScenarioScripter/neogis-server-micro-service/blob/1edf89032e5a5e379563d15b4c22f8f586fe83b8/ngis-workflow/src/main/java/io/ngis/workflow/graph/WfNode.java) · [模型检索工具](https://github.com/GeoScenarioScripter/neogis-server-micro-service/blob/1edf89032e5a5e379563d15b4c22f8f586fe83b8/ngis-ai/ngis_ai/tools/retrieval_tools.py) · [工作流草案工具](https://github.com/GeoScenarioScripter/neogis-server-micro-service/blob/1edf89032e5a5e379563d15b4c22f8f586fe83b8/ngis-ai/ngis_ai/tools/workflow_tools.py)
+
+GeoCSV 将模型能力放在版本化注册项中。分析节点保存 `operatorId@version`、可选的固定预设版本、此次绑定的输入及有效参数。界面从目录读取模型说明并显示在节点详情。LLM 根据用户意图在 Express 给出的合适候选里选算子和参数。模型较少时沿用一次提供候选的做法。目录扩大后可增加按名称、别名和数据类型检索的只读工具，再由 LLM 读取所选模型的完整契约。服务端负责场景权限、数据与参数校验，用户确认后由现有执行器运行。
+
+GeoCSV 的分析数据流图描述数据经过哪些算子，边连接上一步的输出和下一步的输入。LangGraph 的 Agent 状态图描述如何规划、追问、等待确认、提交和恢复。LangGraph 以通用的提交节点调用现有分析接口，算子由已校验的计划决定。对话流程可以因澄清回到规划，分析数据流要求执行依赖无环。[LangGraph Graph API](https://docs.langchain.com/oss/python/langgraph/graph-api)
+
+03 先完成可通过注册表选择的单算子计划，并明确声明输入与输出契约。04 用 LangGraph 把单算子闭环跑通。05 先验收专业模型目录与 Queen/Rook 预设，再用一个芝加哥示例验证串联节点的价值。示例先做面内点计数，把结果按稳定的社区标识回填到原面图层，再把数值列交给 Moran/LISA。组合试点需要验证端口类型、固定版本、中间结果来源和无环校验，据此再确定通用工作流编辑器的范围。
 
 ### 学习顺序
 
@@ -200,7 +237,7 @@ Operator 契约补充算法来源、实现标识、依赖锁摘要、参数单�
 2. 使用结构化输出和 Pydantic 描述计划，检查缺字段、额外字段和未知算子。
 3. 用 `bind_tools` 手写一次模型请求工具、程序执行、ToolMessage 回传的循环。
 4. 用 LangChain `create_agent` 完成同一任务，对照它封装的循环行为。
-5. 将小实验的模型适配与工具函数接入产品，学习示例保留在 `agent_service/examples/`。
+5. 用芝加哥 311 比较通用提示词、候选算子描述、模型草案和最终计划。观察服务端在哪一步补默认值、在哪一步拒绝越权或非法参数。Tool Calling 示例保留在 `agent_service/examples/`。
 
 ### 验收
 
@@ -208,11 +245,15 @@ Operator 契约补充算法来源、实现标识、依赖锁摘要、参数单�
 2. 两个候选字段无法确定时提出可回答的问题，无法表达的需求返回 unsupported。
 3. 模型返回 Python、SQL、未知图层、非法参数时，业务服务拒绝接受。
 4. provider 超时、限流、无效 JSON 均有明确错误与调用上限。
-5. 至少各完成一次真实模型规划，随后经表单确认执行，记录模型、计划与 Run 的对应关系。
+5. 重跑现有芝加哥 311 的真实 DeepSeek Queen/Rook 请求。两份计划的字段、邻接和版本正确，计划保持待确认，Run 数保持原值。完整确认和执行由阶段 4 验收。
+6. 加入测试算子的描述、Schema 和转换入口后，同一 `SystemMessage`、Python 草案外壳和场景路由能生成它的计划。对比传给模型的候选，确认没有无关或超出场景范围的数据。
+7. 测试省略参数、显式给出合法值、非法值和冲突值。自然语言和表单得到相同的有效默认值。未知算子版本、未注册参数、虚构字段、异场景图层和代码字段均不得生成计划。
 
 网络受限时先完成固定模型响应的契约测试和工具集成，真实模型成功响应作为独立待验收项记录。
 
 ## 阶段 4 · LangGraph 编排与持久化恢复
+
+等阶段 3 的算子规划描述与草案接口通过验收再接入产品图。先用假节点学习 State、条件边与中断，再接芝加哥 311 的现有规划和统一执行 API。
 
 ### 模块改动
 
@@ -234,6 +275,7 @@ Operator 契约补充算法来源、实现标识、依赖锁摘要、参数单�
 5. “换成饼图”引用已有 Artifact，运行记录数量保持一致。修改计算参数则生成新计划。
 6. 拒绝、取消、过期确认、重复恢复和并发对话各有独立用例。会话 A 的输入不能修改会话 B。
 7. 持久化记录包含 graph/schema 版本。至少验证一个旧会话版本的兼容恢复，无法恢复的版本返回可操作提示。
+8. 在同一个芝加哥 311 数据快照上，用 `total_requests` 分别确认并运行 Queen 和 Rook。每份确认计划只产生一个 Run，两个 Artifact 各有 77 行，对照相同参数、输入摘要及算子版本下的[阶段 02 结果](sessions/02-chicago-311.md)。
 
 ### 学习任务
 
@@ -247,7 +289,7 @@ Operator 契约补充算法来源、实现标识、依赖锁摘要、参数单�
 
 场景资源管理与工作台布局先独立并行推进。阶段 5 在其基础上接入场景内助手、会话恢复、结果联动和专业模型入口。跨场景分析等单场景验收后，通过明确的场景及图层选择接入。分工和验收见 [场景与工作台并行改造](parallel-development.md#场景与工作台并行改造)。
 
-2026-11-16 提前完成底图子任务：独立底图控制器、Protomaps 五主题目录、天地图矢量/影像后端代理、切换失败回退与业务图层保留。Protomaps 已在线验证，天地图受本机网络连接重置阻塞；详见 [地图接入记录](map-services.md)。这不代表阶段 5 整体完成，deck.gl、大数据性能及统一会话状态仍按本阶段推进。
+2026-11-16 已验证默认底图 Protomaps light、天地图矢量与影像、图层排序和地图属性表双向联动。2026-11-17 已验证统一会话和专业模型入口。deck.gl 试点和大数据性能验收仍在本阶段计划内。[地图接入记录](map-services.md) · [专业模型验收](sessions/05-professional-models.md)
 
 ### 模块改动
 
