@@ -14,7 +14,7 @@ import ProfessionalModels from './features/analysis/components/ProfessionalModel
 import { geoService, type PaginatedGeoResponse } from './services/geoService';
 import { App as AntdApp, Input } from 'antd';
 
-type LayerMetadata = Pick<FileLayerInfo, 'totalFeatures' | 'loadFailed' | 'tileVersion'> & { geometryTypes?: string[] };
+type LayerMetadata = Pick<FileLayerInfo, 'totalFeatures' | 'loadFailed' | 'tileVersion' | 'geometryTypes'>;
 const EMPTY_FEATURES: GeoJSON.Feature[] = [];
 
 function App() {
