@@ -77,6 +77,14 @@ export interface Run {
   error: string | null;
   createdAt: string;
   completedAt: string | null;
+  professionalModel?: {
+    id: string;
+    version: number;
+    revision: string;
+    name: string;
+    sceneId: string;
+    purpose: 'trial' | 'run';
+  };
 }
 
 export interface ArtifactColumn {

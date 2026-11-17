@@ -36,6 +36,7 @@ export type PreparedOperator = PreparedPostgis | PreparedPython;
 
 export interface Operator {
   descriptor: OperatorDescriptor;
+  professionalInputs?: OperatorDescriptor['inputs'];
   planDraft(context: OperatorDraftContext): Promise<OperatorDraftResult> | OperatorDraftResult;
   prepare(input: unknown): PreparedOperator;
 }

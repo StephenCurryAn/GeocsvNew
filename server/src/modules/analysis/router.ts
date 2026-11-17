@@ -91,7 +91,8 @@ export const createAnalysisRouter = (service: AnalysisService) => {
     const run = await service.get(uuid(req.params.id));
     if (!run) { res.status(404).json({ code: 404, message: '执行记录不存在' }); return; }
     if (!run.inputVersions) throw new AnalysisInputError('此执行没有可重放的输入版本');
-    const replay = await service.create({ spec: run.spec, expectedVersions: run.inputVersions, replayRunId: run.id },
+    const replay = await service.create({ spec: run.spec, expectedVersions: run.inputVersions, replayRunId: run.id,
+      professionalModel: run.professionalModel },
       submissionKey(req, `runs:replay:${run.id}`));
     res.status(202).json({ code: 202, data: replay });
   }));

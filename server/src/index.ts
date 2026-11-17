@@ -23,6 +23,7 @@ import { createScenePlannerRouter } from './modules/analysisPlanner/sceneRouter'
 import { createWorkflowRouter } from './modules/analysisPlanner/workflowRouter';
 import { createSpatialPivotRouter } from './modules/spatialPivot/router';
 import { createBasemapRouter } from './modules/basemaps/router';
+import { createProfessionalModelRouter } from './modules/professionalModels/router';
 
 const app = express();
 // http://localhost:3000
@@ -57,6 +58,7 @@ app.use('/api/analysis', analysisRoutes);
 app.use('/api/tiles', tileRoutes);
 app.use('/api', createBasemapRouter());
 const analysis = new AnalysisService(pool);
+app.use('/api', createProfessionalModelRouter(pool, analysis));
 app.use('/api', createScenePlannerRouter(pool, analysis));
 app.use('/api', createWorkflowRouter(analysis));
 app.use('/api', createSpatialPivotRouter(pool, analysis));

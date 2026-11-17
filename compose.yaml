@@ -65,6 +65,7 @@ services:
     init: true
     environment:
       ANALYSIS_WORKER_DIR: /app/server/analysis-worker
+      GEOCSV_MODEL_ADMIN_TOKEN: ${GEOCSV_MODEL_ADMIN_TOKEN:-}
       DATABASE_URL: postgresql://geocsv:geocsv_local_dev@db:5432/geocsv
       PYTHON_API_URL: http://python:8000/api
       ALIYUN_API_KEY: ${ALIYUN_API_KEY:-}

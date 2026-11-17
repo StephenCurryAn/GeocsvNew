@@ -10,6 +10,7 @@ import { featureId, replacePageSelection, selectedFromTable, selectionKey, toggl
 import { readLayerOrder, readSelectionStyle, saveLayerOrder, saveSelectionStyle } from './features/workspace/scenePreferences';
 import GeoAIAgent from './features/agent/components/GeoAIAgent';
 import { useAnalysisWorkspace } from './features/analysis/components/AnalysisWorkspace';
+import ProfessionalModels from './features/analysis/components/ProfessionalModels';
 import { geoService, type PaginatedGeoResponse } from './services/geoService';
 import { App as AntdApp, Input } from 'antd';
 
@@ -442,6 +443,7 @@ function App() {
                     activeFileFields={activeFileFields}
                 />
             }
+            models={<ProfessionalModels key={activeSceneId} sceneId={activeSceneId} />}
             map={
                 <MapView
                     data={mapData}

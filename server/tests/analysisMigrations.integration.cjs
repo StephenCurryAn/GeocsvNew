@@ -47,7 +47,7 @@ test('PostGIS migration: upgrade legacy rows, preserve exports, and accept old w
 
   await Promise.all([migrateAnalysis(db), migrateAnalysis(db)]);
   const versions = await ledger(db);
-  assert.deepEqual(versions.map(row => row.version), [1, 2, 3, 4, 5]);
+  assert.deepEqual(versions.map(row => row.version), [1, 2, 3, 4, 5, 6]);
   const service = new AnalysisService(db);
   const app = express();
   app.use('/api', createSpatialPivotRouter(db, service));
@@ -112,7 +112,7 @@ test('PostGIS migration: preserve keyed runs from the submission batch', { skip:
   try {
     assert.equal((await service.create({ spec }, key)).id, id);
     assert.equal((await service.history(20)).length, 1);
-    assert.deepEqual((await ledger(db)).map(row => row.version), [1, 2, 3, 4, 5]);
+    assert.deepEqual((await ledger(db)).map(row => row.version), [1, 2, 3, 4, 5, 6]);
   } finally { await service.stop(); }
 });
 

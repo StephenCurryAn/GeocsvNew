@@ -1,6 +1,6 @@
 import { useRef, useState, type ReactNode } from 'react';
 import {
-    ChartNoAxesColumnIncreasing, Map as MapIcon, MessageCircle, PanelLeftClose, PanelLeftOpen,
+    ChartNoAxesColumnIncreasing, FlaskConical, Map as MapIcon, MessageCircle, PanelLeftClose, PanelLeftOpen,
     PanelRightClose, PanelRightOpen, PanelsTopLeft,
 } from 'lucide-react';
 import PanelSeparator, { SEPARATOR_SIZE } from './PanelSeparator';
@@ -20,6 +20,7 @@ const VIEW_BAR_HEIGHT = 44;
 const MIN_HEIGHT = MIN_MAP + MIN_TABLE + SEPARATOR_SIZE + VIEW_BAR_HEIGHT;
 const views = [
     { key: 'map', title: '工作地图', icon: MapIcon },
+    { key: 'models', title: '专业模型', icon: FlaskConical },
     { key: 'results', title: '分析结果', icon: ChartNoAxesColumnIncreasing },
 ] as const;
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
@@ -29,13 +30,14 @@ type SidebarSize = { collapsed: boolean; width?: number };
 interface MainLayoutProps {
     workspace: ReactNode;
     map: ReactNode;
+    models: ReactNode;
     table: ReactNode;
     assistant: ReactNode;
 }
 
-export default function MainLayout({ workspace, map, table, assistant }: MainLayoutProps) {
+export default function MainLayout({ workspace, map, models, table, assistant }: MainLayoutProps) {
     const { view, result, changeView } = useAnalysisWorkspace();
-    const tabs = useRef<Record<WorkspaceView, HTMLButtonElement | null>>({ map: null, results: null });
+    const tabs = useRef<Partial<Record<WorkspaceView, HTMLButtonElement | null>>>({});
     const workbenchRef = useRef<HTMLDivElement>(null);
     const size = usePanelSize(workbenchRef);
     const [workspaceSize, setWorkspaceSize] = useState<SidebarSize>({ collapsed: false });
@@ -124,7 +126,7 @@ export default function MainLayout({ workspace, map, table, assistant }: MainLay
 
                 <main className="workbench-center">
                     <div className="workbench-view-bar" role="tablist" aria-label="中央视图">
-                        {views.map(({ key, title, icon: Icon }) => (
+                        {views.map(({ key, title, icon: Icon }, index) => (
                             <button
                                 key={key} id={'workbench-tab-' + key} type="button" role="tab"
                                 ref={element => { tabs.current[key] = element; }}
@@ -135,7 +137,10 @@ export default function MainLayout({ workspace, map, table, assistant }: MainLay
                                     let next: WorkspaceView;
                                     if (event.key === 'Home') next = 'map';
                                     else if (event.key === 'End') next = 'results';
-                                    else if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') next = key === 'map' ? 'results' : 'map';
+                                    else if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+                                        const direction = event.key === 'ArrowLeft' ? -1 : 1;
+                                        next = views[(index + direction + views.length) % views.length].key;
+                                    }
                                     else return;
                                     event.preventDefault();
                                     changeView(next);
@@ -159,6 +164,12 @@ export default function MainLayout({ workspace, map, table, assistant }: MainLay
                             />
                             <section id="workbench-table" className="workbench-table" aria-label="属性表">{table}</section>
                         </div>
+                        <section id="workbench-view-models" className="workbench-models" role="tabpanel" aria-labelledby="workbench-tab-models"
+                            aria-hidden={view !== 'models'}
+                            ref={element => { if (element) element.inert = view !== 'models'; }}
+                            tabIndex={view === 'models' ? 0 : -1}>
+                            {models}
+                        </section>
                         <section id="workbench-view-results" className="workbench-results" role="tabpanel" aria-labelledby="workbench-tab-results"
                             aria-hidden={view !== 'results'}
                             ref={element => { if (element) element.inert = view !== 'results'; }}

@@ -16,6 +16,10 @@ export type AnalysisErrorCode =
   | 'PLANNER_TIMEOUT'
   | 'PLANNER_RATE_LIMITED'
   | 'PLANNER_INVALID_RESPONSE'
+  | 'MODEL_ADMIN_REQUIRED'
+  | 'MODEL_NOT_FOUND'
+  | 'MODEL_REVISION_CONFLICT'
+  | 'MODEL_TRIAL_REQUIRED'
   | 'EXECUTION_FAILED';
 
 export class AnalysisError extends Error {

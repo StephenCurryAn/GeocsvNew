@@ -11,7 +11,9 @@ export default function AnalysisResultView({ analysis }: { analysis: AnalysisRun
   return (
     <div className="spatial-result-view">
       <header className="spatial-result-heading">
-        <h2>{artifact?.format === 'moran_lisa' ? '空间自相关结果' : '分析结果'}</h2>
+        <h2>{analysis?.run?.professionalModel
+          ? `${analysis.run.professionalModel.name} · v${analysis.run.professionalModel.version}${analysis.run.professionalModel.purpose === 'trial' ? ' · 试跑' : ''}`
+          : artifact?.format === 'moran_lisa' ? '空间自相关结果' : '分析结果'}</h2>
         {artifact && (
           <Button size="small" icon={<DownloadOutlined />} loading={analysis.csvDownloading}
             onClick={() => void analysis.exportCsv()}>导出 CSV</Button>
