@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { bbox, pointOnFeature } from '@turf/turf';
@@ -23,6 +23,8 @@ import { useAnalysisStore } from '../../../stores/useAnalysisStore'
 import { API_BASE_URL, getApiUrl } from '../../../services/apiConfig';
 import { BASEMAP_OPTIONS, BasemapController, DEFAULT_BASEMAP, initialMapStyle, loadBasemap } from '../basemaps';
 import type { SelectedFeature } from '../featureSelection';
+import { useDeckPointLayer } from '../useDeckPointLayer';
+import { readDeckPointLayer, saveDeckPointLayer } from '../../workspace/scenePreferences';
 import {
     addFileLayers, addSelectionLayers, defaultLayerColor, drawingLayers, EMPTY_SELECTION, geometryLayers, highlightLayers,
     highlightGeometryFilter, layerIds, LAYER_PALETTE, paintFileLayers, paintSelectionStyle, removeFileLayers, setFileVisibility,
@@ -38,6 +40,7 @@ export interface FileLayerInfo {
     fileId: string;
     fileName: string;
     totalFeatures?: number;
+    geometryTypes?: string[];
     loadFailed?: boolean;
     tileVersion?: number;
 }
@@ -47,6 +50,8 @@ const fileLayers = (fileId: string) => layerIds('file-' + fileId);
 const gridLayers = layerIds('grid');
 const featureSelectionLayers = layerIds('feature-selection');
 const DENSE_LAYER_SIZE = 5000;
+const isPointLayer = (file?: FileLayerInfo) => Boolean(file?.totalFeatures && file.geometryTypes?.length
+    && file.geometryTypes.every(type => type === 'ST_Point' || type === 'ST_MultiPoint'));
 
 function tileUrls(fileId: string, version: number) {
     return [toMapLibreTileUrl('/tiles/' + fileId + '/{z}/{x}/{y}?v=' + version)];
@@ -380,6 +385,37 @@ const MapView: React.FC<MapViewProps> = ({
         return layerColors[id] || defaultLayerColor(id);
     };
 
+    const [preferredDeckFile, setPreferredDeckFile] = useState(readDeckPointLayer);
+    const chooseDeckFile = useCallback((id?: string) => {
+        saveDeckPointLayer(id);
+        setPreferredDeckFile(id);
+    }, []);
+    const canUseDeck = !isGridMode && !validIds.length && !(isMapLinkageEnabled && (pivotData?.length || highlightedCategory));
+    const hasCustomStyle = Boolean(activeField && activeField !== 'none');
+    const preferredLayer = selectedFilesInfo.find(file => file.fileId === preferredDeckFile);
+    const deckFile = canUseDeck && preferredLayer && isPointLayer(preferredLayer)
+        && !hiddenFileIds.includes(preferredLayer.fileId) && !(fileId === preferredLayer.fileId && hasCustomStyle)
+        ? preferredLayer : undefined;
+    const deckFileId = deckFile?.fileId;
+    const deckVersion = deckFile?.tileVersion ?? initialTileVersion.current;
+    const deckColor = colorForFile(deckFileId);
+    const deckDense = (deckFile?.totalFeatures ?? 0) > DENSE_LAYER_SIZE;
+    const deckOptions = useMemo(() => deckFileId ? {
+        fileId: deckFileId, tileUrl: tileUrls(deckFileId, deckVersion)[0], beforeId: fileLayers(deckFileId).point,
+        color: deckColor, dense: deckDense,
+    } : undefined, [deckFileId, deckVersion, deckColor, deckDense]);
+    const activeDeckFile = useRef(deckFileId);
+    activeDeckFile.current = deckFileId;
+    const onDeckReady = useCallback((id: string) => onDrawStatusChange(id, 'ready'), [onDrawStatusChange]);
+    const onDeckError = useCallback((id: string) => {
+        chooseDeckFile();
+        onDrawStatusChange(id);
+        message.warning('deck.gl 无法绘制此图层，已切回原生 MVT');
+    }, [chooseDeckFile, message, onDrawStatusChange]);
+    const { layer: deckLayer, ready: deckReady } = useDeckPointLayer(
+        isMapLoaded ? mapInstance.current : null, deckOptions, onDeckReady, onDeckError,
+    );
+
     const handleShowAllChange = async (e: { target: { checked: boolean } }) => {
         const request = ++fullDataRequest.current;
         if (!e.target.checked) {
@@ -473,7 +509,9 @@ const MapView: React.FC<MapViewProps> = ({
                 }
                 continue;
             }
-            const stop = watchLayerSource(map, ids.source, status => onDrawStatusChange(file.fileId, status));
+            const stop = watchLayerSource(map, ids.source, status => {
+                if (activeDeckFile.current !== file.fileId) onDrawStatusChange(file.fileId, status);
+            });
             addFileLayers(map, ids, tileUrls(file.fileId, version));
             paintFileLayers(map, ids, colorForFile(file.fileId), { dense: (file.totalFeatures ?? 0) > DENSE_LAYER_SIZE });
             openFiles.current.set(file.fileId, { version, stop });
@@ -481,10 +519,11 @@ const MapView: React.FC<MapViewProps> = ({
         for (const file of [...visibleFiles].reverse()) {
             for (const id of drawingLayers(fileLayers(file.fileId))) map.moveLayer(id);
         }
+        deckLayer.current?.align();
         if (map.getSource(gridLayers.source)) {
             for (const id of drawingLayers(gridLayers)) map.moveLayer(id);
         }
-    }, [selectedFilesInfo, isMapLoaded, onDrawStatusChange]);
+    }, [selectedFilesInfo, isMapLoaded, onDrawStatusChange, deckLayer]);
 
     //   [ ] 字段提取逻辑分离：
     // 1. numericFields (数值): 从 displayData 提取，用于当前地图的颜色渲染（支持网格的 value 字段）
@@ -643,9 +682,13 @@ const MapView: React.FC<MapViewProps> = ({
             for (const layer of geometryLayers(gridLayers)) {
                 if (map.getLayer(layer.id) && map.getLayoutProperty(layer.id, 'visibility') !== 'none') layerOwners.set(layer.id, null);
             }
-            if (!layerOwners.size) return;
-            const [feature] = map.queryRenderedFeatures(event.point, { layers: [...layerOwners.keys()] });
+            const [feature] = layerOwners.size ? map.queryRenderedFeatures(event.point, { layers: [...layerOwners.keys()] }) : [];
             const owner = feature && layerOwners.get(feature.layer.id);
+            if (deckFileId && deckReady && owner !== null && (owner === undefined
+                || selectedFilesInfo.findIndex(file => file.fileId === deckFileId) < selectedFilesInfo.findIndex(file => file.fileId === owner))) {
+                const hit = deckLayer.current?.pick(event.point.x, event.point.y);
+                if (hit) return { feature: hit, owner: deckFileId };
+            }
             return owner !== undefined ? { feature, owner } : undefined;
         };
         const handleClick = (event: maplibregl.MapMouseEvent) => {
@@ -672,6 +715,7 @@ const MapView: React.FC<MapViewProps> = ({
             }, additive);
         };
         const handleMove = (event: maplibregl.MapMouseEvent) => {
+            if (deckFileId && map.isMoving()) return;
             map.getCanvas().style.cursor = findFeature(event) ? 'pointer' : '';
         };
         map.on('click', handleClick);
@@ -680,7 +724,7 @@ const MapView: React.FC<MapViewProps> = ({
             map.off('click', handleClick);
             map.off('mousemove', handleMove);
         };
-    }, [isMapLoaded, batchMode]);
+    }, [isMapLoaded, batchMode, deckFileId, deckLayer, deckReady, selectedFilesInfo]);
 
     //   [ ]  联动着色逻辑：增强高亮对比度
     const updateLinkageColors = () => {
@@ -1082,10 +1126,10 @@ const MapView: React.FC<MapViewProps> = ({
         const map = mapInstance.current;
         if (!map || !isMapLoaded) return;
         for (const id of openFiles.current.keys()) {
-            setFileVisibility(map, fileLayers(id), !hiddenFileIds.includes(id) && !(isGridMode && id === fileId));
+            setFileVisibility(map, fileLayers(id), id !== deckFileId && !hiddenFileIds.includes(id) && !(isGridMode && id === fileId));
         }
         if (isGridMode) setFileVisibility(map, gridLayers, !activeHidden);
-    }, [isMapLoaded, fileId, gridData, isGridMode, selectedFilesInfo, hiddenFileIds, activeHidden]);
+    }, [isMapLoaded, fileId, gridData, isGridMode, selectedFilesInfo, hiddenFileIds, activeHidden, deckFileId]);
 
     useEffect(() => {
         const map = mapInstance.current;
@@ -1506,6 +1550,26 @@ const MapView: React.FC<MapViewProps> = ({
                         );
                     })}
                 </Select>
+                {isPointLayer(selectedFilesInfo.find(file => file.fileId === fileId)) && (
+                    <Tooltip title={canUseDeck && !hasCustomStyle
+                        ? '两种渲染器使用相同的点瓦片与地图视角'
+                        : 'deck.gl 试点适用于默认纯色点图层，当前样式使用原生 MVT'}>
+                        <Select
+                            aria-label="点图层渲染器"
+                            popupMatchSelectWidth={false}
+                            size="small"
+                            className="map-point-renderer-select"
+                            disabled={!isMapLoaded || activeHidden || !canUseDeck || hasCustomStyle}
+                            loading={fileId === deckFileId && !deckReady}
+                            value={fileId === deckFileId ? 'deck' : 'native'}
+                            onChange={value => chooseDeckFile(value === 'deck' ? fileId : undefined)}
+                            options={[
+                                { value: 'native', label: '原生 MVT' },
+                                { value: 'deck', label: 'deck.gl 试点' },
+                            ]}
+                        />
+                    </Tooltip>
+                )}
                 <Tooltip title="开启后，点击地图可逐个添加或取消选择。也可以按住 Shift 点击。">
                     <Button size="small" icon={<CheckSquareOutlined />} aria-pressed={batchMode}
                         type={batchMode ? 'primary' : 'default'} disabled={!isMapLoaded || isGridMode || !selectedFilesInfo.length}
@@ -1601,6 +1665,7 @@ const MapView: React.FC<MapViewProps> = ({
                     </div>
                 )}
                 {loading && <div className="map-notice" role="status"><Spin size="small" /> 正在加载全量数据…</div>}
+                {deckFileId && !deckReady && <div className="map-notice" role="status"><Spin size="small" /> 正在加载 deck.gl 点图层…</div>}
                 <ChartOverlay />
             </div>
         </div>

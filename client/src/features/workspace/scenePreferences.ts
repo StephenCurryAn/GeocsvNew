@@ -4,6 +4,7 @@ const activeSceneKey = 'geocsv:active-scene';
 const selectionKey = (sceneId: string) => `geocsv:scene-selection:${sceneId}`;
 const layerOrderKey = (sceneId: string) => `geocsv:layer-order:${sceneId}`;
 const selectionStyleKey = 'geocsv:selection-style';
+const deckPointLayerKey = 'geocsv:deck-point-layer';
 
 function readPreference(key: string): string | null {
   try {
@@ -23,6 +24,8 @@ function writePreference(key: string, value: string): void {
 
 export const readActiveSceneId = () => readPreference(activeSceneKey);
 export const saveActiveSceneId = (sceneId: string) => writePreference(activeSceneKey, sceneId);
+export const readDeckPointLayer = () => readPreference(deckPointLayerKey) || undefined;
+export const saveDeckPointLayer = (fileId?: string) => writePreference(deckPointLayerKey, fileId ?? '');
 
 function readIdList(key: string): string[] {
   try {
